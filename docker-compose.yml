@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  notification-bot:
+    image: "${DOCKER_HUB_USERNAME}/notification-bot:latest"
+    pull_policy: always
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DOCKER_MODE=true
+      - LOG_LEVEL=INFO
+      - DOPPLER_TOKEN=${NOTIFICATION_BOT_DOPPLER_TOKEN}
+    volumes:
+      - /opt/notification-bot/data:/app/data
+      - /opt/notification-bot/logs:/app/logs
+    restart: on-failure
+    # Logs:
+    # - Docker: docker logs -f notification-bot
+    # - File: /opt/notification-bot/logs/log.log
+    # - JSON to stdout for aggregation

@@ -1,0 +1,653 @@
+"""APScheduler setup for morning digest."""
+import asyncio
+import logging
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from aiogram import Bot
+from src.utils.doppler import get_secret
+from src.utils.openai_client import get_client
+from src.db.database import get_user_profile, get_news_prompt
+from src.workers.todoist_client import get_todoist_tasks
+from src.ai.weather_aggregator import get_aggregated_weather
+from src.workers.news_fetcher import get_recent_news
+from src.ai.news_processor import select_and_summarize_news_with_gpt
+from src.workers.gwp_checker import check_gwp_works, check_water_cuts
+from src.workers.rates_fetcher import get_crypto_and_forex_rates
+from src.ai.task_explainer import get_task_explanations, score_task_importance
+from src.workers.holidays import get_today_holidays, get_today_events
+from src.workers.air_quality import get_air_quality_tbilisi
+from src.workers.product_hunt import get_top_product
+from src.workers.content_recommender import get_content_recommendation
+from src.workers.quote_of_day import get_quote_of_day
+from src.workers.football_matches import get_today_matches
+
+logger = logging.getLogger(__name__)
+
+# Global scheduler instance
+scheduler: AsyncIOScheduler = None
+
+
+def _is_task_urgent_by_keywords(task) -> bool:
+    """Check if task text contains urgency keywords."""
+    urgency_keywords = [
+        "срочно", "срочно", "asap", "асап", "быстро", "немедленно",
+        "срочная", "срочной", "неотложн", "критичн", "экстренно",
+        "urgent", "emergency", "immediately", "right now", "now"
+    ]
+
+    text = f"{task.what or ''} {task.raw_text or ''}".lower()
+    return any(keyword in text for keyword in urgency_keywords)
+
+
+async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
+    """Send morning digest: intro + news + task list with timeout and error handling."""
+    logger.info(f"🌅 Starting morning digest for user {user_id}")
+
+    try:
+        # Set global timeout for entire digest (60 seconds)
+        try:
+            if hasattr(asyncio, 'timeout'):  # Python 3.11+
+                async with asyncio.timeout(60):
+                    await _morning_digest_impl(bot, user_id, chat_id)
+            else:  # Python 3.10 and earlier
+                await asyncio.wait_for(_morning_digest_impl(bot, user_id, chat_id), timeout=60.0)
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Morning digest exceeded 60s timeout for user {user_id}")
+            try:
+                if chat_id is None:
+                    chat_id = get_secret("TELEGRAM_CHAT_ID")
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="🌅 Доброе утро! (дайджест не готов - превышен timeout)"
+                )
+            except Exception as fallback_err:
+                logger.error(f"Failed to send timeout fallback message: {fallback_err}")
+
+    except Exception as e:
+        logger.error(f"❌ Morning digest failed for user {user_id}")
+        logger.error(f"  Exception type: {type(e).__name__}")
+        logger.error(f"  Exception message: {e}")
+        logger.error(f"  Full details:", exc_info=True)
+        try:
+            if chat_id is None:
+                chat_id = get_secret("TELEGRAM_CHAT_ID")
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Дайджест не отправлен: {type(e).__name__}"
+            )
+        except Exception as fallback_err:
+            logger.error(f"Failed to send error fallback message: {fallback_err}")
+
+
+async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
+    """Implementation of morning digest (called with timeout)."""
+    logger.info(f"Loading tasks, profile, weather for user {user_id}")
+
+    # Parallel API calls - much faster than sequential
+    tasks, user_profile, weather = await asyncio.gather(
+        get_todoist_tasks(),
+        get_user_profile(user_id),
+        get_aggregated_weather(),
+        return_exceptions=True,
+    )
+
+    # Handle exceptions from gather
+    if isinstance(tasks, Exception):
+        logger.error(f"Failed to load tasks: {tasks}")
+        tasks = []
+    if isinstance(user_profile, Exception):
+        logger.error(f"Failed to load profile: {user_profile}")
+        user_profile = None
+    if isinstance(weather, Exception):
+        logger.error(f"Failed to load weather: {weather}")
+        weather = None
+
+    if user_profile is None:
+        from src.db.models import UserProfile
+        user_profile = UserProfile(user_id=user_id)
+
+    logger.info(f"✓ Loaded: {len(tasks)} tasks | profile: {user_profile.wake_time}-{user_profile.sleep_time} | weather: {'OK' if weather else 'FAILED'}")
+
+    # Generate intro context via AI
+    weather_desc = _format_weather(weather) if weather else "неизвестная погода"
+    logger.info(f"Weather condition: {weather_desc}")
+
+    # Extract weather data for clothing recommendations
+    weather_details = ""
+    if weather and isinstance(weather, dict):
+        # Get temperature from any period (morning/day/evening/night)
+        temp = None
+        for period in ["morning", "day", "evening", "night"]:
+            if isinstance(weather.get(period), dict):
+                temp = weather[period].get("temperature")
+                if temp:
+                    break
+
+        is_raining = any(
+            isinstance(weather.get(period), dict) and "дождь" in weather[period].get("condition", "").lower()
+            for period in ["morning", "day", "evening", "night"]
+        )
+
+        weather_details = f"Температура: {temp}°C" if temp else ""
+        if is_raining:
+            weather_details += " (идёт дождь)" if weather_details else "Идёт дождь"
+
+    intro_prompt = f"""Напиши мне утренний привет и рекомендации в три этапа:
+
+1️⃣ ПРОСТОЙ ПРИВЕТ (одна строка):
+Простое, ясное приветствие. БЕЗ клише и странных метафор.
+НЕ используй: "пусть день принесет", "улучшит настроение", "зарядит энергией", странные фразы про кофе
+ИСПОЛЬЗУЙ: обычный язык, может быть с лёгким юмором или наблюдением
+
+Примеры:
+- "Доброе утро! Кофе в руках, можно работать"
+- "Утро, солнце на улице, давай начнём"
+- "Доброе утро! День начинается"
+
+2️⃣ СОВЕТ ПРО ПОГОДУ (1-2 предложения):
+От первого лица (я вижу, я советую) - практичный совет связанный с погодой.
+Погода в Тбилиси: {weather_desc}
+
+Стиль: просто, понятно, практично.
+
+3️⃣ РЕКОМЕНДАЦИЯ ПО ОДЕЖДЕ (одна строка, краткий список):
+⚠️ ВАЖНО: у меня НИКОГДА нет зонта - только куртка! Если дождь, рекомендуй куртку вместо зонта.
+
+Конкретная рекомендация как одеться, например:
+- Штаны, лёгкая кофта, белые кроссовки (сухо)
+- Куртка, джинсы, непромокаемые ботинки (дождь - БЕЗ ЗОНТА)
+- Солнцезащитный крем (SPF зависит от UV индекса и погоды)
+- Очки если солнечно
+
+Формат: просто перечисли главное без лишних слов
+
+{weather_details}
+
+Формат ответа - ТРИ СТРОКИ:
+[простой привет]
+[совет про погоду]
+[одежда: штаны, кофта, обувь, аксессуары]"""
+
+    logger.info("🔄 Calling AI to generate morning greeting, weather advice, and outfit")
+
+    response = await get_client().chat.completions.create(
+        model="gpt-5.4-mini",
+        max_completion_tokens=250,
+        messages=[{"role": "system", "content": "You are a friendly morning assistant in Russian."},
+                  {"role": "user", "content": intro_prompt}],
+    )
+
+    logger.info(f"✓ OpenAI response received:")
+    logger.info(f"  Model: {response.model}")
+    logger.info(f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}")
+
+    response_text = response.choices[0].message.content
+    logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
+
+    # Parse response - should be three lines
+    lines = response_text.strip().split("\n") if response_text else []
+    simple_greeting = lines[0] if len(lines) > 0 else "Доброе утро!"
+    weather_advice = lines[1] if len(lines) > 1 else "Подготовьтесь к предстоящему дню."
+    outfit_advice = lines[2] if len(lines) > 2 else "Обычная одежда по сезону"
+
+    if not simple_greeting or not weather_advice:
+        logger.error("❌ AI returned incomplete response, using fallback")
+        simple_greeting = "Доброе утро!"
+        weather_advice = "Подготовьтесь к переменчивой погоде."
+        outfit_advice = "Обычная одежда по сезону"
+
+    logger.info(f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice[:50]}...")
+
+    # Build full message: greeting + quote + weather advice + weather + news + gwp + task list
+    if chat_id is None:
+        chat_id = get_secret("TELEGRAM_CHAT_ID")
+
+    message_lines = [simple_greeting, ""]
+
+    # Add quote of the day
+    logger.info("Fetching quote of the day")
+    quote = await get_quote_of_day()
+    if quote:
+        message_lines.append(f"✨ <i>\"{quote['text']}\"</i>")
+        message_lines.append(f"<i>— {quote['author']}</i>")
+        message_lines.append("")
+    else:
+        logger.warning("Quote fetch failed")
+
+    # Add AI weather advice and outfit recommendation
+    message_lines.append(weather_advice)
+    message_lines.append(f"👕 {outfit_advice}")
+    message_lines.append("")
+
+    # Add weather by periods
+    logger.info("Formatting weather by periods")
+    if weather:
+        weather_str = _format_weather(weather)
+        message_lines.append(weather_str)
+        message_lines.append("")
+    else:
+        message_lines.append("Погода недоступна")
+        message_lines.append("")
+
+    # Add air quality in Tbilisi
+    logger.info("Fetching air quality")
+    air_quality = await get_air_quality_tbilisi()
+    if air_quality:
+        aqi = air_quality.get("aqi", "?")
+        desc = air_quality.get("description", "")
+        pm25 = air_quality.get("pm25")
+        pm25_str = f", PM2.5: {pm25:.1f}" if pm25 else ""
+        message_lines.append(f"💨 Качество воздуха: AQI {aqi} {desc}{pm25_str}")
+        message_lines.append("")
+    else:
+        logger.warning("Air quality fetch failed")
+        message_lines.append("💨 Качество воздуха: недоступно")
+        message_lines.append("")
+
+    # Check for today's holidays and events
+    logger.info("Checking for holidays and events")
+    today_holidays, today_events = await asyncio.gather(
+        get_today_holidays(),
+        get_today_events(),
+        return_exceptions=True,
+    )
+
+    if not isinstance(today_holidays, Exception) and today_holidays:
+        for holiday_text, emoji in today_holidays:
+            message_lines.append(f"{holiday_text}")
+    if not isinstance(today_events, Exception) and today_events:
+        for event_text in today_events:
+            message_lines.append(f"{event_text}")
+    if (not isinstance(today_holidays, Exception) and today_holidays) or (not isinstance(today_events, Exception) and today_events):
+        message_lines.append("")
+
+    # Check GWP for works on Vazha Iverievi
+    logger.info("Checking GWP for works on Vazha Iverievi street")
+    gwp_works = await check_gwp_works()
+    if gwp_works:
+        message_lines.append("Планируются работы на Важа Ивериели:")
+        for work in gwp_works:
+            message_lines.append(f"  {work}")
+        message_lines.append("")
+    else:
+        logger.info("No scheduled works on Vazha Iverievi")
+
+    # Fetch and add news via ChatGPT selection
+    logger.info("Fetching recent news from RSS feeds (12 hours)")
+    news_items = await get_recent_news(hours=12)
+    logger.info(f"✓ News fetched: {len(news_items)} items found (last 12 hours)")
+
+    if news_items:
+        logger.info("Sending all news to ChatGPT for selection and summarization")
+        selected_with_indices = await select_and_summarize_news_with_gpt(news_items, user_id)
+
+        if selected_with_indices:
+            logger.info(f"✓ ChatGPT selected {len(selected_with_indices)} news items")
+
+            # Match indices back to original news items and format with URLs
+            message_lines.append("Новости:")
+            message_lines.append("")
+
+            for i, item in enumerate(selected_with_indices, 1):
+                idx = item["index"]
+                category = item["category"]
+                summary = item["summary"]
+                description_ru = item.get("description_ru", "")
+
+                # Get original news item by index (with safety check)
+                if 0 <= idx < len(news_items):
+                    original_news = news_items[idx]
+                    source = original_news.get("source", "Unknown")
+                    url = original_news.get("url", "")
+
+                    # Format: <a href="url">Source</a>: summary + translated description
+                    news_text = f"{i}. <a href=\"{url}\">{source}</a>: {summary}" if url else f"{i}. {source}: {summary}"
+
+                    # Add translated description if available
+                    if description_ru:
+                        news_text += f" {description_ru}"
+
+                    message_lines.append(news_text)
+                    message_lines.append("")
+
+                    logger.info(f"  [{i}] {category}: {summary[:60]}... | {source}")
+                else:
+                    logger.warning(f"Invalid index {idx} for news selection, skipping")
+
+        else:
+            logger.warning("⚠️  ChatGPT news selection failed, showing placeholder")
+            message_lines.append("Новости:")
+            message_lines.append("(новости недоступны)")
+            message_lines.append("")
+    else:
+        logger.warning("No news items fetched from RSS feeds")
+        message_lines.append("Новости:")
+        message_lines.append("(новости недоступны)")
+        message_lines.append("")
+
+    # Tasks are already filtered by database to when_date <= today or NULL
+    # Just use them as-is (no additional date filtering needed)
+    today_tasks = tasks
+    logger.info(f"Tasks loaded: {len(today_tasks)} tasks ready for today")
+
+    # Sort tasks by importance
+    today_tasks_sorted = sorted(today_tasks, key=score_task_importance, reverse=True)
+    logger.info(f"Sorted {len(today_tasks_sorted)} tasks by importance")
+
+    # Get AI explanations for tasks with weather and profile context
+    task_explanations = {}
+    if today_tasks_sorted:
+        # Convert profile to dict for AI context
+        profile_dict = None
+        if user_profile:
+            profile_dict = {
+                "wake_time": user_profile.wake_time,
+                "sleep_time": user_profile.sleep_time,
+                "preferences": user_profile.preferences,
+                "timezone": user_profile.timezone,
+            }
+
+        explanations_result = await get_task_explanations(
+            today_tasks_sorted,
+            weather=weather,
+            profile=profile_dict
+        )
+        if not isinstance(explanations_result, Exception):
+            task_explanations = explanations_result
+            logger.info(f"Generated explanations for {len(task_explanations)} tasks")
+        else:
+            logger.warning(f"Failed to generate task explanations: {explanations_result}")
+
+    # Process and organize tasks
+    if today_tasks_sorted:
+        # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
+        urgent_tasks = [t for t in today_tasks_sorted if t.is_urgent or _is_task_urgent_by_keywords(t)]
+        non_urgent_tasks = [t for t in today_tasks_sorted if not t.is_urgent and not _is_task_urgent_by_keywords(t)]
+
+        # Show urgent tasks
+        if urgent_tasks:
+            message_lines.append(f"СРОЧНЫЕ ({len(urgent_tasks)} задач):")
+            for task in urgent_tasks:
+                name = task.what or task.raw_text[:50]
+                task_data = task_explanations.get(task.id, {})
+                explanation = task_data.get("explanation", "")
+                time_minutes = task_data.get("time_minutes", 30)
+
+                message_lines.append(f"• {name} ({time_minutes} мин)")
+                if explanation:
+                    message_lines.append(f"  └ {explanation}")
+
+                logger.info(f"  Urgent task: {name} | {time_minutes}min")
+
+            message_lines.append("")
+
+        # Show non-urgent tasks if available
+        if non_urgent_tasks:
+            message_lines.append(f"НЕСРОЧНЫЕ (если захочешь взяться):")
+            display_non_urgent = non_urgent_tasks[:3]  # Show top 3 non-urgent
+
+            if len(non_urgent_tasks) > 3:
+                message_lines.append(f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n")
+
+            for task in display_non_urgent:
+                name = task.what or task.raw_text[:50]
+                task_data = task_explanations.get(task.id, {})
+                explanation = task_data.get("explanation", "")
+                time_minutes = task_data.get("time_minutes", 30)
+
+                message_lines.append(f"• {name} ({time_minutes} мин)")
+                if explanation:
+                    message_lines.append(f"  └ {explanation}")
+
+                logger.info(f"  Non-urgent task: {name} | {time_minutes}min")
+
+            message_lines.append("")
+    else:
+        message_lines.append("Дел на сегодня нет.")
+        logger.info("No tasks for today")
+        message_lines.append("")
+
+    # Add exchange rates with % changes
+    logger.info("Fetching exchange rates with changes")
+    rates = await get_crypto_and_forex_rates()
+    if rates:
+        message_lines.append("Курсы валют:")
+
+        def format_currency(value: float, decimals: int = 2) -> str:
+            """Format number with space as thousands separator."""
+            if value is None:
+                return "N/A"
+            if decimals == 5:
+                formatted = f"{value:,.5f}".rstrip('0').rstrip('.')
+            else:
+                formatted = f"{value:,.2f}".rstrip('0').rstrip('.')
+            return formatted.replace(',', ' ')
+
+        def format_change(change_24h, change_30d) -> str:
+            """Format percentage changes with arrow emojis."""
+            if change_24h is None or change_30d is None:
+                return ""
+            arrow_24h = "↑" if change_24h >= 0 else "↓"
+            arrow_30d = "↑" if change_30d >= 0 else "↓"
+            return f" ({arrow_24h} {abs(change_24h):.1f}% for 24h, {arrow_30d} {abs(change_30d):.1f} % for 30d)"
+
+        # BTC
+        if rates.get("btc_usd"):
+            btc_str = format_currency(rates['btc_usd'], decimals=5)
+            change_str = format_change(rates.get("btc_change_24h"), rates.get("btc_change_30d"))
+            message_lines.append(f"BTC: {btc_str} USD{change_str}")
+
+        # ETH
+        if rates.get("eth_usd"):
+            eth_str = format_currency(rates['eth_usd'], decimals=5)
+            change_str = format_change(rates.get("eth_change_24h"), rates.get("eth_change_30d"))
+            message_lines.append(f"ETH: {eth_str} USD{change_str}")
+
+        # EUR
+        if rates.get("usd_eur") and rates['usd_eur'] > 0:
+            eur_usd = 1.0 / rates['usd_eur']
+            eur_str = format_currency(eur_usd, decimals=5)
+            logger.debug(f"EUR rates: usd_eur={rates.get('usd_eur')}, eur_change_24h={rates.get('eur_change_24h')}, eur_change_30d={rates.get('eur_change_30d')}")
+            change_str = format_change(rates.get("eur_change_24h"), rates.get("eur_change_30d"))
+            message_lines.append(f"EUR: {eur_str} USD{change_str}")
+
+        # RUB
+        if rates.get("usd_rub"):
+            rub_str = format_currency(rates['usd_rub'], decimals=2)
+            logger.debug(f"RUB rates: usd_rub={rates.get('usd_rub')}, rub_change_24h={rates.get('rub_change_24h')}, rub_change_30d={rates.get('rub_change_30d')}")
+            change_str = format_change(rates.get("rub_change_24h"), rates.get("rub_change_30d"))
+            message_lines.append(f"USD: {rub_str} RUB{change_str}")
+
+        message_lines.append("")
+    else:
+        logger.info("Failed to fetch rates")
+
+    # Check for water cuts on Vazha Ivereli street
+    logger.info("Checking for water cuts on Vazha Ivereli street")
+    water_cuts = await check_water_cuts()
+    message_lines.append("💧 Отключение воды:")
+    if water_cuts:
+        message_lines.append(water_cuts)
+    else:
+        message_lines.append("Отключений воды на Важа Ивериели не запланировано")
+        logger.info("No water cuts found on Vazha Ivereli street")
+    message_lines.append("")
+
+    # Check for football matches (Barcelona/Real Madrid priority)
+    logger.info("Checking for football matches today")
+    football_matches = await get_today_matches()
+
+    if football_matches and football_matches.get("matches"):
+        # Show football matches instead of Product Hunt
+        matches = football_matches["matches"]
+        match_type = football_matches.get("type", "match_of_day")
+
+        if match_type == "both":
+            message_lines.append("⚽ <b>Матчи сегодня</b> (Barcelona & Real Madrid):")
+        elif match_type == "barcelona":
+            message_lines.append("🔵 <b>Barcelona сегодня</b>:")
+        elif match_type == "real_madrid":
+            message_lines.append("⚪ <b>Real Madrid сегодня</b>:")
+        elif match_type == "match_of_day":
+            message_lines.append("⚽ <b>Матч дня</b>:")
+        else:
+            message_lines.append("⚽ <b>Матчи сегодня</b>:")
+
+        for match in matches:
+            home = match.get("home", "Unknown")
+            away = match.get("away", "Unknown")
+            time = match.get("time", "TBD")
+            league = match.get("league", "")
+            emoji = match.get("emoji", "⚽")
+
+            message_lines.append(f"{emoji} {home} vs {away} | {time}")
+            if league:
+                message_lines.append(f"<i>{league}</i>")
+
+        message_lines.append("")
+        product = None
+    else:
+        # No matches - fetch Product Hunt as fallback
+        logger.info("No football matches, fetching Product Hunt instead")
+        try:
+            product = await get_top_product()
+
+            if product:
+                message_lines.append("🚀 <b>Product Hunt</b> (новое на рынке):")
+                message_lines.append(f"<a href=\"{product['url']}\">{product['name']}</a>")
+                message_lines.append(product['description'][:150])
+                message_lines.append("")
+                logger.info(f"✓ Product Hunt shown: {product['name']}")
+            else:
+                logger.warning("Product Hunt fetch returned None")
+        except Exception as e:
+            logger.error(f"Failed to fetch Product Hunt: {e}")
+
+    # Add Content recommendation
+    logger.info("Fetching content recommendation")
+    content = await get_content_recommendation()
+
+    if not isinstance(content, Exception) and content:
+        emoji = content.get("emoji", "📺")
+        title = content.get("title", "")
+        creator = content.get("creator", "")
+        description = content.get("description", "")
+        url = content.get("url", "")
+        message_lines.append(f"<b>{emoji} Для вас</b> ({content['type']}):")
+        if url:
+            message_lines.append(f"<b><a href=\"{url}\">{title}</a></b>")
+        else:
+            message_lines.append(f"<b>{title}</b>")
+        message_lines.append(f"<i>{creator}</i>")
+        message_lines.append(description[:100])
+        message_lines.append("")
+
+    final_message = "\n".join(message_lines)
+    logger.info(f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}")
+
+    # Check Telegram message length limit (4096 chars)
+    MAX_TELEGRAM_LENGTH = 4000  # slightly under 4096 to be safe
+    if len(final_message) > MAX_TELEGRAM_LENGTH:
+        logger.warning(f"⚠️  Digest message exceeds limit ({len(final_message)}/4096), splitting...")
+        # Split by major sections
+        parts = []
+        current_part = []
+        current_length = 0
+
+        for line in message_lines:
+            line_len = len(line) + 1  # +1 for newline
+            if current_length + line_len > MAX_TELEGRAM_LENGTH and current_part:
+                parts.append("\n".join(current_part))
+                current_part = [line]
+                current_length = line_len
+            else:
+                current_part.append(line)
+                current_length += line_len
+
+        if current_part:
+            parts.append("\n".join(current_part))
+
+        logger.info(f"Split into {len(parts)} messages")
+        for i, part in enumerate(parts, 1):
+            await bot.send_message(
+                chat_id=chat_id,
+                text=part,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            logger.info(f"✓ Sent part {i}/{len(parts)}")
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=final_message,
+            parse_mode="HTML",
+            disable_web_page_preview=True
+        )
+        logger.info(f"✓ Digest sent in single message")
+
+    logger.info(f"✓✓ Morning digest sent successfully for user {user_id}")
+
+
+def _format_weather(weather: dict) -> str:
+    """Format weather data by periods (morning/day/evening/night)."""
+    if not weather:
+        return "неизвестная погода"
+
+    if not isinstance(weather, dict):
+        return "неизвестная погода"
+
+    # If it's old format (single dict with temperature), convert to string
+    if "temperature" in weather and not isinstance(weather.get("morning"), dict):
+        temp = weather.get("temperature", "?")
+        conditions = []
+        if weather.get("is_raining"):
+            conditions.append("дождь")
+        if weather.get("is_very_cold"):
+            conditions.append("холодно")
+        if weather.get("is_very_hot"):
+            conditions.append("жарко")
+        condition_str = ", ".join(conditions) if conditions else "переменная облачность"
+        return f"{condition_str}, {temp}°C"
+
+    # New format: by periods
+    lines = ["🌦️ Погода в Тбилиси:"]
+
+    periods = {
+        "morning": "Утро",
+        "day": "День",
+        "evening": "Вечер",
+        "night": "Ночь",
+    }
+
+    for period_key, period_label in periods.items():
+        if period_key in weather:
+            p = weather[period_key]
+            emoji = p.get("emoji", "🌥️")
+            condition = p.get("condition", "переменная облачность")
+            temp = p.get("temperature", "?")
+            lines.append(f"{emoji} {period_label}: {condition}, {temp}°C")
+
+    return "\n".join(lines)
+
+
+def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
+    """Initialize APScheduler with morning digest."""
+    global scheduler
+
+    if scheduler is not None:
+        logger.warning("Scheduler already initialized")
+        return scheduler
+
+    scheduler = AsyncIOScheduler()
+
+    # Morning digest at 09:00
+    scheduler.add_job(
+        morning_digest,
+        CronTrigger(hour=9, minute=0),
+        args=[bot, user_id, chat_id],
+        id="morning_digest",
+        name="Morning task digest",
+    )
+
+    logger.info("Scheduler initialized with morning digest (09:00)")
+    return scheduler
