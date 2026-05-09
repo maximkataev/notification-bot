@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chromium browser
-RUN python3 -m playwright install chromium
+# Install Playwright Chromium browser + system deps
+RUN python -m playwright install --with-deps chromium
 
 # Install Doppler CLI
 RUN apt-get update && apt-get install -y apt-transport-https ca-certificates curl gnupg && \
