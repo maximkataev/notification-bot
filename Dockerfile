@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y \
     libcups2 \
     libdrm2 \
     libdbus-1-3 \
+    libatspi2.0-0 \
     libxkbcommon0 \
     libx11-6 \
     libxcomposite1 \
