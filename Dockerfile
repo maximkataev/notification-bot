@@ -32,4 +32,4 @@ COPY . .
 RUN mkdir -p /app/data /app/logs
 
 # Run with Doppler
-CMD ["doppler", "run", "--", "python", "src/bot/main.py"]
+CMD ["doppler", "run", "--", "python", "-m", "src.bot.main"]
