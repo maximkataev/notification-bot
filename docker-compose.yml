@@ -10,8 +10,8 @@ services:
       - LOG_LEVEL=INFO
       - DOPPLER_TOKEN=${NOTIFICATION_BOT_DOPPLER_TOKEN}
     volumes:
-      - /opt/notification-bot/data:/app/data
-      - /opt/notification-bot/logs:/app/logs
+      - notification-bot-logs:/app/logs
+      - notification-bot-data:/app/data
     restart: on-failure
     # Logs:
     # - Docker: docker logs -f notification-bot
