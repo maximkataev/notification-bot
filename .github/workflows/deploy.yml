@@ -51,4 +51,4 @@ jobs:
           script: |
             echo "$DOCKER_ACCESS_TOKEN" | sudo docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
             cd /opt
-            sudo sh redeploy-notification-bot.sh
+            sudo sh redeploy.sh
