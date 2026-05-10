@@ -640,14 +640,14 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
 
     scheduler = AsyncIOScheduler()
 
-    # Morning digest at 09:00
+    # Morning digest at 04:00
     scheduler.add_job(
         morning_digest,
-        CronTrigger(hour=9, minute=0),
+        CronTrigger(hour=4, minute=0),
         args=[bot, user_id, chat_id],
         id="morning_digest",
         name="Morning task digest",
     )
 
-    logger.info("Scheduler initialized with morning digest (09:00)")
+    logger.info("Scheduler initialized with morning digest (04:00)")
     return scheduler

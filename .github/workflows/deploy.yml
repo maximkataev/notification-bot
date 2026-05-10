@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - "main"
+  workflow_dispatch:
 
 jobs:
   build-notification-bot:
@@ -33,22 +34,16 @@ jobs:
           cache-to: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/notification-bot:cache,mode=max
 
   redeploy:
-    name: Redeploy
+    name: Redeploy Notification Bot
     runs-on: ubuntu-latest
     needs: [build-notification-bot]
     steps:
-      - name: Restarting docker container
+      - name: Redeploy Notification Bot on server
         uses: appleboy/ssh-action@v1.0.3
-        env:
-          DOCKER_ACCESS_TOKEN: ${{ secrets.DOCKER_ACCESS_TOKEN }}
-          DOCKER_HUB_USERNAME: ${{ secrets.DOCKER_HUB_USERNAME }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_ADMIN_USER }}
           password: ${{ secrets.SERVER_ADMIN_PASSWORD }}
           port: ${{ secrets.SERVER_PORT }}
-          envs: DOCKER_ACCESS_TOKEN,DOCKER_HUB_USERNAME
           script: |
-            echo "$DOCKER_ACCESS_TOKEN" | sudo docker login -u "$DOCKER_HUB_USERNAME" --password-stdin
-            cd /opt
-            sudo sh redeploy.sh
+            /opt/redeploy-notification-bot.sh
