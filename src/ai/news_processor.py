@@ -285,7 +285,7 @@ async def select_and_summarize_news_with_gpt(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
-                    "model": "gpt-4o",
+                    "model": "gpt-5.4-mini",
                     "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
