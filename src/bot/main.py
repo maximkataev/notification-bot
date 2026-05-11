@@ -209,8 +209,50 @@ def setup_fastapi(
 
     @app.get("/health")
     async def health():
-        """Health check endpoint."""
-        return {"status": "ok", "mode": "webhook"}
+        """Comprehensive health check endpoint."""
+        from src.bot.handlers.health_handler import (
+            _check_database,
+            _check_openai,
+            _check_weather,
+            _check_news,
+            _check_exchange_rates,
+        )
+
+        # Run all checks in parallel
+        results = await asyncio.gather(
+            _check_database(),
+            _check_openai(),
+            _check_weather(),
+            _check_news(),
+            _check_exchange_rates(),
+        )
+
+        db_ok, db_msg = results[0]
+        openai_ok, openai_msg = results[1]
+        weather_ok, weather_msg = results[2]
+        news_ok, news_msg = results[3]
+        rates_ok, rates_msg = results[4]
+
+        all_ok = all([db_ok, openai_ok, weather_ok, news_ok, rates_ok])
+
+        return {
+            "status": "healthy" if all_ok else "degraded",
+            "mode": "webhook",
+            "checks": {
+                "database": db_ok,
+                "openai": openai_ok,
+                "weather": weather_ok,
+                "news": news_ok,
+                "exchange_rates": rates_ok,
+            },
+            "details": {
+                "database": db_msg,
+                "openai": openai_msg,
+                "weather": weather_msg,
+                "news": news_msg,
+                "exchange_rates": rates_msg,
+            },
+        }
 
     return app
 
