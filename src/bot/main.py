@@ -183,14 +183,13 @@ def setup_fastapi(
     logger.info(f"📍 Webhook path configured: {webhook_path}")
     logger.info(f"📍 Webhook URL from Telegram: {webhook_url}")
 
-    @app.post(webhook_path)
-    async def webhook(request: Request):
-        """Handle Telegram webhook updates."""
+    async def process_webhook(request: Request):
+        """Process Telegram webhook update."""
         try:
             # Verify secret (constant-time comparison to prevent timing attacks)
             secret = request.headers.get("X-Telegram-Bot-API-Secret-Token", "")
             if not hmac.compare_digest(secret, webhook_secret):
-                logger.warning("⚠️  Invalid webhook secret (first 8 chars: [REDACTED])")
+                logger.warning("⚠️  Invalid webhook secret")
                 raise HTTPException(status_code=401, detail="Invalid secret")
 
             # Parse update
@@ -206,6 +205,21 @@ def setup_fastapi(
         except Exception as e:
             logger.error(f"Error processing webhook update: {type(e).__name__}: {e}")
             return {"ok": False}
+
+    @app.post(webhook_path)
+    async def webhook(request: Request):
+        """Handle Telegram webhook updates at configured path."""
+        return await process_webhook(request)
+
+    @app.post("/webhook/{path:path}")
+    async def webhook_fallback(request: Request, path: str):
+        """Catch-all for webhook requests at unexpected paths."""
+        logger.warning(
+            f"⚠️  Webhook POST to unexpected path: /{path} "
+            f"(expected: {webhook_path})"
+        )
+        # Still try to process it in case it's a valid update
+        return await process_webhook(request)
 
     @app.get("/health")
     async def health():
