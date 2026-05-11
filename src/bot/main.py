@@ -1,4 +1,5 @@
 """Main bot entry point with aiogram + FastAPI webhooks."""
+
 import asyncio
 import logging
 import os
@@ -15,7 +16,14 @@ from src.bot.auth import AuthorizedOnly
 # Load .env file if it exists (for local development)
 load_dotenv()
 from src.db.database import init_db
-from src.bot.handlers import plan_handler, tasks_handler, profile_handler, ai_handler, news_handler, digest_handler
+from src.bot.handlers import (
+    plan_handler,
+    tasks_handler,
+    profile_handler,
+    ai_handler,
+    news_handler,
+    digest_handler,
+)
 from src.bot.scheduler import init_scheduler
 from src.workers.currency_monitor import CurrencyMonitor
 from src.workers.water_cut_monitor import WaterCutMonitor
@@ -31,9 +39,12 @@ webhook_secret: str = None
 
 class DebugMiddleware(BaseMiddleware):
     """Log all messages for debugging."""
+
     async def __call__(self, handler, event, data):
         if isinstance(event, types.Message):
-            logger.info(f"📨 Middleware: Got message '{event.text}' from user {event.from_user.id}")
+            logger.info(
+                f"📨 Middleware: Got message '{event.text}' from user {event.from_user.id}"
+            )
         return await handler(event, data)
 
 
@@ -148,12 +159,22 @@ async def register_webhook(bot: Bot, webhook_url: str) -> bool:
         return False
 
 
-def setup_fastapi(bot: Bot, dp: Dispatcher, webhook_url: str, webhook_secret: str) -> FastAPI:
+def setup_fastapi(
+    bot: Bot, dp: Dispatcher, webhook_url: str, webhook_secret: str
+) -> FastAPI:
     """Setup FastAPI app with webhook endpoint."""
     app = FastAPI(title="Telegram Bot Webhook")
 
     # Extract path from webhook URL (e.g., /telegram/webhook from https://example.com/telegram/webhook)
-    webhook_path = "/" + webhook_url.split("/", 3)[-1] if "/" in webhook_url else "/webhook"
+    # Split by "/" and take everything after the domain
+    parts = webhook_url.split("/", 3)  # ["https:", "", "example.com", "path/to/webhook"]
+    if len(parts) > 3 and parts[3]:  # Has a path component
+        webhook_path = "/" + parts[3]
+    else:
+        webhook_path = "/webhook"  # Default path
+
+    logger.info(f"📍 Webhook path configured: {webhook_path}")
+    logger.info(f"📍 Webhook URL from Telegram: {webhook_url}")
 
     @app.post(webhook_path)
     async def webhook(request: Request):
@@ -184,6 +205,27 @@ def setup_fastapi(bot: Bot, dp: Dispatcher, webhook_url: str, webhook_secret: st
         """Health check endpoint."""
         return {"status": "ok", "mode": "webhook"}
 
+    @app.post("/")
+    async def webhook_fallback(request: Request):
+        """Fallback webhook handler on root path (in case webhook_path extraction fails)."""
+        logger.warning("⚠️  Webhook fallback handler triggered on / - path extraction may be incorrect")
+        try:
+            secret = request.headers.get("X-Telegram-Bot-API-Secret-Token")
+            if secret != webhook_secret:
+                logger.warning(f"⚠️  Invalid webhook secret in fallback: {secret}")
+                raise HTTPException(status_code=401, detail="Invalid secret")
+
+            update_data = await request.json()
+            update = types.Update(**update_data)
+            await dp.feed_update(bot, update)
+            return {"ok": True}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in fallback webhook: {type(e).__name__}: {e}")
+            return {"ok": False, "error": str(e)}
+
     return app
 
 
@@ -213,7 +255,9 @@ async def main():
     webhook_secret = get_secret("WEBHOOK_SECRET")
 
     if not webhook_url or not webhook_port or not webhook_secret:
-        raise ValueError("WEBHOOK_URL, WEBHOOK_PORT, or WEBHOOK_SECRET not found in Doppler")
+        raise ValueError(
+            "WEBHOOK_URL, WEBHOOK_PORT, or WEBHOOK_SECRET not found in Doppler"
+        )
 
     webhook_port = int(webhook_port)
 
@@ -242,7 +286,9 @@ async def main():
         logger.info(f"Using TELEGRAM_USER_ID: {user_id}")
     except:
         user_id = chat_id
-        logger.warning(f"⚠️  TELEGRAM_USER_ID not set, using TELEGRAM_CHAT_ID ({chat_id}). If bot is in group, set TELEGRAM_USER_ID to your Telegram user ID.")
+        logger.warning(
+            f"⚠️  TELEGRAM_USER_ID not set, using TELEGRAM_CHAT_ID ({chat_id}). If bot is in group, set TELEGRAM_USER_ID to your Telegram user ID."
+        )
 
     logger.info(f"Scheduler config: chat_id={chat_id}, user_id={user_id}")
     scheduler = init_scheduler(bot, user_id, chat_id)

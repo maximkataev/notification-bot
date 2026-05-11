@@ -10,18 +10,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, '/Users/maximkataev/Desktop/notification-bot')
+sys.path.insert(0, "/Users/maximkataev/Desktop/notification-bot")
 
 
 async def main():
     """Test news processor."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST: News Processor with ChatGPT")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         # Get recent news
         from src.workers.news_fetcher import get_recent_news
+
         logger.info("\n1️⃣  Fetching news from RSS...")
         news_items = await get_recent_news(hours=12)
         logger.info(f"✓ Fetched {len(news_items)} news items")
@@ -47,14 +48,14 @@ async def main():
 
         logger.info(f"\n✓ ChatGPT selected {len(selected)} news items:")
         for item in selected:
-            idx = item['index']
-            category = item['category']
-            summary = item['summary']
-            description = item.get('description_ru', '')
+            idx = item["index"]
+            category = item["category"]
+            summary = item["summary"]
+            description = item.get("description_ru", "")
 
             original = news_items[idx]
-            source = original['source']
-            url = original['url']
+            source = original["source"]
+            url = original["url"]
 
             logger.info(f"\n  📰 [{category}] {source}")
             logger.info(f"     Title (idx={idx}): {original['title'][:60]}...")
@@ -63,9 +64,9 @@ async def main():
                 logger.info(f"     Description (RU): {description[:80]}...")
             logger.info(f"     URL: {url}")
 
-        logger.info("\n" + "="*60)
+        logger.info("\n" + "=" * 60)
         logger.info("✓ TEST PASSED: News processor working!")
-        logger.info("="*60)
+        logger.info("=" * 60)
         return 0
 
     except Exception as e:

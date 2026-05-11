@@ -51,7 +51,9 @@ async def test_gwp_with_playwright():
                     if ".news" in selector:
                         elements = soup.select(selector)
                         if elements:
-                            print(f"✓ Found {len(elements)} element(s) matching '{name}'")
+                            print(
+                                f"✓ Found {len(elements)} element(s) matching '{name}'"
+                            )
                             for i, elem in enumerate(elements[:3], 1):
                                 text = elem.get_text(separator=" ", strip=True)
                                 print(f"  {i}. {text[:150]}...")
@@ -61,8 +63,18 @@ async def test_gwp_with_playwright():
                 page_text = soup.get_text(separator=" ", strip=True)
 
                 # Look for keywords
-                keywords = ["water", "cut", "scheduled", "street", "отключение", "вода", "улица"]
-                found_keywords = [kw for kw in keywords if kw.lower() in page_text.lower()]
+                keywords = [
+                    "water",
+                    "cut",
+                    "scheduled",
+                    "street",
+                    "отключение",
+                    "вода",
+                    "улица",
+                ]
+                found_keywords = [
+                    kw for kw in keywords if kw.lower() in page_text.lower()
+                ]
 
                 print(f"Keywords found on page: {found_keywords}\n")
 
@@ -85,6 +97,7 @@ async def test_gwp_with_playwright():
             except Exception as e:
                 logger.error(f"Error: {e}")
                 import traceback
+
                 traceback.print_exc()
             finally:
                 print()

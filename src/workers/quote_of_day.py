@@ -4,6 +4,7 @@ RULE: NO HARDCODED FALLBACKS
 If all API sources fail, return None (no quote section in digest).
 Better to skip the block than show fake data.
 """
+
 import logging
 from typing import Optional, Dict, Any
 import httpx
@@ -113,12 +114,16 @@ async def get_quote_of_day() -> Optional[Dict[str, Any]]:
             logger.debug(f"Trying quote source: {source_name}")
             quote = await source_func()
             if quote and quote.get("text") and len(quote["text"]) > 10:
-                logger.info(f"✓ Quote fetched from {source_name}: {quote['text'][:50]}...")
+                logger.info(
+                    f"✓ Quote fetched from {source_name}: {quote['text'][:50]}..."
+                )
                 return quote
         except Exception as e:
             logger.debug(f"Failed to fetch from {source_name}: {type(e).__name__}")
             continue
 
     # All API sources exhausted - return None (no quote block in digest)
-    logger.warning("All quote APIs unavailable, skipping quote block (no hardcoded fallback)")
+    logger.warning(
+        "All quote APIs unavailable, skipping quote block (no hardcoded fallback)"
+    )
     return None

@@ -1,4 +1,5 @@
 """SQLite database management."""
+
 import aiosqlite
 import logging
 from pathlib import Path
@@ -53,6 +54,7 @@ async def init_db():
 
         await db.commit()
         logger.info("Database initialized")
+
 
 # User Profile operations
 async def get_user_profile(user_id: int) -> UserProfile:
@@ -223,4 +225,3 @@ async def reset_news_prompt(user_id: int):
         )
         await db.commit()
         logger.info(f"✓ News prompt reset for user {user_id}")
-

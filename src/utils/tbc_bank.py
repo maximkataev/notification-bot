@@ -1,4 +1,5 @@
 """Exchange rate fetching from multiple open APIs."""
+
 import httpx
 from typing import Optional
 import logging

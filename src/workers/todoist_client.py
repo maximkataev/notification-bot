@@ -27,7 +27,7 @@ async def get_project_id(token: str) -> Optional[str]:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(
                 f"{TODOIST_API_URL}/projects",
-                headers={"Authorization": f"Bearer {token}"}
+                headers={"Authorization": f"Bearer {token}"},
             )
             response.raise_for_status()
             data = response.json()
@@ -62,7 +62,7 @@ async def get_todoist_tasks() -> List[Task]:
             response = await client.get(
                 f"{TODOIST_API_URL}/tasks",
                 headers={"Authorization": f"Bearer {token}"},
-                params={"project_id": project_id}
+                params={"project_id": project_id},
             )
             response.raise_for_status()
             data = response.json()
@@ -106,13 +106,19 @@ async def get_todoist_tasks() -> List[Task]:
 
                 # Check if outdoor (label "outdoor" or "на улице")
                 labels = todoist_task.get("labels", [])
-                is_outdoor = any(label.lower() in ["outdoor", "на улице"] for label in labels)
+                is_outdoor = any(
+                    label.lower() in ["outdoor", "на улице"] for label in labels
+                )
 
                 # Convert Todoist string ID to a stable integer
                 task_id_str = str(todoist_task.get("id", ""))
                 try:
                     # Try to parse as int if it's numeric
-                    task_id = int(task_id_str) if task_id_str.isdigit() else abs(hash(task_id_str)) % (2**31)
+                    task_id = (
+                        int(task_id_str)
+                        if task_id_str.isdigit()
+                        else abs(hash(task_id_str)) % (2**31)
+                    )
                 except ValueError:
                     task_id = abs(hash(task_id_str)) % (2**31)
 
@@ -142,7 +148,7 @@ async def create_todoist_task(
     content: str,
     due_date: Optional[str] = None,
     priority: int = 1,
-    labels: Optional[list] = None
+    labels: Optional[list] = None,
 ) -> Optional[str]:
     """Create a new task in Todoist 'Личное' project.
 
@@ -183,12 +189,14 @@ async def create_todoist_task(
             response = await client.post(
                 f"{TODOIST_API_URL}/tasks",
                 headers={"Authorization": f"Bearer {token}"},
-                json=task_payload
+                json=task_payload,
             )
             response.raise_for_status()
             task_data = response.json()
             task_id = task_data.get("id")
-            logger.info(f"Created Todoist task: {task_id} | due_date={due_date} | priority={priority}")
+            logger.info(
+                f"Created Todoist task: {task_id} | due_date={due_date} | priority={priority}"
+            )
 
             # Return Todoist web URL
             # Note: Todoist uses task ID strings in URLs

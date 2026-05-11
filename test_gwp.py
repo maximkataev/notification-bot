@@ -34,11 +34,11 @@ async def get_all_water_cuts():
 
             # Try different selectors to find articles
             articles = (
-                soup.find_all("div", class_="item-news") or
-                soup.find_all("article") or
-                soup.find_all("div", class_="news-item") or
-                soup.find_all("div", class_="news") or
-                soup.find_all("li", class_="news")
+                soup.find_all("div", class_="item-news")
+                or soup.find_all("article")
+                or soup.find_all("div", class_="news-item")
+                or soup.find_all("div", class_="news")
+                or soup.find_all("li", class_="news")
             )
 
             print(f"Found {len(articles)} article(s)\n")
@@ -60,7 +60,9 @@ async def get_all_water_cuts():
                             break
 
                     if not title:
-                        title_elem = article.find("a", class_="title") or article.find("a")
+                        title_elem = article.find("a", class_="title") or article.find(
+                            "a"
+                        )
                         if title_elem:
                             title = title_elem.get_text(strip=True)
 
@@ -94,9 +96,9 @@ async def check_vazha_iverievi():
 
 
 async def main():
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("GWP PARSER TEST")
-    print("="*60)
+    print("=" * 60)
 
     await get_all_water_cuts()
     await check_vazha_iverievi()

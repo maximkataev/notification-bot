@@ -10,14 +10,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, '/Users/maximkataev/Desktop/notification-bot')
+sys.path.insert(0, "/Users/maximkataev/Desktop/notification-bot")
 
 
 async def main():
     """Test digest formatting."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST: Digest Message Formatting")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.db.database import init_db
@@ -29,13 +29,14 @@ async def main():
 
         # Get real weather
         from src.ai.weather_aggregator import get_aggregated_weather
+
         logger.info("\n1️⃣  Testing weather formatting...")
         weather = await get_aggregated_weather()
 
         if weather:
             formatted_weather = _format_weather(weather)
             logger.info(f"✓ Weather formatted:")
-            for line in formatted_weather.split('\n'):
+            for line in formatted_weather.split("\n"):
                 logger.info(f"  {line}")
         else:
             logger.warning("Weather unavailable")
@@ -45,15 +46,16 @@ async def main():
         rates = await get_crypto_and_forex_rates()
 
         if rates:
+
             def format_currency(value: float, decimals: int = 2) -> str:
                 """Format number with space as thousands separator."""
                 if value is None:
                     return "N/A"
                 if decimals == 5:
-                    formatted = f"{value:,.5f}".rstrip('0').rstrip('.')
+                    formatted = f"{value:,.5f}".rstrip("0").rstrip(".")
                 else:
-                    formatted = f"{value:,.2f}".rstrip('0').rstrip('.')
-                return formatted.replace(',', ' ')
+                    formatted = f"{value:,.2f}".rstrip("0").rstrip(".")
+                return formatted.replace(",", " ")
 
             def format_change(change_24h, change_30d) -> str:
                 """Format percentage changes."""
@@ -66,22 +68,26 @@ async def main():
             logger.info("✓ Currency formatted:")
 
             if rates.get("btc_usd"):
-                btc_str = format_currency(rates['btc_usd'], decimals=5)
-                change_str = format_change(rates.get("btc_change_24h"), rates.get("btc_change_30d"))
+                btc_str = format_currency(rates["btc_usd"], decimals=5)
+                change_str = format_change(
+                    rates.get("btc_change_24h"), rates.get("btc_change_30d")
+                )
                 logger.info(f"  BTC: {btc_str} USD{change_str}")
 
             if rates.get("eth_usd"):
-                eth_str = format_currency(rates['eth_usd'], decimals=5)
-                change_str = format_change(rates.get("eth_change_24h"), rates.get("eth_change_30d"))
+                eth_str = format_currency(rates["eth_usd"], decimals=5)
+                change_str = format_change(
+                    rates.get("eth_change_24h"), rates.get("eth_change_30d")
+                )
                 logger.info(f"  ETH: {eth_str} USD{change_str}")
 
-            if rates.get("usd_eur") and rates['usd_eur'] > 0:
-                eur_usd = 1.0 / rates['usd_eur']
+            if rates.get("usd_eur") and rates["usd_eur"] > 0:
+                eur_usd = 1.0 / rates["usd_eur"]
                 eur_str = format_currency(eur_usd, decimals=5)
                 logger.info(f"  EUR: {eur_str} USD")
 
             if rates.get("usd_rub"):
-                rub_str = format_currency(rates['usd_rub'], decimals=2)
+                rub_str = format_currency(rates["usd_rub"], decimals=2)
                 logger.info(f"  USD: {rub_str} RUB")
 
         else:
@@ -107,9 +113,9 @@ async def main():
         if not today_holidays and not today_events:
             logger.info("✓ No holidays or events today")
 
-        logger.info("\n" + "="*60)
+        logger.info("\n" + "=" * 60)
         logger.info("✓ TEST PASSED: All formatting works!")
-        logger.info("="*60)
+        logger.info("=" * 60)
         return 0
 
     except Exception as e:

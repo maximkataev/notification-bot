@@ -1,4 +1,5 @@
 """Fetch and parse news from RSS feeds."""
+
 import logging
 import re
 from datetime import datetime, timedelta
@@ -13,33 +14,31 @@ logger = logging.getLogger(__name__)
 def _clean_html(text: str) -> str:
     """Remove HTML tags and decode HTML entities."""
     # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r"<[^>]+>", "", text)
     # Decode HTML entities
     text = unescape(text)
     # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
+
 
 # Free RSS news feeds (verified working sources)
 RSS_FEEDS = [
     # Politics & Economics
-    "https://feeds.bloomberg.com/markets/news.rss",      # Bloomberg Markets
-    "https://www.politico.eu/feed/",                     # Politico Europe
-
+    "https://feeds.bloomberg.com/markets/news.rss",  # Bloomberg Markets
+    "https://www.politico.eu/feed/",  # Politico Europe
     # World News & Culture
-    "https://feeds.bbci.co.uk/news/rss.xml",             # BBC News
-    "https://www.theguardian.com/international/rss",     # The Guardian
-    "https://feeds.npr.org/1001/rss.xml",                # NPR News (culture, society, good news)
-
+    "https://feeds.bbci.co.uk/news/rss.xml",  # BBC News
+    "https://www.theguardian.com/international/rss",  # The Guardian
+    "https://feeds.npr.org/1001/rss.xml",  # NPR News (culture, society, good news)
     # Technology & AI (for tech-savvy analyst)
-    "https://techcrunch.com/feed/",                      # TechCrunch
-    "https://feeds.arstechnica.com/arstechnica/index",   # Ars Technica
-    "https://news.ycombinator.com/rss",                  # Hacker News
-    "https://www.theverge.com/rss/index.xml",            # The Verge (tech & gadgets)
-    "https://feeds.bloomberg.com/technology/news.rss",   # Bloomberg Technology
-
+    "https://techcrunch.com/feed/",  # TechCrunch
+    "https://feeds.arstechnica.com/arstechnica/index",  # Ars Technica
+    "https://news.ycombinator.com/rss",  # Hacker News
+    "https://www.theverge.com/rss/index.xml",  # The Verge (tech & gadgets)
+    "https://feeds.bloomberg.com/technology/news.rss",  # Bloomberg Technology
     # Russia & CIS
-    "https://meduza.io/rss/news",                        # Meduza (Russian news)
+    "https://meduza.io/rss/news",  # Meduza (Russian news)
 ]
 
 
@@ -120,7 +119,9 @@ async def get_recent_news(hours: int = 8) -> List[Dict[str, Any]]:
 
         except Exception as e:
             failed_feeds += 1
-            logger.warning(f"✗ Failed to fetch from {feed_url}: {type(e).__name__}: {e}")
+            logger.warning(
+                f"✗ Failed to fetch from {feed_url}: {type(e).__name__}: {e}"
+            )
             logger.debug(f"Full error:", exc_info=True)
             continue
 
@@ -132,8 +133,12 @@ async def get_recent_news(hours: int = 8) -> List[Dict[str, Any]]:
     # Track and warn about high failure rate
     failure_rate = failed_feeds / len(RSS_FEEDS) if RSS_FEEDS else 0
     if failure_rate > 0.5:
-        logger.error(f"⚠️  HIGH FEED FAILURE RATE: {failed_feeds}/{len(RSS_FEEDS)} feeds failed ({failure_rate*100:.1f}%)")
+        logger.error(
+            f"⚠️  HIGH FEED FAILURE RATE: {failed_feeds}/{len(RSS_FEEDS)} feeds failed ({failure_rate*100:.1f}%)"
+        )
     if not all_items:
-        logger.warning("⚠️  No news items fetched from any feed - digest will have no news section")
+        logger.warning(
+            "⚠️  No news items fetched from any feed - digest will have no news section"
+        )
 
     return all_items

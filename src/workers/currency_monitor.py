@@ -1,4 +1,5 @@
 """EUR/USD exchange rate monitor - multi-source, alert when rate exceeds 1.18."""
+
 import asyncio
 import logging
 from datetime import datetime
@@ -42,7 +43,10 @@ class CurrencyMonitor:
         if exceeded:
             now = datetime.now()
             # Send alert if never alerted OR 12h have passed since last alert
-            if self.last_alert_time is None or (now - self.last_alert_time).total_seconds() >= ALERT_COOLDOWN:
+            if (
+                self.last_alert_time is None
+                or (now - self.last_alert_time).total_seconds() >= ALERT_COOLDOWN
+            ):
                 sources_exceeded = result.get("sources_exceeded", [])
 
                 # Build message with source links
@@ -61,7 +65,9 @@ class CurrencyMonitor:
 
                 await self.bot.send_message(chat_id=self.chat_id, text=message)
                 self.last_alert_time = now
-                logger.info(f"Alert sent for rate {avg_rate:.5f} from sources: {sources_exceeded}")
+                logger.info(
+                    f"Alert sent for rate {avg_rate:.5f} from sources: {sources_exceeded}"
+                )
 
     async def run_loop(self) -> None:
         """Continuously monitor exchange rate from multiple sources."""

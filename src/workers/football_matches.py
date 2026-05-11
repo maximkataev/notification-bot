@@ -1,4 +1,5 @@
 """Fetch football (soccer) matches for today from API-Football."""
+
 import logging
 import httpx
 from typing import Optional, List, Dict, Any
@@ -11,9 +12,9 @@ API_FOOTBALL_BASE = "https://api.api-football.com/v3"
 
 # League IDs in API-Football
 LEAGUES = {
-    "La Liga": 140,           # Spanish La Liga
-    "Premier League": 39,     # English Premier League
-    "Ligue 1": 61,            # French Ligue 1
+    "La Liga": 140,  # Spanish La Liga
+    "Premier League": 39,  # English Premier League
+    "Ligue 1": 61,  # French Ligue 1
 }
 
 # Priority teams (sorted by importance for display)
@@ -21,15 +22,15 @@ PRIORITY_TEAMS = ["Barcelona", "Real Madrid", "Paris Saint-Germain"]
 
 # Key teams for "Match of the Day" (top teams in each league, sorted by priority)
 KEY_TEAMS = {
-    "La Liga": [
-        "Real Madrid", "Barcelona", "Atletico Madrid", "Sevilla", "Valencia"
-    ],
+    "La Liga": ["Real Madrid", "Barcelona", "Atletico Madrid", "Sevilla", "Valencia"],
     "Premier League": [
-        "Manchester City", "Manchester United", "Liverpool", "Arsenal", "Chelsea"
+        "Manchester City",
+        "Manchester United",
+        "Liverpool",
+        "Arsenal",
+        "Chelsea",
     ],
-    "Ligue 1": [
-        "Paris Saint-Germain", "AS Monaco", "Marseille", "Lille"
-    ]
+    "Ligue 1": ["Paris Saint-Germain", "AS Monaco", "Marseille", "Lille"],
 }
 
 
@@ -51,7 +52,7 @@ async def _try_api_football() -> Optional[Dict[str, Any]]:
                             "league": league_id,
                             "season": current_year,
                         },
-                        headers={"x-apisports-key": "test"}
+                        headers={"x-apisports-key": "test"},
                     )
 
                     if response.status_code != 200:
@@ -105,7 +106,7 @@ async def _try_alternative_football_source() -> Optional[Dict[str, Any]]:
             response = await client.get(
                 "https://www.api-football.com/demo/fixtures",
                 params={"date": today},
-                timeout=5.0
+                timeout=5.0,
             )
 
             if response.status_code == 200:
@@ -136,7 +137,9 @@ async def get_today_matches() -> Optional[Dict[str, Any]]:
         # Try main source first
         result = await _try_api_football()
         if result:
-            logger.info(f"✓ Got matches from API-Football: {len(result.get('matches', []))} match(es)")
+            logger.info(
+                f"✓ Got matches from API-Football: {len(result.get('matches', []))} match(es)"
+            )
             return result
 
         # Try alternative source
@@ -153,12 +156,15 @@ async def get_today_matches() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _sort_priority_matches(priority_matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _sort_priority_matches(
+    priority_matches: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     """Sort priority matches by PRIORITY_TEAMS order.
 
     If both teams are in PRIORITY_TEAMS, sort by home team position.
     If one team is priority, sort by that team position.
     """
+
     def get_priority_score(match: Dict[str, Any]) -> tuple:
         home = match.get("home", "")
         away = match.get("away", "")
@@ -233,7 +239,7 @@ def _parse_fixture(fixture: Dict, league_name: str) -> Optional[Dict[str, Any]]:
             "away": away_team,
             "time": time_part,
             "league": league_name,
-            "emoji": emoji
+            "emoji": emoji,
         }
 
     except Exception as e:

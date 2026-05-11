@@ -1,4 +1,5 @@
 """Fetch top product from Product Hunt."""
+
 import logging
 from typing import Optional, Dict, Any
 import feedparser
@@ -14,13 +15,18 @@ PRODUCT_HUNT_FEED = "https://www.producthunt.com/feed"
 def _clean_html(text: str) -> str:
     """Remove HTML tags and decode HTML entities."""
     # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r"<[^>]+>", "", text)
     # Decode HTML entities
     text = unescape(text)
     # Remove "Discussion | Link" patterns and similar
-    text = re.sub(r'\s*(?:Discussion|Comments?|More|Read more|View)\s*\|\s*(?:Link|Discuss|View|Comment)', '', text, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\s*(?:Discussion|Comments?|More|Read more|View)\s*\|\s*(?:Link|Discuss|View|Comment)",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -53,12 +59,14 @@ async def get_top_product() -> Optional[Dict[str, Any]]:
             title = entry.get("title", "Unknown")
             summary = entry.get("summary", "")
             description = _clean_html(summary)[:200]
-            candidates.append({
-                "index": i,
-                "title": title,
-                "description": description,
-                "url": entry.get("link", "")
-            })
+            candidates.append(
+                {
+                    "index": i,
+                    "title": title,
+                    "description": description,
+                    "url": entry.get("link", ""),
+                }
+            )
 
         if len(candidates) < 1:
             logger.warning("No valid candidates in Product Hunt feed")
@@ -82,6 +90,7 @@ async def get_top_product() -> Optional[Dict[str, Any]]:
             api_key = os.getenv("OPENAI_API_KEY")
             if not api_key:
                 from src.utils.doppler import get_secret
+
                 api_key = get_secret("OPENAI_API_KEY")
             return AsyncOpenAI(api_key=api_key)
 
@@ -105,7 +114,7 @@ async def get_top_product() -> Optional[Dict[str, Any]]:
         response = await get_openai_client().chat.completions.create(
             model="gpt-5.4-mini",
             max_completion_tokens=5,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         choice_text = response.choices[0].message.content.strip()
@@ -114,7 +123,9 @@ async def get_top_product() -> Optional[Dict[str, Any]]:
             if not (0 <= choice_idx < len(candidates)):
                 choice_idx = 0
         except ValueError:
-            logger.debug(f"Failed to parse GPT choice: {choice_text}, defaulting to first")
+            logger.debug(
+                f"Failed to parse GPT choice: {choice_text}, defaulting to first"
+            )
             choice_idx = 0
 
         selected = candidates[choice_idx]
@@ -124,7 +135,9 @@ async def get_top_product() -> Optional[Dict[str, Any]]:
             "description": selected["description"],
         }
 
-        logger.info(f"✓ Interesting product (GPT selected #{choice_idx+1}): {product['name']}")
+        logger.info(
+            f"✓ Interesting product (GPT selected #{choice_idx+1}): {product['name']}"
+        )
         return product
 
     except Exception as e:

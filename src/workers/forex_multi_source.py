@@ -1,4 +1,6 @@
 """Fetch EUR/USD from multiple sources for reliability."""
+
+import asyncio
 import logging
 from typing import Optional, Dict, Any
 import httpx
@@ -10,64 +12,77 @@ logger = logging.getLogger(__name__)
 EUR_USD_THRESHOLD = 1.18
 
 
-async def _fetch_from_exchangerate_api() -> Optional[float]:
-    """Fetch EUR/USD from exchangerate-api.com (free tier available)."""
+async def _fetch_from_exchangerate_api_v4() -> Optional[float]:
+    """Fetch EUR/USD from exchangerate-api.com v4 (free, no auth)."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                "https://v6.exchangerate-api.com/v6/latest/EUR",
-                params={"apikey": "free"}  # Free tier doesn't need key for some endpoints
+                "https://api.exchangerate-api.com/v4/latest/USD",
             )
             response.raise_for_status()
             data = response.json()
 
-            # Success response structure
-            if data.get("result") == "success":
-                rates = data.get("conversion_rates", {})
-                usd_rate = rates.get("USD")
-                if usd_rate:
-                    logger.debug(f"✓ exchangerate-api.com: EUR/USD = {usd_rate}")
-                    return usd_rate
+            rates = data.get("rates", {})
+            eur_rate = rates.get("EUR")
+            if eur_rate and eur_rate > 0:
+                # Convert USD→EUR to EUR→USD
+                eur_usd = 1.0 / eur_rate
+                logger.debug(f"✓ exchangerate-api.com v4: EUR/USD = {eur_usd}")
+                return eur_usd
             else:
-                logger.debug(f"API returned non-success: {data.get('result')}")
+                logger.debug(f"API returned invalid EUR rate: {eur_rate}")
                 return None
 
+    except httpx.TimeoutException:
+        logger.debug(f"exchangerate-api.com v4: timeout (10s)")
+        return None
     except Exception as e:
-        logger.debug(f"exchangerate-api.com failed: {type(e).__name__}")
+        logger.debug(f"exchangerate-api.com v4 failed: {type(e).__name__}: {str(e)[:100]}")
         return None
 
 
-async def _fetch_from_exchangerate_host() -> Optional[float]:
-    """Fetch EUR/USD from exchangerate.host (open-source, always free)."""
+async def _fetch_from_cbr_api() -> Optional[float]:
+    """Fetch EUR/USD from CBR API (Russian Central Bank - free)."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            # Get USD/RUB and EUR/RUB, then calculate EUR/USD
             response = await client.get(
-                "https://api.exchangerate.host/latest",
-                params={"base": "EUR", "symbols": "USD"}
+                "https://www.cbr-xml-daily.ru/daily_json.js",
             )
             response.raise_for_status()
             data = response.json()
 
-            if data.get("success"):
-                rates = data.get("rates", {})
-                usd_rate = rates.get("USD")
-                if usd_rate:
-                    logger.debug(f"✓ exchangerate.host: EUR/USD = {usd_rate}")
-                    return usd_rate
+            valutes = data.get("Valute", {})
+            usd_info = valutes.get("USD", {})
+            eur_info = valutes.get("EUR", {})
 
+            usd_value = usd_info.get("Value")  # RUB per USD
+            eur_value = eur_info.get("Value")  # RUB per EUR
+
+            if usd_value and eur_value and usd_value > 0:
+                eur_usd = eur_value / usd_value
+                logger.debug(f"✓ CBR API: EUR/USD = {eur_usd}")
+                return eur_usd
+            else:
+                logger.debug(f"CBR API returned invalid rates: USD={usd_value}, EUR={eur_value}")
+                return None
+
+    except httpx.TimeoutException:
+        logger.debug(f"CBR API: timeout (10s)")
+        return None
     except Exception as e:
-        logger.debug(f"exchangerate.host failed: {type(e).__name__}")
+        logger.debug(f"CBR API failed: {type(e).__name__}: {str(e)[:100]}")
         return None
 
 
 async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
     """
-    Fetch EUR/USD from multiple sources.
+    Fetch EUR/USD from multiple sources for redundancy.
 
     Returns:
         {
-            "eur_usd_source1": float,           # exchangerate-api.com
-            "eur_usd_source2": float,           # exchangerate.host
+            "eur_usd_source1": float,           # exchangerate-api.com v4
+            "eur_usd_source2": float,           # CBR API
             "eur_usd_avg": float,               # Average of available sources
             "timestamp": ISO datetime string,
             "sources_available": int,           # How many sources succeeded
@@ -79,31 +94,36 @@ async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
 
         # Fetch from both sources in parallel
         source1, source2 = await asyncio.gather(
-            _fetch_from_exchangerate_api(),
-            _fetch_from_exchangerate_host(),
-            return_exceptions=False
+            _fetch_from_exchangerate_api_v4(),
+            _fetch_from_cbr_api(),
+            return_exceptions=False,
         )
 
+        logger.debug(f"Fetch results: source1={source1}, source2={source2}")
+
         if source1 is None and source2 is None:
-            logger.warning("All EUR/USD sources failed")
+            logger.warning("⚠️  All EUR/USD sources failed (source1=None, source2=None)")
             return None
 
         # Calculate average from available sources
         available_rates = [r for r in [source1, source2] if r is not None]
-        avg_rate = sum(available_rates) / len(available_rates) if available_rates else None
+        avg_rate = (
+            sum(available_rates) / len(available_rates) if available_rates else None
+        )
 
         result = {
-            "eur_usd_source1": source1,  # exchangerate-api.com
-            "eur_usd_source2": source2,  # exchangerate.host
+            "eur_usd_source1": source1,  # exchangerate-api.com v4
+            "eur_usd_source2": source2,  # CBR API
             "eur_usd_avg": avg_rate,
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "sources_available": len(available_rates),
         }
 
-        logger.info(
-            f"✓ EUR/USD fetched: "
-            f"source1={source1}, source2={source2}, avg={avg_rate:.5f}"
-        )
+        if avg_rate:
+            logger.info(
+                f"✓ EUR/USD fetched: "
+                f"source1={source1}, source2={source2}, avg={avg_rate:.5f}"
+            )
 
         return result
 
@@ -112,7 +132,9 @@ async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
         return None
 
 
-async def check_eur_usd_threshold(threshold: float = EUR_USD_THRESHOLD) -> Optional[Dict[str, Any]]:
+async def check_eur_usd_threshold(
+    threshold: float = EUR_USD_THRESHOLD,
+) -> Optional[Dict[str, Any]]:
     """
     Check if EUR/USD exceeds threshold.
 
@@ -164,7 +186,3 @@ async def check_eur_usd_threshold(threshold: float = EUR_USD_THRESHOLD) -> Optio
     except Exception as e:
         logger.error(f"Failed to check threshold: {type(e).__name__}: {e}")
         return None
-
-
-# Required import
-import asyncio

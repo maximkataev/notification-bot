@@ -1,4 +1,5 @@
 """Data models for tasks and user profile."""
+
 from dataclasses import dataclass, field
 from typing import Optional
 from datetime import datetime
@@ -20,8 +21,12 @@ class Task:
     is_urgent: bool = False
     is_outdoor: bool = False
     is_recurring: bool = False
-    recurrence_pattern: Optional[str] = None  # e.g., "every_monday", "mon_wed_fri", "every_day"
-    recurrence_end_date: Optional[str] = None  # ISO format YYYY-MM-DD or None for indefinite
+    recurrence_pattern: Optional[str] = (
+        None  # e.g., "every_monday", "mon_wed_fri", "every_day"
+    )
+    recurrence_end_date: Optional[str] = (
+        None  # ISO format YYYY-MM-DD or None for indefinite
+    )
     constraints: Optional[str] = None  # Extra conditions/constraints
     status: str = "planned"  # planned | done | cancelled
     clarification_pending: bool = False

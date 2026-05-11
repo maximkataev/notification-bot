@@ -1,4 +1,5 @@
 """Handlers for AI rules management."""
+
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandObject
@@ -58,7 +59,9 @@ async def ai_add_command(message: types.Message, command: CommandObject):
     user_id = message.from_user.id
 
     rule_id = await add_ai_rule(user_id, rule_text)
-    await message.reply(f"✓ Правило #{rule_id} добавлено:\n\n'{rule_text}'\n\nАI будет учитывать это в следующих задачах.")
+    await message.reply(
+        f"✓ Правило #{rule_id} добавлено:\n\n'{rule_text}'\n\nАI будет учитывать это в следующих задачах."
+    )
     logger.info(f"AI rule added: #{rule_id} for user {user_id}: {rule_text}")
 
 

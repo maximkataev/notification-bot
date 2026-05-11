@@ -1,4 +1,5 @@
 """Aggregate weather data from multiple sources for accuracy."""
+
 import logging
 from typing import Optional, Dict, Any
 import httpx
@@ -96,9 +97,18 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
 
         # Simple approach: use current conditions for all periods
         weather_by_period = {
-            "night": {"temperature": round(temp - 3, 1), "wind_speed": round(wind * 0.8, 1)},
-            "morning": {"temperature": round(temp - 1, 1), "wind_speed": round(wind * 0.9, 1)},
-            "day": {"temperature": round(temp + 2, 1), "wind_speed": round(wind * 1.1, 1)},
+            "night": {
+                "temperature": round(temp - 3, 1),
+                "wind_speed": round(wind * 0.8, 1),
+            },
+            "morning": {
+                "temperature": round(temp - 1, 1),
+                "wind_speed": round(wind * 0.9, 1),
+            },
+            "day": {
+                "temperature": round(temp + 2, 1),
+                "wind_speed": round(wind * 1.1, 1),
+            },
             "evening": {"temperature": round(temp, 1), "wind_speed": round(wind, 1)},
         }
 

@@ -1,4 +1,5 @@
 """Main entry point - runs bot and currency monitor together."""
+
 import asyncio
 import logging
 from src.utils.doppler import get_secret

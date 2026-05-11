@@ -12,16 +12,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, '/Users/maximkataev/Desktop/notification-bot')
+sys.path.insert(0, "/Users/maximkataev/Desktop/notification-bot")
+
 
 async def test_news_fetcher():
     """Test RSS feed fetching."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 1: News Fetcher (RSS feeds)")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.workers.news_fetcher import get_recent_news
+
         news = await get_recent_news(hours=12)
         logger.info(f"✓ Fetched {len(news)} news items")
         if news:
@@ -36,18 +38,19 @@ async def test_news_fetcher():
 
 async def test_weather():
     """Test weather aggregation."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 2: Weather Aggregator")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.ai.weather_aggregator import get_aggregated_weather
+
         weather = await get_aggregated_weather()
         if weather:
             logger.info(f"✓ Weather fetched successfully")
             for period, data in weather.items():
-                temp = data.get('temperature', '?')
-                wind = data.get('wind_speed', '?')
+                temp = data.get("temperature", "?")
+                wind = data.get("wind_speed", "?")
                 logger.info(f"  {period}: {temp}°C, wind {wind} km/h")
         else:
             logger.warning("⚠️  Weather returned None")
@@ -59,12 +62,13 @@ async def test_weather():
 
 async def test_rates():
     """Test exchange rates."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 3: Exchange Rates")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.workers.rates_fetcher import get_crypto_and_forex_rates
+
         rates = await get_crypto_and_forex_rates()
         if rates:
             logger.info(f"✓ Rates fetched successfully")
@@ -82,12 +86,16 @@ async def test_rates():
 
 async def test_holidays():
     """Test holiday fetching."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 4: Holidays & Events")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
-        from src.workers.holidays import get_today_holidays, get_today_events, get_upcoming_holidays
+        from src.workers.holidays import (
+            get_today_holidays,
+            get_today_events,
+            get_upcoming_holidays,
+        )
 
         today_holidays = await get_today_holidays()
         today_events = await get_today_events()
@@ -110,9 +118,9 @@ async def test_holidays():
 
 async def test_gwp():
     """Test GWP works checker."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 5: GWP Works Checker")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.workers.gwp_checker import check_gwp_works, check_water_cuts
@@ -141,9 +149,9 @@ async def test_gwp():
 
 async def test_database():
     """Test database initialization."""
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST 6: Database")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     try:
         from src.db.database import init_db, get_user_profile
@@ -154,7 +162,9 @@ async def test_database():
         # Try to get a test user profile
         profile = await get_user_profile(user_id=123)
         if profile:
-            logger.info(f"✓ Got user profile: wake={profile.wake_time}, sleep={profile.sleep_time}")
+            logger.info(
+                f"✓ Got user profile: wake={profile.wake_time}, sleep={profile.sleep_time}"
+            )
 
         return True
     except Exception as e:
@@ -177,9 +187,9 @@ async def main():
     results["database"] = await test_database()
 
     # Summary
-    logger.info("\n" + "="*60)
+    logger.info("\n" + "=" * 60)
     logger.info("TEST SUMMARY")
-    logger.info("="*60)
+    logger.info("=" * 60)
 
     passed = sum(1 for v in results.values() if v)
     total = len(results)

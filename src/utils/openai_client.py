@@ -1,4 +1,5 @@
 """Lazy-initialized AsyncOpenAI client."""
+
 import os
 from openai import AsyncOpenAI
 from src.utils.doppler import get_secret

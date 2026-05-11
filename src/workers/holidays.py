@@ -1,4 +1,5 @@
 """Fetch holidays and special events from open APIs."""
+
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
@@ -10,7 +11,9 @@ logger = logging.getLogger(__name__)
 COUNTRIES = {"GE": "🇬🇪 Georgia", "RU": "🇷🇺 Russia", "CY": "🇨🇾 Cyprus"}
 
 
-async def _fetch_holidays_nager(country_code: str, year: int) -> Optional[List[Dict[str, Any]]]:
+async def _fetch_holidays_nager(
+    country_code: str, year: int
+) -> Optional[List[Dict[str, Any]]]:
     """Fetch holidays from Nager.Date API."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -66,7 +69,9 @@ async def get_today_holidays() -> Optional[List[tuple]]:
                 # Check if holiday is today
                 if holiday.get("date") == today.strftime("%Y-%m-%d"):
                     name = holiday.get("name", "Holiday")
-                    holiday_types = holiday.get("types", [])  # Types: Public, Bank, School, etc.
+                    holiday_types = holiday.get(
+                        "types", []
+                    )  # Types: Public, Bank, School, etc.
                     emoji = "🎉"  # Default emoji
 
                     # Add info about government offices being closed
@@ -75,7 +80,9 @@ async def get_today_holidays() -> Optional[List[tuple]]:
                         holiday_text += ". Государственные учреждения сегодня закрыты."
 
                     holidays.append((holiday_text, emoji))
-                    logger.info(f"Today's holiday: {name} in {country_name} (types: {holiday_types})")
+                    logger.info(
+                        f"Today's holiday: {name} in {country_name} (types: {holiday_types})"
+                    )
 
     return holidays if holidays else None
 
@@ -111,24 +118,34 @@ async def get_upcoming_holidays(days_ahead: int = 7) -> Optional[List[str]]:
 
                 if 0 < days_diff <= days_ahead:
                     name = holiday.get("name", "Holiday")
-                    upcoming.append(f"🎉 {country_name}: {name} (in {days_diff} day{'s' if days_diff != 1 else ''})")
+                    upcoming.append(
+                        f"🎉 {country_name}: {name} (in {days_diff} day{'s' if days_diff != 1 else ''})"
+                    )
 
     # Also check for upcoming DST
     dst_info = await _fetch_dst_dates()
     if dst_info:
 
         # Check DST start
-        dst_start_date = datetime.strptime(dst_info["dst_start_date"], "%m-%d").replace(year=today.year)
+        dst_start_date = datetime.strptime(dst_info["dst_start_date"], "%m-%d").replace(
+            year=today.year
+        )
         if today < dst_start_date <= today + timedelta(days=days_ahead):
             days_diff = (dst_start_date - today).days
             if days_diff > 0:
-                upcoming.append(f"{dst_info['dst_start_text']} (in {days_diff} day{'s' if days_diff != 1 else ''})")
+                upcoming.append(
+                    f"{dst_info['dst_start_text']} (in {days_diff} day{'s' if days_diff != 1 else ''})"
+                )
 
         # Check DST end
-        dst_end_date = datetime.strptime(dst_info["dst_end_date"], "%m-%d").replace(year=today.year)
+        dst_end_date = datetime.strptime(dst_info["dst_end_date"], "%m-%d").replace(
+            year=today.year
+        )
         if today < dst_end_date <= today + timedelta(days=days_ahead):
             days_diff = (dst_end_date - today).days
             if days_diff > 0:
-                upcoming.append(f"{dst_info['dst_end_text']} (in {days_diff} day{'s' if days_diff != 1 else ''})")
+                upcoming.append(
+                    f"{dst_info['dst_end_text']} (in {days_diff} day{'s' if days_diff != 1 else ''})"
+                )
 
     return upcoming if upcoming else None

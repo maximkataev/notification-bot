@@ -8,6 +8,7 @@ Strategy:
 
 RULE: NO HARDCODED FALLBACKS & NO HALLUCINATED LINKS
 """
+
 import logging
 from typing import Optional, Dict, Any
 from src.workers.content_parser import get_content_recommendation_with_review
@@ -46,7 +47,9 @@ async def get_content_recommendation() -> Optional[Dict[str, Any]]:
         emojis = {"video": "🎥", "podcast": "🎙️", "music": "🎵"}
         recommendation["emoji"] = emojis.get(recommendation.get("type"), "📺")
 
-        logger.info(f"✓ Selected: {recommendation['type']} - {recommendation['title'][:40]} by {recommendation['creator']}")
+        logger.info(
+            f"✓ Selected: {recommendation['type']} - {recommendation['title'][:40]} by {recommendation['creator']}"
+        )
         if recommendation.get("review"):
             logger.info(f"  Review: {recommendation['review'][:60]}")
 

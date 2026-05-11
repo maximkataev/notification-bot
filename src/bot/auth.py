@@ -1,4 +1,5 @@
 """Authorization utilities for bot commands."""
+
 import logging
 from typing import Optional
 from aiogram.filters import BaseFilter
@@ -36,6 +37,9 @@ class AuthorizedOnly(BaseFilter):
 
         if not is_authorized:
             logger.warning(f"❌ Unauthorized access attempt from user {user_id}")
-            await message.reply("❌ У тебя нет прав на использование этого бота.\n\nТвой ID: " + str(user_id))
+            await message.reply(
+                "❌ У тебя нет прав на использование этого бота.\n\nТвой ID: "
+                + str(user_id)
+            )
 
         return is_authorized

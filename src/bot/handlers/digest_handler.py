@@ -1,4 +1,5 @@
 """Handler for digest commands."""
+
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command
@@ -11,6 +12,7 @@ logger.info("🔧 digest_handler module loaded - starting imports")
 
 try:
     from src.bot.scheduler import morning_digest
+
     logger.info("✓ morning_digest imported successfully")
 except ImportError as e:
     logger.error(f"❌ Failed to import morning_digest: {e}")

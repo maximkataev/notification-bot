@@ -7,6 +7,7 @@ Sources:
 
 Fetches content from last 24 hours, summarizes with AI.
 """
+
 import logging
 import httpx
 import asyncio
@@ -136,7 +137,9 @@ async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
         all_memes = ru_memes + en_memes
 
         total = len(all_memes)
-        logger.info(f"✓ Fetched {total} fresh memes (RU: {len(ru_memes)}, EN: {len(en_memes)})")
+        logger.info(
+            f"✓ Fetched {total} fresh memes (RU: {len(ru_memes)}, EN: {len(en_memes)})"
+        )
 
         return all_memes[:max_results]
 
@@ -175,13 +178,15 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
         # Prepare list for AI
         meme_list = []
         for idx, meme in enumerate(memes, 1):
-            meme_list.append({
-                "index": idx,
-                "title": meme.get("title", ""),
-                "description": meme.get("description", ""),
-                "url": meme.get("url", ""),
-                "source": meme.get("source", ""),
-            })
+            meme_list.append(
+                {
+                    "index": idx,
+                    "title": meme.get("title", ""),
+                    "description": meme.get("description", ""),
+                    "url": meme.get("url", ""),
+                    "source": meme.get("source", ""),
+                }
+            )
 
         # Send to GPT-4o for summaries
         client = get_client()
@@ -191,7 +196,9 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
 Мемы:
 """
         for item in meme_list:
-            prompt += f"\n{item['index']}. {item['title']}\n   {item['description'][:200]}"
+            prompt += (
+                f"\n{item['index']}. {item['title']}\n   {item['description'][:200]}"
+            )
 
         prompt += f"""
 
@@ -209,7 +216,7 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
         response = client.messages.create(
             model="gpt-5.4-mini",
             max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         response_text = response.content[0].text.strip()
@@ -217,6 +224,7 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
 
         # Parse JSON response
         import json
+
         if "```json" in response_text:
             response_text = response_text.split("```json")[1].split("```")[0].strip()
         elif "```" in response_text:
@@ -231,13 +239,15 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
             idx = summary_item.get("index", 1) - 1
             if 0 <= idx < len(memes):
                 meme = memes[idx]
-                result.append({
-                    "title": meme.get("title", ""),
-                    "url": meme.get("url", ""),
-                    "source": meme.get("source", ""),
-                    "summary": summary_item.get("summary", ""),
-                    "language": meme.get("language", "en"),
-                })
+                result.append(
+                    {
+                        "title": meme.get("title", ""),
+                        "url": meme.get("url", ""),
+                        "source": meme.get("source", ""),
+                        "summary": summary_item.get("summary", ""),
+                        "language": meme.get("language", "en"),
+                    }
+                )
 
         logger.info(f"✓ Generated summaries for {len(result)} memes")
         return result if result else None

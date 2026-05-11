@@ -1,4 +1,5 @@
 """Telegram notification service."""
+
 import logging
 from telegram import Bot
 from src.utils.doppler import get_secret

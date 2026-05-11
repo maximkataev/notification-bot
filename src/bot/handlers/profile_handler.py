@@ -1,4 +1,5 @@
 """Handler for /me command (user profile)."""
+
 import logging
 from aiogram import Router, types
 from aiogram.filters import Command, CommandObject

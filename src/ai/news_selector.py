@@ -1,4 +1,5 @@
 """Filter and select real news by keywords - NO AI generation, only real RSS data."""
+
 import logging
 from typing import List, Dict, Any, Optional
 
@@ -9,30 +10,125 @@ DEFAULT_NEWS_PROMPT = "Выбрать новости, релевантные д�
 
 # Keywords for main news (economics, trading, geopolitics affecting markets)
 MAIN_NEWS_KEYWORDS = [
-    "stock", "market", "currency", "exchange", "rate", "price", "rub", "gel", "usd", "eur",
-    "crypto", "bitcoin", "ethereum", "sanctions", "tariff", "trade", "economy",
-    "inflation", "interest rate", "bank", "federal reserve", "ecb", "central bank",
-    "gdp", "earnings", "profit", "loss", "quarterly", "quarterly earnings",
-    "oil", "gas", "energy", "commodity", "valuation", "ipo", "merger", "acquisition",
-    "fed", "bernanke", "powell", "geopolitics", "iran", "russia", "war", "conflict",
-    "middle east", "ukraine", "gaza", "strait of hormuz", "navigation",
-    "russian", "moscow", "siberia", "gazprom", "rosneft", "sberbank", "yandex",
-    "georgia", "tbilisi", "caucasus", "caspian", "defense", "military",
+    "stock",
+    "market",
+    "currency",
+    "exchange",
+    "rate",
+    "price",
+    "rub",
+    "gel",
+    "usd",
+    "eur",
+    "crypto",
+    "bitcoin",
+    "ethereum",
+    "sanctions",
+    "tariff",
+    "trade",
+    "economy",
+    "inflation",
+    "interest rate",
+    "bank",
+    "federal reserve",
+    "ecb",
+    "central bank",
+    "gdp",
+    "earnings",
+    "profit",
+    "loss",
+    "quarterly",
+    "quarterly earnings",
+    "oil",
+    "gas",
+    "energy",
+    "commodity",
+    "valuation",
+    "ipo",
+    "merger",
+    "acquisition",
+    "fed",
+    "bernanke",
+    "powell",
+    "geopolitics",
+    "iran",
+    "russia",
+    "war",
+    "conflict",
+    "middle east",
+    "ukraine",
+    "gaza",
+    "strait of hormuz",
+    "navigation",
+    "russian",
+    "moscow",
+    "siberia",
+    "gazprom",
+    "rosneft",
+    "sberbank",
+    "yandex",
+    "georgia",
+    "tbilisi",
+    "caucasus",
+    "caspian",
+    "defense",
+    "military",
 ]
 
 # Keywords for sports news
 SPORTS_NEWS_KEYWORDS = [
-    "barcelona", "psg", "football", "soccer", "goal", "match", "score", "win", "loss",
-    "transfer", "player", "coach", "league", "premier league", "la liga", "serie a",
-    "champions league", "europa league", "hockey", "ice hockey", "nfl", "nba",
+    "barcelona",
+    "psg",
+    "football",
+    "soccer",
+    "goal",
+    "match",
+    "score",
+    "win",
+    "loss",
+    "transfer",
+    "player",
+    "coach",
+    "league",
+    "premier league",
+    "la liga",
+    "serie a",
+    "champions league",
+    "europa league",
+    "hockey",
+    "ice hockey",
+    "nfl",
+    "nba",
 ]
 
 # Keywords for good news (positive)
 GOOD_NEWS_KEYWORDS = [
-    "rescue", "saved", "discovery", "breakthrough", "cure", "vaccine", "medical",
-    "travel", "visa", "border", "open", "festival", "award", "achievement",
-    "help", "charity", "donate", "animals", "environment", "green", "recovery",
-    "russia", "georgian", "russian", "ukraine", "cyprus",
+    "rescue",
+    "saved",
+    "discovery",
+    "breakthrough",
+    "cure",
+    "vaccine",
+    "medical",
+    "travel",
+    "visa",
+    "border",
+    "open",
+    "festival",
+    "award",
+    "achievement",
+    "help",
+    "charity",
+    "donate",
+    "animals",
+    "environment",
+    "green",
+    "recovery",
+    "russia",
+    "georgian",
+    "russian",
+    "ukraine",
+    "cyprus",
 ]
 
 
@@ -63,11 +159,12 @@ def _extract_exclusion_keywords(custom_prompt: str) -> List[str]:
         return []
 
     # Extract text after "ИСКЛЮЧАЮ:"
-    exclude_text = custom_prompt[exclude_start + 9:]  # len("исключаю:") = 9
+    exclude_text = custom_prompt[exclude_start + 9 :]  # len("исключаю:") = 9
 
     # Split by comma and parentheses, clean up
     import re
-    items = re.split(r'[,()]+', exclude_text)
+
+    items = re.split(r"[,()]+", exclude_text)
 
     keywords = []
     for item in items:
@@ -75,12 +172,16 @@ def _extract_exclusion_keywords(custom_prompt: str) -> List[str]:
         if cleaned and len(cleaned) > 2:  # Skip empty or very short items
             keywords.append(cleaned)
 
-    logger.info(f"Extracted {len(keywords)} exclusion keywords from custom prompt: {keywords[:5]}...")
+    logger.info(
+        f"Extracted {len(keywords)} exclusion keywords from custom prompt: {keywords[:5]}..."
+    )
     return keywords
 
 
 async def select_and_summarize_news(
-    news_items: List[Dict[str, Any]], custom_prompt: Optional[str] = None, exclude_urls: Optional[set] = None
+    news_items: List[Dict[str, Any]],
+    custom_prompt: Optional[str] = None,
+    exclude_urls: Optional[set] = None,
 ) -> Optional[List[Dict[str, str]]]:
     """
     Filter real news by relevance keywords. NO AI - only real data from RSS.
@@ -92,22 +193,30 @@ async def select_and_summarize_news(
         return None
 
     exclude_urls = exclude_urls or set()
-    exclusion_keywords = _extract_exclusion_keywords(custom_prompt) if custom_prompt else []
+    exclusion_keywords = (
+        _extract_exclusion_keywords(custom_prompt) if custom_prompt else []
+    )
 
-    logger.info(f"Filtering {len(news_items)} news items for main news relevance (excluding {len(exclude_urls)} already selected)")
+    logger.info(
+        f"Filtering {len(news_items)} news items for main news relevance (excluding {len(exclude_urls)} already selected)"
+    )
 
     # Filter by main news keywords, excluding already selected
     matching_news = []
     for item in news_items:
-        if item.get('url') in exclude_urls:
+        if item.get("url") in exclude_urls:
             continue
 
         title_and_desc = f"{item.get('title', '')} {item.get('description', '')}"
         text_lower = title_and_desc.lower()
 
         # Check exclusion keywords from custom prompt
-        if exclusion_keywords and any(keyword in text_lower for keyword in exclusion_keywords):
-            logger.debug(f"  ✗ Excluded by custom prompt: {item.get('title', 'N/A')[:50]}...")
+        if exclusion_keywords and any(
+            keyword in text_lower for keyword in exclusion_keywords
+        ):
+            logger.debug(
+                f"  ✗ Excluded by custom prompt: {item.get('title', 'N/A')[:50]}..."
+            )
             continue
 
         if _match_keywords(title_and_desc, MAIN_NEWS_KEYWORDS):
@@ -120,7 +229,9 @@ async def select_and_summarize_news(
 
     if selected:
         for i, item in enumerate(selected, 1):
-            logger.info(f"  [{i}] {item.get('title', 'N/A')[:60]}... ({item.get('source')})")
+            logger.info(
+                f"  [{i}] {item.get('title', 'N/A')[:60]}... ({item.get('source')})"
+            )
         return selected
 
     return None
@@ -135,11 +246,13 @@ async def select_sports_news(
         return None
 
     exclude_urls = exclude_urls or set()
-    logger.info(f"Filtering {len(news_items)} news items for sports relevance (excluding {len(exclude_urls)} already selected)")
+    logger.info(
+        f"Filtering {len(news_items)} news items for sports relevance (excluding {len(exclude_urls)} already selected)"
+    )
 
     # Filter by sports keywords, excluding already selected
     for item in news_items:
-        if item.get('url') in exclude_urls:
+        if item.get("url") in exclude_urls:
             continue
         title_and_desc = f"{item.get('title', '')} {item.get('description', '')}"
         if _match_keywords(title_and_desc, SPORTS_NEWS_KEYWORDS):
@@ -159,11 +272,13 @@ async def select_good_news(
         return None
 
     exclude_urls = exclude_urls or set()
-    logger.info(f"Filtering {len(news_items)} news items for good news relevance (excluding {len(exclude_urls)} already selected)")
+    logger.info(
+        f"Filtering {len(news_items)} news items for good news relevance (excluding {len(exclude_urls)} already selected)"
+    )
 
     # Filter by good news keywords, excluding already selected
     for item in news_items:
-        if item.get('url') in exclude_urls:
+        if item.get("url") in exclude_urls:
             continue
         title_and_desc = f"{item.get('title', '')} {item.get('description', '')}"
         if _match_keywords(title_and_desc, GOOD_NEWS_KEYWORDS):

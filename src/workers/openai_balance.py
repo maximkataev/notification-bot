@@ -1,4 +1,5 @@
 """Fetch OpenAI account balance."""
+
 import logging
 from typing import Optional
 import httpx
@@ -21,8 +22,12 @@ async def get_openai_balance() -> Optional[float]:
         # Method 1: Try billing.credit_grants API (newer versions)
         try:
             credit_grants = await client.billing.credit_grants.list()
-            if hasattr(credit_grants, 'data') and credit_grants.data:
-                total_balance = sum(grant.balance for grant in credit_grants.data if hasattr(grant, 'balance'))
+            if hasattr(credit_grants, "data") and credit_grants.data:
+                total_balance = sum(
+                    grant.balance
+                    for grant in credit_grants.data
+                    if hasattr(grant, "balance")
+                )
                 logger.info(f"✓ OpenAI balance fetched via SDK: ${total_balance:.2f}")
                 return float(total_balance)
         except AttributeError:
@@ -32,22 +37,25 @@ async def get_openai_balance() -> Optional[float]:
         api_key = get_secret("OPENAI_API_KEY")
         headers = {
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "Python/OpenAI-Balance-Checker"
+            "User-Agent": "Python/OpenAI-Balance-Checker",
         }
 
         async with httpx.AsyncClient(timeout=10.0) as client_http:
             # Try credit_grants endpoint
             try:
                 response = await client_http.get(
-                    "https://api.openai.com/v1/billing/credit_grants",
-                    headers=headers
+                    "https://api.openai.com/v1/billing/credit_grants", headers=headers
                 )
                 response.raise_for_status()
                 data = response.json()
 
                 if "data" in data:
-                    total_balance = sum(grant.get("balance", 0) for grant in data["data"])
-                    logger.info(f"✓ OpenAI balance fetched via HTTP: ${total_balance:.2f}")
+                    total_balance = sum(
+                        grant.get("balance", 0) for grant in data["data"]
+                    )
+                    logger.info(
+                        f"✓ OpenAI balance fetched via HTTP: ${total_balance:.2f}"
+                    )
                     return float(total_balance)
             except Exception as e:
                 logger.debug(f"credit_grants endpoint failed: {type(e).__name__}")
@@ -55,8 +63,7 @@ async def get_openai_balance() -> Optional[float]:
             # Try usage endpoint (alternative)
             try:
                 response = await client_http.get(
-                    "https://api.openai.com/v1/billing/usage",
-                    headers=headers
+                    "https://api.openai.com/v1/billing/usage", headers=headers
                 )
                 response.raise_for_status()
                 data = response.json()

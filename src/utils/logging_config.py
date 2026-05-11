@@ -1,4 +1,5 @@
 """Logging configuration for Docker and local development."""
+
 import logging
 import sys
 import os
@@ -26,7 +27,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         formatter = jsonlogger.JsonFormatter(
             fmt="%(timestamp)s %(level)s %(name)s %(message)s %(exc_info)s",
             timestamp=True,
-            rename_fields={"levelname": "level", "name": "logger"}
+            rename_fields={"levelname": "level", "name": "logger"},
         )
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
@@ -38,7 +39,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         file_handler = logging.FileHandler(log_file)
         file_formatter = logging.Formatter(
             fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)
@@ -49,7 +50,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         error_formatter = jsonlogger.JsonFormatter(
             fmt="%(timestamp)s ERROR %(name)s %(message)s %(exc_info)s %(exc_text)s",
             timestamp=True,
-            rename_fields={"levelname": "level", "name": "logger"}
+            rename_fields={"levelname": "level", "name": "logger"},
         )
         error_handler.setFormatter(error_formatter)
         root_logger.addHandler(error_handler)
@@ -59,7 +60,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         handler = logging.StreamHandler(sys.stdout)
         formatter = logging.Formatter(
             fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         handler.setFormatter(formatter)
         root_logger.addHandler(handler)
@@ -69,7 +70,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         error_handler.setLevel(logging.ERROR)
         error_formatter = logging.Formatter(
             fmt="%(asctime)s | %(name)s | ERROR | %(message)s | %(exc_info)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         error_handler.setFormatter(error_formatter)
         root_logger.addHandler(error_handler)
@@ -79,7 +80,7 @@ def setup_logging(level=logging.INFO, docker_mode=True):
         file_handler = logging.FileHandler(log_file)
         file_formatter = logging.Formatter(
             fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
         file_handler.setFormatter(file_formatter)
         root_logger.addHandler(file_handler)

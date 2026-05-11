@@ -1,4 +1,5 @@
 """AI-powered task planning agent using OpenAI GPT-4o."""
+
 import json
 import logging
 from typing import Optional, Dict, Any
@@ -12,11 +13,13 @@ logger = logging.getLogger(__name__)
 
 client = None
 
+
 def get_client():
     """Get or create OpenAI client (lazy initialization)."""
     global client
     if client is None:
         from src.utils.doppler import get_secret
+
         api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
         client = AsyncOpenAI(api_key=api_key)
     return client
@@ -85,9 +88,9 @@ async def get_weather_tbilisi() -> Optional[Dict[str, Any]]:
 
             # Group by time periods (0-6 night, 6-12 morning, 12-18 day, 18-24 evening)
             periods = {
-                "night": (0, 6),      # 00:00-06:00
-                "morning": (6, 12),   # 06:00-12:00
-                "day": (12, 18),      # 12:00-18:00
+                "night": (0, 6),  # 00:00-06:00
+                "morning": (6, 12),  # 06:00-12:00
+                "day": (12, 18),  # 12:00-18:00
                 "evening": (18, 24),  # 18:00-24:00
             }
 
@@ -128,15 +131,23 @@ async def get_weather_tbilisi() -> Optional[Dict[str, Any]]:
 
 
 def _format_system_prompt(
-    user_profile: UserProfile, weather: Optional[Dict], custom_rules: Optional[list] = None
+    user_profile: UserProfile,
+    weather: Optional[Dict],
+    custom_rules: Optional[list] = None,
 ) -> str:
     """Build system prompt with user context, weather, and custom rules."""
     weather_context = ""
     if weather:
         # If weather is structured by periods, extract current period
-        if "night" in weather or "morning" in weather or "day" in weather or "evening" in weather:
+        if (
+            "night" in weather
+            or "morning" in weather
+            or "day" in weather
+            or "evening" in weather
+        ):
             # Get current hour to determine period
             from datetime import datetime
+
             current_hour = datetime.now().hour
             if 0 <= current_hour < 6:
                 current_period = "night"
@@ -147,7 +158,9 @@ def _format_system_prompt(
             else:
                 current_period = "evening"
 
-            period_weather = weather.get(current_period, weather.get("day"))  # Fallback to day
+            period_weather = weather.get(
+                current_period, weather.get("day")
+            )  # Fallback to day
             if period_weather:
                 weather_code = period_weather.get("weather_code", 3)
                 temperature = period_weather.get("temperature", 20)
@@ -183,8 +196,17 @@ CURRENT WEATHER (Tbilisi, Isani district):
 
     # Add current date and day of week
     from datetime import datetime
+
     today = datetime.now()
-    day_names = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
+    day_names = [
+        "Понедельник",
+        "Вторник",
+        "Среда",
+        "Четверг",
+        "Пятница",
+        "Суббота",
+        "Воскресенье",
+    ]
     today_day = day_names[today.weekday()]
     today_date = today.strftime("%Y-%m-%d")
 
@@ -342,13 +364,15 @@ Already planned:
             max_completion_tokens=1024,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": raw_text + tasks_context}
+                {"role": "user", "content": raw_text + tasks_context},
             ],
         )
 
         logger.info(f"✓ OpenAI response object received")
         logger.info(f"  Model: {response.model}")
-        logger.info(f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}")
+        logger.info(
+            f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}"
+        )
         logger.info(f"  Choices: {len(response.choices)}")
 
         if not response.choices:
@@ -394,8 +418,12 @@ Already planned:
         logger.error(f"❌ JSON Parse Error: {e}")
         logger.error(f"  Error type: {type(e).__name__}")
         logger.error(f"  Error position: {e.pos if hasattr(e, 'pos') else 'N/A'}")
-        logger.error(f"  Response text length: {len(result_text) if 'result_text' in locals() else 'N/A'}")
-        logger.error(f"  Response text: {result_text[:500] if 'result_text' in locals() else 'NOT SET'}")
+        logger.error(
+            f"  Response text length: {len(result_text) if 'result_text' in locals() else 'N/A'}"
+        )
+        logger.error(
+            f"  Response text: {result_text[:500] if 'result_text' in locals() else 'NOT SET'}"
+        )
         return {
             "what": raw_text,
             "needs_clarification": True,
@@ -483,8 +511,13 @@ Be encouraging and practical. Format as markdown with emojis."""
         response = await get_client().chat.completions.create(
             model="gpt-5.4-mini",
             max_completion_tokens=500,
-            messages=[{"role": "system", "content": "You are a helpful morning planning assistant in Russian."},
-                      {"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a helpful morning planning assistant in Russian.",
+                },
+                {"role": "user", "content": prompt},
+            ],
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -507,8 +540,10 @@ async def generate_evening_digest(
         Natural-language evening summary
     """
     if not tasks:
-        return f"🌙 Отличная работа! Вы выполнили все задачи на день. Отдыхайте! " \
-               f"{'Завтра новые вызовы ждут!' if completed_count > 0 else ''}"
+        return (
+            f"🌙 Отличная работа! Вы выполнили все задачи на день. Отдыхайте! "
+            f"{'Завтра новые вызовы ждут!' if completed_count > 0 else ''}"
+        )
 
     # Format remaining tasks
     tasks_text = "\n".join(
@@ -543,8 +578,13 @@ Format as markdown with emojis."""
         response = await get_client().chat.completions.create(
             model="gpt-5.4-mini",
             max_completion_tokens=400,
-            messages=[{"role": "system", "content": "You are an encouraging evening review assistant in Russian."},
-                      {"role": "user", "content": prompt}],
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an encouraging evening review assistant in Russian.",
+                },
+                {"role": "user", "content": prompt},
+            ],
         )
         return response.choices[0].message.content
     except Exception as e:

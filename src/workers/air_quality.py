@@ -1,4 +1,5 @@
 """Monitor air quality in Tbilisi."""
+
 import logging
 from typing import Optional, Dict, Any
 import httpx

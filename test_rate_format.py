@@ -9,7 +9,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, '/Users/maximkataev/Desktop/notification-bot')
+sys.path.insert(0, "/Users/maximkataev/Desktop/notification-bot")
 
 
 def test_format():
@@ -20,10 +20,10 @@ def test_format():
         if value is None:
             return "N/A"
         if decimals == 5:
-            formatted = f"{value:,.5f}".rstrip('0').rstrip('.')
+            formatted = f"{value:,.5f}".rstrip("0").rstrip(".")
         else:
-            formatted = f"{value:,.2f}".rstrip('0').rstrip('.')
-        return formatted.replace(',', ' ')
+            formatted = f"{value:,.2f}".rstrip("0").rstrip(".")
+        return formatted.replace(",", " ")
 
     def format_change(change_24h, change_30d) -> str:
         """Format percentage changes with arrow emojis."""
@@ -33,9 +33,9 @@ def test_format():
         arrow_30d = "↑" if change_30d >= 0 else "↓"
         return f" ({arrow_24h} {abs(change_24h):.1f}% for 24h, {arrow_30d} {abs(change_30d):.1f} % for 30d)"
 
-    logger.info("\n" + "="*70)
+    logger.info("\n" + "=" * 70)
     logger.info("TEST: New Currency Rate Format with Emoji Changes")
-    logger.info("="*70 + "\n")
+    logger.info("=" * 70 + "\n")
 
     # Test cases
     test_cases = [
@@ -89,9 +89,9 @@ def test_format():
         logger.info(f"  Test: {test['name']}")
         logger.info("")
 
-    logger.info("="*70)
+    logger.info("=" * 70)
     logger.info("✓ Format preview complete!")
-    logger.info("="*70)
+    logger.info("=" * 70)
 
 
 if __name__ == "__main__":

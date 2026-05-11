@@ -1,4 +1,5 @@
 """Handler for /plan command."""
+
 import logging
 from datetime import datetime, timedelta
 from aiogram import Router, types
@@ -28,13 +29,20 @@ def _get_nearest_date(date_str: str) -> str:
 
     # Check for day of week references (case-insensitive Russian)
     day_map = {
-        "понедельник": 0, "пн": 0,
-        "вторник": 1, "вт": 1,
-        "среда": 2, "ср": 2,
-        "четверг": 3, "чт": 3,
-        "пятница": 4, "пт": 4,
-        "суббота": 5, "сб": 5,
-        "воскресенье": 6, "вс": 6,
+        "понедельник": 0,
+        "пн": 0,
+        "вторник": 1,
+        "вт": 1,
+        "среда": 2,
+        "ср": 2,
+        "четверг": 3,
+        "чт": 3,
+        "пятница": 4,
+        "пт": 4,
+        "суббота": 5,
+        "сб": 5,
+        "воскресенье": 6,
+        "вс": 6,
     }
 
     date_lower = date_str.lower().strip()
@@ -83,6 +91,7 @@ async def plan_command(message: types.Message, command: CommandObject):
         user_profile = await get_user_profile(user_id)
         if not user_profile:
             from src.db.models import UserProfile
+
             user_profile = UserProfile(user_id=user_id)
 
         # Parse task with AI to extract date, time, priority
@@ -92,7 +101,12 @@ async def plan_command(message: types.Message, command: CommandObject):
         except Exception as parse_err:
             logger.error(f"⚠️  AI parsing failed, using fallback: {parse_err}")
             # Fallback: create task without date/priority parsing
-            parsed = {"what": text, "is_urgent": False, "when_date": None, "when_time": None}
+            parsed = {
+                "what": text,
+                "is_urgent": False,
+                "when_date": None,
+                "when_time": None,
+            }
 
         if parsed.get("needs_clarification"):
             response = f"❓ {parsed.get('clarification_question', 'Не понял. Опиши задачу подробнее.')}"
@@ -125,13 +139,13 @@ async def plan_command(message: types.Message, command: CommandObject):
         # Determine priority (1=Normal, 2=Low, 3=Medium, 4=High)
         todoist_priority = 4 if is_urgent else 1
 
-        logger.info(f"Parsed: what={what[:50]} | date={todoist_due_date} | priority={todoist_priority}")
+        logger.info(
+            f"Parsed: what={what[:50]} | date={todoist_due_date} | priority={todoist_priority}"
+        )
 
         # Create task in Todoist with date and priority
         task_url = await create_todoist_task(
-            content=what,
-            due_date=todoist_due_date,
-            priority=todoist_priority
+            content=what, due_date=todoist_due_date, priority=todoist_priority
         )
 
         if task_url:
@@ -154,8 +168,12 @@ async def plan_command(message: types.Message, command: CommandObject):
             response = "❌ Не удалось создать задачу в Todoist. Проверь, что проект 'Личное' существует и API ключ верный."
             logger.error(f"Failed to create task in Todoist for user {user_id}")
 
-        await creating_msg.edit_text(response, parse_mode="Markdown", disable_web_page_preview=True)
+        await creating_msg.edit_text(
+            response, parse_mode="Markdown", disable_web_page_preview=True
+        )
 
     except Exception as e:
-        logger.error(f"✗ Error creating task in Todoist for user {user_id}: {e}", exc_info=True)
+        logger.error(
+            f"✗ Error creating task in Todoist for user {user_id}: {e}", exc_info=True
+        )
         await creating_msg.edit_text(f"❌ Ошибка: {str(e)}")

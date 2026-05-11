@@ -1,4 +1,5 @@
 """Hourly water cut monitoring for Vazha Iverievi street."""
+
 import asyncio
 import logging
 from datetime import datetime, date
@@ -41,7 +42,9 @@ class WaterCutMonitor:
 
     async def run_loop(self) -> None:
         """Continuously monitor water cuts hourly."""
-        logger.info(f"Water cut monitor started. Checking every {CHECK_INTERVAL // 3600} hour(s).")
+        logger.info(
+            f"Water cut monitor started. Checking every {CHECK_INTERVAL // 3600} hour(s)."
+        )
         while True:
             try:
                 await self.check()

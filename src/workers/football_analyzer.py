@@ -1,4 +1,5 @@
 """Analyze football matches with AI commentary and standings context."""
+
 import logging
 from typing import Optional, List, Dict, Any
 from src.utils.openai_client import get_client
@@ -7,8 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 async def get_match_analysis(
-    matches: List[Dict[str, Any]],
-    max_matches: int = 3
+    matches: List[Dict[str, Any]], max_matches: int = 3
 ) -> Dict[int, str]:
     """
     Generate brief AI commentary for matches.
@@ -54,7 +54,10 @@ Keep it concise, informative, and in Russian."""
             model="gpt-5.4-mini",
             max_completion_tokens=200,
             messages=[
-                {"role": "system", "content": "You are a football analyst providing brief match insights."},
+                {
+                    "role": "system",
+                    "content": "You are a football analyst providing brief match insights.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
@@ -77,12 +80,16 @@ Keep it concise, informative, and in Russian."""
                     colon_idx = line.find(":")
                     if colon_idx > 0:
                         # Extract match number (1-based from user perspective)
-                        match_num_str = line[6:colon_idx].strip()  # Skip "Match " or "Матч "
+                        match_num_str = line[
+                            6:colon_idx
+                        ].strip()  # Skip "Match " or "Матч "
                         match_num = int(match_num_str)
-                        analysis = line[colon_idx + 1:].strip()
+                        analysis = line[colon_idx + 1 :].strip()
 
                         if 1 <= match_num <= len(matches_to_analyze) and analysis:
-                            analysis_dict[match_num - 1] = analysis  # Convert to 0-based index
+                            analysis_dict[match_num - 1] = (
+                                analysis  # Convert to 0-based index
+                            )
                 except (ValueError, IndexError):
                     continue
 

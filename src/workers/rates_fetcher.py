@@ -1,4 +1,5 @@
 """Fetch cryptocurrency and forex rates with historical data."""
+
 import asyncio
 import logging
 from typing import Optional, Dict
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 # Historical forex data is not available; graceful degradation in digest
 try:
     import yfinance as yf
+
     YFINANCE_AVAILABLE = False  # Force disable due to deprecated symbols
     logger.info("yfinance available but disabled (Yahoo Finance symbols deprecated)")
 except ImportError:
@@ -22,7 +24,9 @@ except ImportError:
 OPEN_EXCHANGE_RATES_API_KEY = None  # Will use if available
 
 
-async def _get_historical_from_open_exchange_rates(api_key: str) -> Dict[str, Optional[float]]:
+async def _get_historical_from_open_exchange_rates(
+    api_key: str,
+) -> Dict[str, Optional[float]]:
     """Try to fetch historical data from Open Exchange Rates API.
 
     Free tier (1000 requests/month) supports historical data for dates up to 1 year.
@@ -127,7 +131,9 @@ async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
         return {}
 
     except Exception as e:
-        logger.warning(f"⚠️  Failed to get historical forex rates: {type(e).__name__}: {e}")
+        logger.warning(
+            f"⚠️  Failed to get historical forex rates: {type(e).__name__}: {e}"
+        )
         return {}
 
 
@@ -171,12 +177,18 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
             rates["eth_change_30d"] = eth_market_data.get("price_change_percentage_30d")
 
             # Safe logging with None checks
-            btc_info = f"${rates['btc_usd']}" if rates['btc_usd'] else "N/A"
-            if rates['btc_change_24h'] is not None and rates['btc_change_30d'] is not None:
+            btc_info = f"${rates['btc_usd']}" if rates["btc_usd"] else "N/A"
+            if (
+                rates["btc_change_24h"] is not None
+                and rates["btc_change_30d"] is not None
+            ):
                 btc_info += f" ({rates['btc_change_24h']:+.1f}% for 24h, {rates['btc_change_30d']:+.1f} % for 30d)"
 
-            eth_info = f"${rates['eth_usd']}" if rates['eth_usd'] else "N/A"
-            if rates['eth_change_24h'] is not None and rates['eth_change_30d'] is not None:
+            eth_info = f"${rates['eth_usd']}" if rates["eth_usd"] else "N/A"
+            if (
+                rates["eth_change_24h"] is not None
+                and rates["eth_change_30d"] is not None
+            ):
                 eth_info += f" ({rates['eth_change_24h']:+.1f}% for 24h, {rates['eth_change_30d']:+.1f} % for 30d)"
 
             logger.info(f"✓ Crypto: BTC={btc_info}, ETH={eth_info}")
@@ -203,9 +215,13 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
             rates["eur_change_30d"] = historical_forex.get("eur_usd_30d")
             rates["rub_change_24h"] = historical_forex.get("rub_usd_24h")
             rates["rub_change_30d"] = historical_forex.get("rub_usd_30d")
-            logger.debug(f"Assigned forex changes: eur_24h={rates.get('eur_change_24h')}, eur_30d={rates.get('eur_change_30d')}, rub_24h={rates.get('rub_change_24h')}, rub_30d={rates.get('rub_change_30d')}")
+            logger.debug(
+                f"Assigned forex changes: eur_24h={rates.get('eur_change_24h')}, eur_30d={rates.get('eur_change_30d')}, rub_24h={rates.get('rub_change_24h')}, rub_30d={rates.get('rub_change_30d')}"
+            )
 
-            logger.info(f"✓ Forex: 1 USD = {rates['usd_eur']:.5f} EUR, {rates['usd_rub']:.2f} RUB")
+            logger.info(
+                f"✓ Forex: 1 USD = {rates['usd_eur']:.5f} EUR, {rates['usd_rub']:.2f} RUB"
+            )
 
             return rates
 

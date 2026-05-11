@@ -54,6 +54,7 @@ async def get_all_water_cuts():
             except Exception as e:
                 logger.error(f"Error: {e}")
                 import traceback
+
                 traceback.print_exc()
 
         await browser.close()

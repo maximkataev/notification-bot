@@ -1,4 +1,5 @@
 """Doppler secrets management."""
+
 import subprocess
 import json
 import logging

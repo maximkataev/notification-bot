@@ -1,4 +1,5 @@
 """Generate AI explanations for tasks."""
+
 import logging
 import os
 import json
@@ -10,17 +11,21 @@ logger = logging.getLogger(__name__)
 
 client = None
 
+
 def get_client():
     """Get or create OpenAI client (lazy initialization)."""
     global client
     if client is None:
         from src.utils.doppler import get_secret
+
         api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
         client = AsyncOpenAI(api_key=api_key)
     return client
 
 
-async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = None, profile: Optional[Dict] = None) -> Dict[int, Dict[str, any]]:
+async def get_task_explanations(
+    tasks: List[Task], weather: Optional[Dict] = None, profile: Optional[Dict] = None
+) -> Dict[int, Dict[str, any]]:
     """Generate detailed AI explanations for tasks: what, why, how, when, and purpose.
 
     Args:
@@ -35,7 +40,7 @@ async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = Non
     task_details = []
     for i, task in enumerate(tasks, 1):
         details = f"{i}. {task.what or task.raw_text}"
-        constraints = getattr(task, 'constraints', None)
+        constraints = getattr(task, "constraints", None)
         if constraints:
             details += f" (ограничения: {constraints})"
         if task.place:
@@ -57,17 +62,21 @@ async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = Non
         context_lines.append("📋 Погода на сегодня:")
         for period, data in weather.items():
             if isinstance(data, dict):
-                condition = data.get('condition', '?')
-                temp = data.get('temperature', '?')
+                condition = data.get("condition", "?")
+                temp = data.get("temperature", "?")
                 context_lines.append(f"  • {period}: {condition}, {temp}°C")
 
     if profile:
         context_lines.append(f"👤 Профиль:")
-        context_lines.append(f"  • Просыпается: {profile.get('wake_time', '09:00')}, спит: {profile.get('sleep_time', '23:00')}")
-        if profile.get('preferences'):
+        context_lines.append(
+            f"  • Просыпается: {profile.get('wake_time', '09:00')}, спит: {profile.get('sleep_time', '23:00')}"
+        )
+        if profile.get("preferences"):
             context_lines.append(f"  • Интересы: {profile['preferences'][:80]}")
 
-    context_str = "\n".join(context_lines) if context_lines else "Контекст: стандартный день"
+    context_str = (
+        "\n".join(context_lines) if context_lines else "Контекст: стандартный день"
+    )
 
     prompt = f"""Проанализируй КАЖДУЮ задачу и верни JSON с рекомендациями.
 
@@ -111,7 +120,9 @@ async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = Non
 ]"""
 
     try:
-        logger.info(f"🔄 Analyzing {len(tasks)} tasks with time, difficulty, and priority")
+        logger.info(
+            f"🔄 Analyzing {len(tasks)} tasks with time, difficulty, and priority"
+        )
 
         response = await get_client().chat.completions.create(
             model="gpt-5.4-mini",
@@ -119,9 +130,9 @@ async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = Non
             messages=[
                 {
                     "role": "system",
-                    "content": "Ты аналитик. Анализируешь задачи логично и прямолинейно. Определяешь время, сложность, приоритет. Возвращаешь валидный JSON. Никаких комментариев, только JSON. Рекомендации практичные и обоснованные, без эмоциональности."
+                    "content": "Ты аналитик. Анализируешь задачи логично и прямолинейно. Определяешь время, сложность, приоритет. Возвращаешь валидный JSON. Никаких комментариев, только JSON. Рекомендации практичные и обоснованные, без эмоциональности.",
                 },
-                {"role": "user", "content": prompt}
+                {"role": "user", "content": prompt},
             ],
         )
 
@@ -151,11 +162,13 @@ async def get_task_explanations(tasks: List[Task], weather: Optional[Dict] = Non
                     "explanation": item.get("explanation", ""),
                     "time_minutes": item.get("time_minutes", 30),
                     "difficulty": item.get("difficulty", 2),
-                    "is_urgent": item.get("is_urgent", False)
+                    "is_urgent": item.get("is_urgent", False),
                 }
 
         if len(explanations) < len(tasks):
-            logger.warning(f"⚠️  Only parsed {len(explanations)}/{len(tasks)} task analyses")
+            logger.warning(
+                f"⚠️  Only parsed {len(explanations)}/{len(tasks)} task analyses"
+            )
 
         logger.info(f"✓ Analyzed {len(explanations)} tasks")
         return explanations

@@ -1,4 +1,5 @@
 """Check GWP (Georgian Water and Power) website for scheduled/unscheduled works."""
+
 import logging
 import httpx
 import re
@@ -11,11 +12,11 @@ logger = logging.getLogger(__name__)
 
 # Streets we care about (various spellings and languages)
 WATCH_STREETS = [
-    "vazha iverievi",           # English transliteration
-    "ვაზა ივერიელი",            # Georgian
-    "ვაჟა ივერელის ქუჩა",       # Georgian with "street" suffix
-    "ვაჟა ივერელი",              # Georgian alternative spelling
-    "vazha iverelis",            # Alternative transliteration
+    "vazha iverievi",  # English transliteration
+    "ვაზა ივერიელი",  # Georgian
+    "ვაჟა ივერელის ქუჩა",  # Georgian with "street" suffix
+    "ვაჟა ივერელი",  # Georgian alternative spelling
+    "vazha iverelis",  # Alternative transliteration
 ]
 
 
@@ -74,7 +75,9 @@ async def check_gwp_works() -> Optional[List[str]]:
 
                             if title:
                                 works_found.append(f"{work_type} work: {title}")
-                                logger.info(f"Found work on Vazha Iverievi ({street_found}): {title}")
+                                logger.info(
+                                    f"Found work on Vazha Iverievi ({street_found}): {title}"
+                                )
 
                 except Exception as e:
                     logger.debug(f"Error checking {url}: {e}")
@@ -114,7 +117,9 @@ async def check_water_cuts() -> Optional[str]:
             for url in urls:
                 logger.info(f"Checking {url} for water cuts")
                 try:
-                    response = await client.get(url, follow_redirects=True, timeout=10.0)
+                    response = await client.get(
+                        url, follow_redirects=True, timeout=10.0
+                    )
                     response.raise_for_status()
                 except Exception as e:
                     logger.debug(f"Error fetching {url}: {e}")
@@ -178,7 +183,9 @@ async def check_water_cuts_today() -> Optional[str]:
             ]
 
             for url in urls:
-                logger.info(f"Checking {url} for Vazha Iverievi water cuts (with Playwright)")
+                logger.info(
+                    f"Checking {url} for Vazha Iverievi water cuts (with Playwright)"
+                )
                 try:
                     await page.goto(url, wait_until="load", timeout=10000)
                     await page.wait_for_timeout(2000)
@@ -227,7 +234,9 @@ def _extract_water_cut_time(article_text: str, street: str) -> Optional[str]:
     """
     try:
         # Look for date and time pattern: M/D/YYYY HH:MM ... HH:MM
-        date_time_pattern = r'(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2}).*?(\d{1,2}):(\d{2})'
+        date_time_pattern = (
+            r"(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2}).*?(\d{1,2}):(\d{2})"
+        )
         match = re.search(date_time_pattern, article_text)
 
         if not match:
@@ -243,7 +252,12 @@ def _extract_water_cut_time(article_text: str, street: str) -> Optional[str]:
 
         # Format street with Georgian and English names
         # Handle different input formats
-        if "ვაზა" in street or "ვაჟა" in street or "ivereeli" in street.lower() or "iverievi" in street.lower():
+        if (
+            "ვაზა" in street
+            or "ვაჟა" in street
+            or "ivereeli" in street.lower()
+            or "iverievi" in street.lower()
+        ):
             street_text = "ვაზა ივერიელი (Vazha Iverievi)"
         else:
             street_text = street

@@ -36,19 +36,23 @@ def show_prompt():
     }
 
     # Build context
-    task_list = "\n".join([
-        f"- {task[0]} (когда: {task[1] or 'гибко'}, срочно: {'да' if task[2] else 'нет'}, улица: {'да' if task[3] else 'нет'})"
-        for task in tasks
-    ])
+    task_list = "\n".join(
+        [
+            f"- {task[0]} (когда: {task[1] or 'гибко'}, срочно: {'да' if task[2] else 'нет'}, улица: {'да' if task[3] else 'нет'})"
+            for task in tasks
+        ]
+    )
 
     context_lines = []
     context_lines.append("📋 Погода на сегодня:")
     for period, data in weather.items():
-        temp = data.get('temperature', '?')
-        wind = data.get('wind_speed', '?')
+        temp = data.get("temperature", "?")
+        wind = data.get("wind_speed", "?")
         context_lines.append(f"  - {period}: {temp}°C, ветер {wind} км/ч")
 
-    context_lines.append(f"👤 Профиль: просыпается в {profile['wake_time']}, спит в {profile['sleep_time']}")
+    context_lines.append(
+        f"👤 Профиль: просыпается в {profile['wake_time']}, спит в {profile['sleep_time']}"
+    )
     context_lines.append(f"  Предпочтения: {profile['preferences'][:100]}")
 
     context_str = "\n".join(context_lines)
@@ -79,9 +83,11 @@ def show_prompt():
     print("\n" + "=" * 70)
     print("ОЖИДАЕМЫЙ ОТВЕТ")
     print("=" * 70)
-    print("""Задача 1: В 19:00 погода будет еще хорошая (21.8°C), идеально для походов в горы.
+    print(
+        """Задача 1: В 19:00 погода будет еще хорошая (21.8°C), идеально для походов в горы.
 Задача 2: Время релаксации перед сном согласно твоему расписанию.
-Задача 3: Общая задача для повседневного плана.""")
+Задача 3: Общая задача для повседневного плана."""
+    )
     print("\n")
 
 

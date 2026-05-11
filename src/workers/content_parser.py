@@ -4,6 +4,7 @@ Returns actual video/podcast/music items with real working links.
 No hardcoding - only real content from APIs and RSS feeds.
 AI selects fresh content and writes review in Russian.
 """
+
 import logging
 import httpx
 import asyncio
@@ -293,7 +294,6 @@ MUSIC_PLAYLISTS = [
 ]
 
 
-
 async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
     """
     Fetch recent videos from English YouTube channels.
@@ -306,7 +306,9 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
     """
     try:
         # Get only English channels (exclude videos_ru*)
-        en_categories = {k: v for k, v in YOUTUBE_CHANNELS.items() if not k.startswith("videos_ru")}
+        en_categories = {
+            k: v for k, v in YOUTUBE_CHANNELS.items() if not k.startswith("videos_ru")
+        }
         all_channel_ids = []
         for channel_ids in en_categories.values():
             all_channel_ids.extend(channel_ids)
@@ -315,7 +317,9 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
         for channel_id in all_channel_ids:
             try:
                 # YouTube RSS feed: /feeds/videos.xml?channel_id=CHANNEL_ID
-                url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                url = (
+                    f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                )
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     response = await client.get(url)
@@ -327,7 +331,11 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
                 for entry in feed.entries[:3]:  # Get 3 latest from each channel
                     # Extract video info
                     video_id = entry.get("yt_videoid", "")
-                    video_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else entry.get("link", "")
+                    video_url = (
+                        f"https://www.youtube.com/watch?v={video_id}"
+                        if video_id
+                        else entry.get("link", "")
+                    )
 
                     video = {
                         "title": entry.get("title", ""),
@@ -342,10 +350,14 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
                     if video["title"] and video["url"]:
                         videos.append(video)
 
-                logger.debug(f"✓ Fetched {len([v for v in videos])} videos from {feed.feed.get('title', 'YouTube')}")
+                logger.debug(
+                    f"✓ Fetched {len([v for v in videos])} videos from {feed.feed.get('title', 'YouTube')}"
+                )
 
             except Exception as e:
-                logger.debug(f"Failed to fetch from YouTube channel {channel_id}: {type(e).__name__}")
+                logger.debug(
+                    f"Failed to fetch from YouTube channel {channel_id}: {type(e).__name__}"
+                )
                 continue
 
         return videos[:max_results]
@@ -356,8 +368,7 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
 
 
 async def get_podcasts(
-    language: str = "en",
-    max_results: int = 5
+    language: str = "en", max_results: int = 5
 ) -> List[Dict[str, Any]]:
     """
     Fetch recent podcast episodes from RSS feeds.
@@ -371,7 +382,11 @@ async def get_podcasts(
     """
     try:
         podcasts = []
-        sources = [s for s in PODCAST_SOURCES if language == "all" or s.get("language") == language]
+        sources = [
+            s
+            for s in PODCAST_SOURCES
+            if language == "all" or s.get("language") == language
+        ]
 
         for source in sources:
             try:
@@ -388,8 +403,11 @@ async def get_podcasts(
                     # Extract podcast info
                     podcast = {
                         "title": entry.get("title", ""),
-                        "creator": source.get("title", feed.feed.get("title", "Podcast")),
-                        "url": entry.get("link", "") or entry.get("enclosures", [{}])[0].get("href", ""),
+                        "creator": source.get(
+                            "title", feed.feed.get("title", "Podcast")
+                        ),
+                        "url": entry.get("link", "")
+                        or entry.get("enclosures", [{}])[0].get("href", ""),
                         "description": entry.get("summary", "")[:150],
                         "type": "podcast",
                         "platform": "podcast",
@@ -402,7 +420,9 @@ async def get_podcasts(
                 logger.debug(f"✓ Fetched podcasts from {source['title']}")
 
             except Exception as e:
-                logger.debug(f"Failed to fetch podcast from {source['title']}: {type(e).__name__}")
+                logger.debug(
+                    f"Failed to fetch podcast from {source['title']}: {type(e).__name__}"
+                )
                 continue
 
         return podcasts[:max_results]
@@ -448,7 +468,9 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
     try:
         videos = []
         # Filter Russian channels from unified YOUTUBE_CHANNELS
-        ru_categories = {k: v for k, v in YOUTUBE_CHANNELS.items() if k.startswith("videos_ru")}
+        ru_categories = {
+            k: v for k, v in YOUTUBE_CHANNELS.items() if k.startswith("videos_ru")
+        }
         for channel_ids in ru_categories.values():
             for channel_id in channel_ids:
                 try:
@@ -460,7 +482,11 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
                     feed = feedparser.parse(response.content)
                     for entry in feed.entries[:2]:
                         video_id = entry.get("yt_videoid", "")
-                        video_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else entry.get("link", "")
+                        video_url = (
+                            f"https://www.youtube.com/watch?v={video_id}"
+                            if video_id
+                            else entry.get("link", "")
+                        )
 
                         video = {
                             "title": entry.get("title", ""),
@@ -477,12 +503,16 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
                             videos.append(video)
 
                 except Exception as e:
-                    logger.debug(f"Failed to fetch Russian YouTube {channel_id}: {type(e).__name__}")
+                    logger.debug(
+                        f"Failed to fetch Russian YouTube {channel_id}: {type(e).__name__}"
+                    )
                     continue
 
         return videos[:max_results]
     except Exception as e:
-        logger.warning(f"Failed to fetch Russian YouTube videos: {type(e).__name__}: {e}")
+        logger.warning(
+            f"Failed to fetch Russian YouTube videos: {type(e).__name__}: {e}"
+        )
         return []
 
 
@@ -505,7 +535,8 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
                     podcast = {
                         "title": entry.get("title", ""),
                         "creator": source.get("title", "Podcast"),
-                        "url": entry.get("link", "") or entry.get("enclosures", [{}])[0].get("href", ""),
+                        "url": entry.get("link", "")
+                        or entry.get("enclosures", [{}])[0].get("href", ""),
                         "description": entry.get("summary", "")[:150],
                         "type": "podcast",
                         "platform": "podcast",
@@ -519,7 +550,9 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
                 logger.debug(f"✓ Fetched Russian podcast: {source['title']}")
 
             except Exception as e:
-                logger.debug(f"Failed to fetch Russian podcast {source['title']}: {type(e).__name__}")
+                logger.debug(
+                    f"Failed to fetch Russian podcast {source['title']}: {type(e).__name__}"
+                )
                 continue
 
         return podcasts[:max_results]
@@ -546,13 +579,16 @@ async def get_all_content(max_per_type: int = 5) -> List[Dict[str, Any]]:
             get_music(max_results=max_per_type),
             get_russian_youtube_videos(max_results=max_per_type),
             get_russian_podcasts(max_results=max_per_type),
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         # Handle exceptions
         for var_name, var in [
-            ("videos_en", en_videos), ("podcasts_en", en_podcasts),
-            ("music", music), ("videos_ru", ru_videos), ("podcasts_ru", ru_podcasts)
+            ("videos_en", en_videos),
+            ("podcasts_en", en_podcasts),
+            ("music", music),
+            ("videos_ru", ru_videos),
+            ("podcasts_ru", ru_podcasts),
         ]:
             if isinstance(var, Exception):
                 logger.warning(f"Failed to fetch {var_name}: {var}")
@@ -574,7 +610,9 @@ async def get_all_content(max_per_type: int = 5) -> List[Dict[str, Any]]:
             if "language" not in item:
                 item["language"] = "en"
 
-        logger.info(f"✓ Fetched {len(all_content)} total items (RU: {len(ru_videos or [])} videos + {len(ru_podcasts or [])} podcasts)")
+        logger.info(
+            f"✓ Fetched {len(all_content)} total items (RU: {len(ru_videos or [])} videos + {len(ru_podcasts or [])} podcasts)"
+        )
 
         return all_content
 
@@ -611,14 +649,16 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
         # Prepare content list for AI (include key fields)
         content_list = []
         for idx, item in enumerate(all_content[:20], 1):  # Limit to 20 items
-            content_list.append({
-                "index": idx,
-                "type": item.get("type", "unknown"),
-                "title": item.get("title", ""),
-                "creator": item.get("creator", ""),
-                "description": item.get("description", ""),
-                "language": item.get("language", "en"),
-            })
+            content_list.append(
+                {
+                    "index": idx,
+                    "type": item.get("type", "unknown"),
+                    "title": item.get("title", ""),
+                    "creator": item.get("creator", ""),
+                    "description": item.get("description", ""),
+                    "language": item.get("language", "en"),
+                }
+            )
 
         logger.debug(f"Prepared {len(content_list)} items for AI selection")
 
@@ -643,7 +683,7 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
         response = client.messages.create(
             model="gpt-5.4-mini",
             max_tokens=200,
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{"role": "user", "content": prompt}],
         )
 
         response_text = response.content[0].text.strip()

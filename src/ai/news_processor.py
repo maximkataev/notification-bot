@@ -1,4 +1,5 @@
 """Process news through ChatGPT: select and summarize WITHOUT hallucination."""
+
 import logging
 import json
 import re
@@ -13,11 +14,11 @@ logger = logging.getLogger(__name__)
 def _clean_html(text: str) -> str:
     """Remove HTML tags and decode HTML entities."""
     # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r"<[^>]+>", "", text)
     # Decode HTML entities
     text = unescape(text)
     # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -34,12 +35,15 @@ def _extract_exclusions(profile_text: str) -> list:
             exclude_text = profile_text[start_idx:]
             # Extract comma-separated values until end of line or sentence
             import re
+
             # Match everything after ИСКЛЮЧАЮ: until end of text or line break
-            match = re.search(r'ИСКЛЮЧ[АУ]:\s*(.+?)(?:\n|$)', exclude_text, re.IGNORECASE)
+            match = re.search(
+                r"ИСКЛЮЧ[АУ]:\s*(.+?)(?:\n|$)", exclude_text, re.IGNORECASE
+            )
             if match:
                 exclude_items = match.group(1)
                 # Split by commas and parentheses
-                items = re.split(r'[,()]+', exclude_items)
+                items = re.split(r"[,()]+", exclude_items)
                 for item in items:
                     cleaned = item.strip().lower()
                     if cleaned and len(cleaned) > 1:
@@ -92,12 +96,14 @@ async def select_and_summarize_news_with_gpt(
             # Clean HTML tags from RSS feed descriptions
             description = _clean_html(description)[:500]
 
-            indexed_news.append({
-                "index": idx,
-                "title": item.get("title", ""),
-                "description": description,  # Fuller description for better context
-                "source": item.get("source", ""),
-            })
+            indexed_news.append(
+                {
+                    "index": idx,
+                    "title": item.get("title", ""),
+                    "description": description,  # Fuller description for better context
+                    "source": item.get("source", ""),
+                }
+            )
 
         # Fetch user's custom news prompt if it exists
         custom_prompt = await get_news_prompt(user_id)
@@ -107,18 +113,22 @@ async def select_and_summarize_news_with_gpt(
         else:
             logger.info(f"Using default news profile for user {user_id}")
 
-        user_profile_section = custom_prompt if custom_prompt else (
-            "Я выбираю новости, релевантные для бизнес- и системного аналитика, проживающего в Грузии. "
-            "Он интересуется: AI и машинным обучением, облачными технологиями, инновациями в IT, "
-            "аналитическими подходами, Big Data, DevOps, системным дизайном, новыми продуктами и стартапами. "
-            "Также интересуется: футболом (особенно европейским и в частности испанским), экономикой, политикой "
-            "(США, Россия, Грузия, ЕС, Китай, крупные страны), событиями в России и Грузии, позитивными "
-            "новостями из мира культуры, науки и инноваций. Путешествует по странам, куда не нужна виза "
-            "(Кавказ, Средняя Азия, Юго-Восточная Азия).\n"
-            "Я НЕ выбираю и ИСКЛЮЧАЮ: новости про неревантные страны (Латинская Америка, Африка, Австралия), "
-            "баскетбол, бейсбол, формулу-1, моду, кино, сериалы, документалки, знаменитостей и актёров, "
-            "премьеры фильмов,娱乐新闻, развлечение, вымышленные новости, шоу-бизнес, музыкальные турниры, "
-            "рейтинги фильмов, премии кино, новости о звёздах."
+        user_profile_section = (
+            custom_prompt
+            if custom_prompt
+            else (
+                "Я выбираю новости, релевантные для бизнес- и системного аналитика, проживающего в Грузии. "
+                "Он интересуется: AI и машинным обучением, облачными технологиями, инновациями в IT, "
+                "аналитическими подходами, Big Data, DevOps, системным дизайном, новыми продуктами и стартапами. "
+                "Также интересуется: футболом (особенно европейским и в частности испанским), экономикой, политикой "
+                "(США, Россия, Грузия, ЕС, Китай, крупные страны), событиями в России и Грузии, позитивными "
+                "новостями из мира культуры, науки и инноваций. Путешествует по странам, куда не нужна виза "
+                "(Кавказ, Средняя Азия, Юго-Восточная Азия).\n"
+                "Я НЕ выбираю и ИСКЛЮЧАЮ: новости про неревантные страны (Латинская Америка, Африка, Австралия), "
+                "баскетбол, бейсбол, формулу-1, моду, кино, сериалы, документалки, знаменитостей и актёров, "
+                "премьеры фильмов,娱乐新闻, развлечение, вымышленные новости, шоу-бизнес, музыкальные турниры, "
+                "рейтинги фильмов, премии кино, новости о звёздах."
+            )
         )
 
         # Build system prompt with user interests
@@ -282,6 +292,7 @@ async def select_and_summarize_news_with_gpt(
 
         # Parse JSON response with robust extraction
         import re
+
         try:
             # Try extracting JSON if wrapped in markdown
             if "```json" in gpt_response:
@@ -292,12 +303,14 @@ async def select_and_summarize_news_with_gpt(
             selected_news = json.loads(gpt_response)
         except json.JSONDecodeError:
             # Try extracting first [ ... ] block if not valid JSON
-            match = re.search(r'\[.*\]', gpt_response, re.DOTALL)
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
             if match:
                 try:
                     selected_news = json.loads(match.group())
                 except json.JSONDecodeError:
-                    logger.error(f"Failed to parse JSON even after extraction: {gpt_response[:100]}")
+                    logger.error(
+                        f"Failed to parse JSON even after extraction: {gpt_response[:100]}"
+                    )
                     return None
             else:
                 logger.error(f"No JSON array found in response: {gpt_response[:100]}")
@@ -317,23 +330,27 @@ async def select_and_summarize_news_with_gpt(
                 combined_text = f"{title} {description}"
 
                 if exclusions and _has_excluded_content(combined_text, exclusions):
-                    logger.warning(
-                        f"  ⚠️  Rejected by exclusions: {title[:50]}..."
-                    )
+                    logger.warning(f"  ⚠️  Rejected by exclusions: {title[:50]}...")
                     continue
 
                 valid_news.append(item)
             else:
                 idx = item.get("index") if isinstance(item, dict) else "unknown"
-                logger.warning(f"Invalid index {idx} (max {len(news_items)-1}), skipping")
+                logger.warning(
+                    f"Invalid index {idx} (max {len(news_items)-1}), skipping"
+                )
 
         if not valid_news:
             logger.warning("All news items were invalid or excluded, returning None")
             return None
 
-        logger.info(f"✓ ChatGPT selected {len(valid_news)} valid news items (filtered from {len(selected_news)})")
+        logger.info(
+            f"✓ ChatGPT selected {len(valid_news)} valid news items (filtered from {len(selected_news)})"
+        )
         for item in valid_news:
-            logger.info(f"  [{item['index']}] {item['category']}: {item['summary'][:50]}...")
+            logger.info(
+                f"  [{item['index']}] {item['category']}: {item['summary'][:50]}..."
+            )
 
         return valid_news
 

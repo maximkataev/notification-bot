@@ -4,6 +4,7 @@ import asyncio
 import sys
 from src.workers.openai_balance import get_openai_balance, format_balance
 
+
 async def main():
     print("🔄 Fetching OpenAI account balance...\n")
 
@@ -22,6 +23,7 @@ async def main():
         print("3. Billing API endpoint not accessible")
         print("4. Insufficient permissions on the API key")
         return False
+
 
 if __name__ == "__main__":
     result = asyncio.run(main())

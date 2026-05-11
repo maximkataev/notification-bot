@@ -1,4 +1,5 @@
 """APScheduler setup for morning digest."""
+
 import asyncio
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -33,9 +34,22 @@ scheduler: AsyncIOScheduler = None
 def _is_task_urgent_by_keywords(task) -> bool:
     """Check if task text contains urgency keywords."""
     urgency_keywords = [
-        "срочно", "срочно", "asap", "асап", "быстро", "немедленно",
-        "срочная", "срочной", "неотложн", "критичн", "экстренно",
-        "urgent", "emergency", "immediately", "right now", "now"
+        "срочно",
+        "срочно",
+        "asap",
+        "асап",
+        "быстро",
+        "немедленно",
+        "срочная",
+        "срочной",
+        "неотложн",
+        "критичн",
+        "экстренно",
+        "urgent",
+        "emergency",
+        "immediately",
+        "right now",
+        "now",
     ]
 
     text = f"{task.what or ''} {task.raw_text or ''}".lower()
@@ -49,11 +63,13 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
     try:
         # Set global timeout for entire digest (120 seconds = 2 minutes for all API calls)
         try:
-            if hasattr(asyncio, 'timeout'):  # Python 3.11+
+            if hasattr(asyncio, "timeout"):  # Python 3.11+
                 async with asyncio.timeout(120):
                     await _morning_digest_impl(bot, user_id, chat_id)
             else:  # Python 3.10 and earlier
-                await asyncio.wait_for(_morning_digest_impl(bot, user_id, chat_id), timeout=120.0)
+                await asyncio.wait_for(
+                    _morning_digest_impl(bot, user_id, chat_id), timeout=120.0
+                )
         except asyncio.TimeoutError:
             logger.error(f"❌ Morning digest exceeded 120s timeout for user {user_id}")
             try:
@@ -61,7 +77,7 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
                     chat_id = get_secret("TELEGRAM_CHAT_ID")
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="🌅 Доброе утро! (дайджест не готов - превышен timeout)"
+                    text="🌅 Доброе утро! (дайджест не готов - превышен timeout)",
                 )
             except Exception as fallback_err:
                 logger.error(f"Failed to send timeout fallback message: {fallback_err}")
@@ -75,8 +91,7 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
             if chat_id is None:
                 chat_id = get_secret("TELEGRAM_CHAT_ID")
             await bot.send_message(
-                chat_id=chat_id,
-                text=f"❌ Дайджест не отправлен: {type(e).__name__}"
+                chat_id=chat_id, text=f"❌ Дайджест не отправлен: {type(e).__name__}"
             )
         except Exception as fallback_err:
             logger.error(f"Failed to send error fallback message: {fallback_err}")
@@ -107,9 +122,12 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
     if user_profile is None:
         from src.db.models import UserProfile
+
         user_profile = UserProfile(user_id=user_id)
 
-    logger.info(f"✓ Loaded: {len(tasks)} tasks | profile: {user_profile.wake_time}-{user_profile.sleep_time} | weather: {'OK' if weather else 'FAILED'}")
+    logger.info(
+        f"✓ Loaded: {len(tasks)} tasks | profile: {user_profile.wake_time}-{user_profile.sleep_time} | weather: {'OK' if weather else 'FAILED'}"
+    )
 
     # Generate intro context via AI
     weather_desc = _format_weather(weather) if weather else "неизвестная погода"
@@ -127,7 +145,8 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                     break
 
         is_raining = any(
-            isinstance(weather.get(period), dict) and "дождь" in weather[period].get("condition", "").lower()
+            isinstance(weather.get(period), dict)
+            and "дождь" in weather[period].get("condition", "").lower()
             for period in ["morning", "day", "evening", "night"]
         )
 
@@ -188,18 +207,27 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 [совет про погоду]
 [одежда: краткий перечень]"""
 
-    logger.info("🔄 Calling AI to generate morning greeting, weather advice, and outfit")
+    logger.info(
+        "🔄 Calling AI to generate morning greeting, weather advice, and outfit"
+    )
 
     response = await get_client().chat.completions.create(
         model="gpt-5.4-mini",
         max_completion_tokens=250,
-        messages=[{"role": "system", "content": "You are a friendly morning assistant in Russian."},
-                  {"role": "user", "content": intro_prompt}],
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a friendly morning assistant in Russian.",
+            },
+            {"role": "user", "content": intro_prompt},
+        ],
     )
 
     logger.info(f"✓ OpenAI response received:")
     logger.info(f"  Model: {response.model}")
-    logger.info(f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}")
+    logger.info(
+        f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}"
+    )
 
     response_text = response.choices[0].message.content
     logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
@@ -216,7 +244,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         weather_advice = "Подготовьтесь к переменчивой погоде."
         outfit_advice = "Обычная одежда по сезону"
 
-    logger.info(f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice[:50]}...")
+    logger.info(
+        f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice[:50]}..."
+    )
 
     # Build full message: greeting + quote + weather advice + weather + news + gwp + task list
     if chat_id is None:
@@ -278,7 +308,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     if not isinstance(today_events, Exception) and today_events:
         for event_text in today_events:
             message_lines.append(f"{event_text}")
-    if (not isinstance(today_holidays, Exception) and today_holidays) or (not isinstance(today_events, Exception) and today_events):
+    if (not isinstance(today_holidays, Exception) and today_holidays) or (
+        not isinstance(today_events, Exception) and today_events
+    ):
         message_lines.append("")
 
     # Check GWP for works on Vazha Iverievi
@@ -299,7 +331,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
     if news_items:
         logger.info("Sending all news to ChatGPT for selection and summarization")
-        selected_with_indices = await select_and_summarize_news_with_gpt(news_items, user_id)
+        selected_with_indices = await select_and_summarize_news_with_gpt(
+            news_items, user_id
+        )
 
         if selected_with_indices:
             logger.info(f"✓ ChatGPT selected {len(selected_with_indices)} news items")
@@ -321,7 +355,11 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                     url = original_news.get("url", "")
 
                     # Format: <a href="url">Source</a>: summary + translated description
-                    news_text = f"{i}. <a href=\"{url}\">{source}</a>: {summary}" if url else f"{i}. {source}: {summary}"
+                    news_text = (
+                        f'{i}. <a href="{url}">{source}</a>: {summary}'
+                        if url
+                        else f"{i}. {source}: {summary}"
+                    )
 
                     # Add translated description if available
                     if description_ru:
@@ -368,21 +406,29 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             }
 
         explanations_result = await get_task_explanations(
-            today_tasks_sorted,
-            weather=weather,
-            profile=profile_dict
+            today_tasks_sorted, weather=weather, profile=profile_dict
         )
         if not isinstance(explanations_result, Exception):
             task_explanations = explanations_result
             logger.info(f"Generated explanations for {len(task_explanations)} tasks")
         else:
-            logger.warning(f"Failed to generate task explanations: {explanations_result}")
+            logger.warning(
+                f"Failed to generate task explanations: {explanations_result}"
+            )
 
     # Process and organize tasks
     if today_tasks_sorted:
         # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
-        urgent_tasks = [t for t in today_tasks_sorted if t.is_urgent or _is_task_urgent_by_keywords(t)]
-        non_urgent_tasks = [t for t in today_tasks_sorted if not t.is_urgent and not _is_task_urgent_by_keywords(t)]
+        urgent_tasks = [
+            t
+            for t in today_tasks_sorted
+            if t.is_urgent or _is_task_urgent_by_keywords(t)
+        ]
+        non_urgent_tasks = [
+            t
+            for t in today_tasks_sorted
+            if not t.is_urgent and not _is_task_urgent_by_keywords(t)
+        ]
 
         # Show urgent tasks
         if urgent_tasks:
@@ -407,7 +453,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             display_non_urgent = non_urgent_tasks[:3]  # Show top 3 non-urgent
 
             if len(non_urgent_tasks) > 3:
-                message_lines.append(f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n")
+                message_lines.append(
+                    f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n"
+                )
 
             for task in display_non_urgent:
                 name = task.what or task.raw_text[:50]
@@ -438,10 +486,10 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             if value is None:
                 return "N/A"
             if decimals == 5:
-                formatted = f"{value:,.5f}".rstrip('0').rstrip('.')
+                formatted = f"{value:,.5f}".rstrip("0").rstrip(".")
             else:
-                formatted = f"{value:,.2f}".rstrip('0').rstrip('.')
-            return formatted.replace(',', ' ')
+                formatted = f"{value:,.2f}".rstrip("0").rstrip(".")
+            return formatted.replace(",", " ")
 
         def format_change(change_24h, change_30d) -> str:
             """Format percentage changes with arrow emojis."""
@@ -453,14 +501,18 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
         # BTC
         if rates.get("btc_usd"):
-            btc_str = format_currency(rates['btc_usd'], decimals=5)
-            change_str = format_change(rates.get("btc_change_24h"), rates.get("btc_change_30d"))
+            btc_str = format_currency(rates["btc_usd"], decimals=5)
+            change_str = format_change(
+                rates.get("btc_change_24h"), rates.get("btc_change_30d")
+            )
             message_lines.append(f"BTC: {btc_str} USD{change_str}")
 
         # ETH
         if rates.get("eth_usd"):
-            eth_str = format_currency(rates['eth_usd'], decimals=5)
-            change_str = format_change(rates.get("eth_change_24h"), rates.get("eth_change_30d"))
+            eth_str = format_currency(rates["eth_usd"], decimals=5)
+            change_str = format_change(
+                rates.get("eth_change_24h"), rates.get("eth_change_30d")
+            )
             message_lines.append(f"ETH: {eth_str} USD{change_str}")
 
         # EUR (multi-source)
@@ -478,14 +530,20 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                 message_lines.append(f"EUR (exchangerate.host): {source2_str} USD")
             if avg and rates.get("eur_change_24h") is not None:
                 eur_str = format_currency(avg, decimals=5)
-                change_str = format_change(rates.get("eur_change_24h"), rates.get("eur_change_30d"))
+                change_str = format_change(
+                    rates.get("eur_change_24h"), rates.get("eur_change_30d")
+                )
                 message_lines.append(f"EUR (avg): {eur_str} USD{change_str}")
 
         # RUB
         if rates.get("usd_rub"):
-            rub_str = format_currency(rates['usd_rub'], decimals=2)
-            logger.debug(f"RUB rates: usd_rub={rates.get('usd_rub')}, rub_change_24h={rates.get('rub_change_24h')}, rub_change_30d={rates.get('rub_change_30d')}")
-            change_str = format_change(rates.get("rub_change_24h"), rates.get("rub_change_30d"))
+            rub_str = format_currency(rates["usd_rub"], decimals=2)
+            logger.debug(
+                f"RUB rates: usd_rub={rates.get('usd_rub')}, rub_change_24h={rates.get('rub_change_24h')}, rub_change_30d={rates.get('rub_change_30d')}"
+            )
+            change_str = format_change(
+                rates.get("rub_change_24h"), rates.get("rub_change_30d")
+            )
             message_lines.append(f"USD: {rub_str} RUB{change_str}")
 
         message_lines.append("")
@@ -547,8 +605,10 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
             if product:
                 message_lines.append("🚀 <b>Product Hunt</b> (новое на рынке):")
-                message_lines.append(f"<a href=\"{product['url']}\">{product['name']}</a>")
-                message_lines.append(product['description'][:150])
+                message_lines.append(
+                    f"<a href=\"{product['url']}\">{product['name']}</a>"
+                )
+                message_lines.append(product["description"][:150])
                 message_lines.append("")
                 logger.info(f"✓ Product Hunt shown: {product['name']}")
             else:
@@ -560,7 +620,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     logger.info("Fetching content recommendation (max 10s)")
     content = None
     try:
-        if hasattr(asyncio, 'timeout'):  # Python 3.11+
+        if hasattr(asyncio, "timeout"):  # Python 3.11+
             async with asyncio.timeout(10):
                 content = await get_content_recommendation()
         else:  # Python 3.10 and earlier
@@ -577,7 +637,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         review = content.get("review", "")
         url = content.get("url", "")
         message_lines.append(f"<b>{emoji} Для вас</b> ({content['type']}):")
-        message_lines.append(f"<a href=\"{url}\"><b>{title}</b></a>" if url else f"<b>{title}</b>")
+        message_lines.append(
+            f'<a href="{url}"><b>{title}</b></a>' if url else f"<b>{title}</b>"
+        )
         message_lines.append(f"<i>{creator}</i>")
         message_lines.append(review)
         message_lines.append("")
@@ -595,7 +657,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             source = meme.get("source", "")
 
             if url:
-                message_lines.append(f"<a href=\"{url}\"><b>{title}</b></a>")
+                message_lines.append(f'<a href="{url}"><b>{title}</b></a>')
             else:
                 message_lines.append(f"<b>{title}</b>")
 
@@ -604,12 +666,16 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             message_lines.append("")
 
     final_message = "\n".join(message_lines)
-    logger.info(f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}")
+    logger.info(
+        f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}"
+    )
 
     # Check Telegram message length limit (4096 chars)
     MAX_TELEGRAM_LENGTH = 4000  # slightly under 4096 to be safe
     if len(final_message) > MAX_TELEGRAM_LENGTH:
-        logger.warning(f"⚠️  Digest message exceeds limit ({len(final_message)}/4096), splitting...")
+        logger.warning(
+            f"⚠️  Digest message exceeds limit ({len(final_message)}/4096), splitting..."
+        )
         # Split by major sections
         parts = []
         current_part = []
@@ -634,7 +700,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                 chat_id=chat_id,
                 text=part,
                 parse_mode="HTML",
-                disable_web_page_preview=True
+                disable_web_page_preview=True,
             )
             logger.info(f"✓ Sent part {i}/{len(parts)}")
     else:
@@ -642,7 +708,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             chat_id=chat_id,
             text=final_message,
             parse_mode="HTML",
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
         logger.info(f"✓ Digest sent in single message")
 
