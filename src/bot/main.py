@@ -172,16 +172,18 @@ def setup_fastapi(
     """Setup FastAPI app with webhook endpoint."""
     app = FastAPI(title="Telegram Bot Webhook")
 
-    # Extract path from webhook URL (e.g., /telegram/webhook from https://example.com/telegram/webhook)
+    # Extract path from webhook URL (e.g., /webhook/tg from https://example.com/webhook/tg)
     # Split by "/" and take everything after the domain
-    parts = webhook_url.split("/", 3)  # ["https:", "", "example.com", "path/to/webhook"]
+    parts = webhook_url.split("/", 3)  # ["https:", "", "example.com", "webhook/tg"]
     if len(parts) > 3 and parts[3]:  # Has a path component
         webhook_path = "/" + parts[3]
     else:
         webhook_path = "/webhook"  # Default path
 
-    logger.info(f"📍 Webhook path configured: {webhook_path}")
-    logger.info(f"📍 Webhook URL from Telegram: {webhook_url}")
+    logger.info(f"📍 Webhook URL: {webhook_url}")
+    logger.info(f"📍 URL parts: {parts}")
+    logger.info(f"📍 Extracted path: {webhook_path}")
+    logger.info(f"✓ FastAPI listening on POST {webhook_path}")
 
     async def process_webhook(request: Request):
         """Process Telegram webhook update."""
@@ -220,6 +222,14 @@ def setup_fastapi(
         )
         # Still try to process it in case it's a valid update
         return await process_webhook(request)
+
+    @app.on_event("startup")
+    async def log_routes():
+        """Log all registered routes on startup."""
+        logger.info("📋 FastAPI routes registered:")
+        for route in app.routes:
+            if hasattr(route, "path"):
+                logger.info(f"  {route.methods if hasattr(route, 'methods') else 'GET'} {route.path}")
 
     @app.get("/health")
     async def health():
