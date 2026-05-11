@@ -20,10 +20,14 @@ def get_authorized_id() -> int:
             # Try TELEGRAM_USER_ID first (for single-user bot)
             _AUTHORIZED_ID = int(get_secret("TELEGRAM_USER_ID"))
             logger.debug(f"Using TELEGRAM_USER_ID: {_AUTHORIZED_ID}")
-        except:
+        except (ValueError, TypeError):
             # Fallback to TELEGRAM_CHAT_ID
-            _AUTHORIZED_ID = int(get_secret("TELEGRAM_CHAT_ID"))
-            logger.debug(f"Using TELEGRAM_CHAT_ID: {_AUTHORIZED_ID}")
+            try:
+                _AUTHORIZED_ID = int(get_secret("TELEGRAM_CHAT_ID"))
+                logger.debug(f"Using TELEGRAM_CHAT_ID: {_AUTHORIZED_ID}")
+            except (ValueError, TypeError) as e:
+                logger.error(f"Failed to get authorized ID: {e}")
+                raise
     return _AUTHORIZED_ID
 
 

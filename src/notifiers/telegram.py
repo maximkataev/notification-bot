@@ -18,7 +18,9 @@ async def send_notification(message: str) -> bool:
 
     try:
         bot = Bot(token=bot_token)
-        await bot.send_message(chat_id=chat_id, text=message)
+        await bot.send_message(
+            chat_id=chat_id, text=message, disable_web_page_preview=True
+        )
         logger.info(f"Notification sent: {message[:50]}...")
         return True
     except Exception as e:

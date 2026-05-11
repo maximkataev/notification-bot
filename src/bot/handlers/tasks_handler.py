@@ -16,7 +16,9 @@ async def tasks_command(message: types.Message):
     tasks = await get_todoist_tasks()
 
     if not tasks:
-        await message.reply("У вас нет запланированных задач.")
+        await message.reply(
+            "У вас нет запланированных задач.", disable_web_page_preview=True
+        )
         return
 
     lines = ["📋 Ваши задачи:\n"]
@@ -43,4 +45,4 @@ async def tasks_command(message: types.Message):
 
         lines.append(line)
 
-    await message.reply("\n".join(lines))
+    await message.reply("\n".join(lines), disable_web_page_preview=True)

@@ -38,7 +38,10 @@ async def digest_command(message: types.Message):
         logger.info(f"  Message type: {message.content_type}")
     except Exception as e:
         logger.error(f"❌ ERROR at command start: {e}", exc_info=True)
-        await message.reply(f"❌ Ошибка: {str(e)}")
+        await message.reply(
+            "❌ Ошибка при обработке команды. Проверь логи.",
+            disable_web_page_preview=True,
+        )
         return
 
     # Get bot instance from dispatcher
@@ -48,7 +51,9 @@ async def digest_command(message: types.Message):
     # Send "generating..." message
     logger.info(f"Sending status message...")
     try:
-        status_msg = await message.reply("⏳ Генерирую дайджест...")
+        status_msg = await message.reply(
+            "⏳ Генерирую дайджест...", disable_web_page_preview=True
+        )
         logger.info(f"✓ Status message sent (message_id={status_msg.message_id})")
     except Exception as e:
         logger.error(f"❌ Failed to send status message: {e}", exc_info=True)
@@ -63,7 +68,9 @@ async def digest_command(message: types.Message):
 
         # Update status
         logger.info(f"Updating status message...")
-        await status_msg.edit_text("✓ Дайджест отправлен выше")
+        await status_msg.edit_text(
+            "✓ Дайджест отправлен выше", disable_web_page_preview=True
+        )
         logger.info(f"✓ Status message updated")
         logger.info(f"✓✓ ON-DEMAND DIGEST COMPLETED SUCCESSFULLY")
 
@@ -75,7 +82,8 @@ async def digest_command(message: types.Message):
 
         try:
             await status_msg.edit_text(
-                f"❌ Ошибка при генерации дайджеста:\n{str(e)[:100]}"
+                "❌ Ошибка при генерации дайджеста. Попробуй позже.",
+                disable_web_page_preview=True,
             )
             logger.info(f"Error message sent to user {user_id}")
         except Exception as edit_error:

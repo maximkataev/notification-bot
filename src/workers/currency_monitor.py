@@ -49,21 +49,20 @@ class CurrencyMonitor:
             ):
                 sources_exceeded = result.get("sources_exceeded", [])
 
-                # Build message with source links
+                # Build message
                 message = f"🚨 EUR/USD: {avg_rate:.5f} (выше {EUR_USD_THRESHOLD})\n\n"
 
                 # Add source details
                 if source1:
                     message += f"📊 exchangerate-api.com: {source1:.5f}\n"
                 if source2:
-                    message += f"📊 exchangerate.host: {source2:.5f}\n"
+                    message += f"📊 ECB (European Central Bank): {source2:.5f}\n"
 
-                # Add source links
-                message += "\n🔗 Источники:\n"
-                message += "• https://exchangerate-api.com/\n"
-                message += "• https://exchangerate.host/"
-
-                await self.bot.send_message(chat_id=self.chat_id, text=message)
+                await self.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=message,
+                    disable_web_page_preview=True,
+                )
                 self.last_alert_time = now
                 logger.info(
                     f"Alert sent for rate {avg_rate:.5f} from sources: {sources_exceeded}"

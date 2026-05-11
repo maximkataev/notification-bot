@@ -18,53 +18,53 @@ from src.utils.openai_client import get_client
 logger = logging.getLogger(__name__)
 
 # Real content sources (channels, playlists, podcasts)
-# YouTube Channel IDs - EN + RU combined
+# YouTube channels with both ID (for fetching) and channel URL (for display)
 YOUTUBE_CHANNELS = {
     # English channels
     "videos_educational": [
-        "UCsooa4yRKGN_zEE8iknghZA",  # TED-Ed
-        "UCAuUUnT6oDeKwE6v1NGQxug",  # TED
-        "UCHnyfMqiRRG1u-2MsSQLbXA",  # Veritasium
-        "UCYO_jab_esuFRV4b17AJtAw",  # 3Blue1Brown
-        "UCX6b17PVsYBQ0ip5gyeme-Q",  # Crash Course
-        "UC9-y-6csu5mg-rbJ7_TcQAA",  # Computerphile
-        "UCsXVk37bltHxD1rDPwtNM8Q",  # Kurzgesagt
-        "UC2D2CMWXMOVWx7giW1n3LIg",  # Huberman Lab
-        "UCSHZKyawb77ixDdsGog4iWA",  # Lex Fridman
+        {"id": "UCsooa4yRKGN_zEE8iknghZA", "name": "TED-Ed", "url": "https://www.youtube.com/@TEDed"},
+        {"id": "UCAuUUnT6oDeKwE6v1NGQxug", "name": "TED", "url": "https://www.youtube.com/@TED"},
+        {"id": "UCHnyfMqiRRG1u-2MsSQLbXA", "name": "Veritasium", "url": "https://www.youtube.com/@veritasium"},
+        {"id": "UCYO_jab_esuFRV4b17AJtAw", "name": "3Blue1Brown", "url": "https://www.youtube.com/@3blue1brown"},
+        {"id": "UCX6b17PVsYBQ0ip5gyeme-Q", "name": "Crash Course", "url": "https://www.youtube.com/@crashcourse"},
+        {"id": "UC9-y-6csu5mg-rbJ7_TcQAA", "name": "Computerphile", "url": "https://www.youtube.com/@Computerphile"},
+        {"id": "UCsXVk37bltHxD1rDPwtNM8Q", "name": "Kurzgesagt", "url": "https://www.youtube.com/@kurzgesagt"},
+        {"id": "UC2D2CMWXMOVWx7giW1n3LIg", "name": "Huberman Lab", "url": "https://www.youtube.com/@hubermanlab"},
+        {"id": "UCSHZKyawb77ixDdsGog4iWA", "name": "Lex Fridman", "url": "https://www.youtube.com/@lexfridman"},
     ],
     "videos_productivity": [
-        "UCoOae5nYA7VqaXzerajD0lg",  # Ali Abdaal
-        "UCG-KntY7aVnIGXYEBQvmBAQ",  # Thomas Frank
-        "UCJ24N4O0bP7LGLBDvye7oCA",  # Matt D'Avella
-        "UC9vLsnF6QPYuH51njmIooCQ",  # System Design Interview
-        "UC8butISFwT-Wl7EV0hUK0BQ",  # freeCodeCamp
+        {"id": "UCoOae5nYA7VqaXzerajD0lg", "name": "Ali Abdaal", "url": "https://www.youtube.com/@aliabdaal"},
+        {"id": "UCG-KntY7aVnIGXYEBQvmBAQ", "name": "Thomas Frank", "url": "https://www.youtube.com/@thomasfrank"},
+        {"id": "UCJ24N4O0bP7LGLBDvye7oCA", "name": "Matt D'Avella", "url": "https://www.youtube.com/@mattdavella"},
+        {"id": "UC9vLsnF6QPYuH51njmIooCQ", "name": "System Design Interview", "url": "https://www.youtube.com/@SystemDesignInterview"},
+        {"id": "UC8butISFwT-Wl7EV0hUK0BQ", "name": "freeCodeCamp", "url": "https://www.youtube.com/@freecodecamp"},
     ],
     "videos_tech": [
-        "UCbfYPyITQ-7l4upoX8nvctg",  # Fireship
-        "UCCezIgC97PvUuR4_gbFUs5g",  # Corey Schafer
-        "UCW5YeuERMmlnqo4oq8vwUpg",  # The Net Ninja
-        "UCsBjURrPoezykLs9EqgamOA",  # Ben Awad
+        {"id": "UCbfYPyITQ-7l4upoX8nvctg", "name": "Fireship", "url": "https://www.youtube.com/@fireship"},
+        {"id": "UCCezIgC97PvUuR4_gbFUs5g", "name": "Corey Schafer", "url": "https://www.youtube.com/@coreyms"},
+        {"id": "UCW5YeuERMmlnqo4oq8vwUpg", "name": "The Net Ninja", "url": "https://www.youtube.com/@NetNinja"},
+        {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Ben Awad", "url": "https://www.youtube.com/@benawad"},
     ],
     # Russian channels
     "videos_ru_documentary": [
-        "UCpHYYe5wzme6XJfYQbM8-_Q",  # Простые мысли
-        "UC4q1jrIeAOLh7Jw7YazqPWQ",  # Файб
-        "UC0oLxL8yFsI6KyXdDgnJi4g",  # SUREN
+        {"id": "UCpHYYe5wzme6XJfYQbM8-_Q", "name": "Простые мысли", "url": "https://www.youtube.com/@simple_thoughts"},
+        {"id": "UC4q1jrIeAOLh7Jw7YazqPWQ", "name": "Файб", "url": "https://www.youtube.com/@pheeb_official"},
+        {"id": "UC0oLxL8yFsI6KyXdDgnJi4g", "name": "SUREN", "url": "https://www.youtube.com/@surenart"},
     ],
     "videos_ru_science": [
-        "UC5f5IV0Bf79YLp_p9nfInRA",  # SciOne
-        "UC3Mss4t8lN4qUQ9-7Y0Q1nA",  # Мы и Они
-        "UC6uFo0i20oRjv4jM6Vn0Y6A",  # Основа
+        {"id": "UC5f5IV0Bf79YLp_p9nfInRA", "name": "SciOne", "url": "https://www.youtube.com/@scione"},
+        {"id": "UC3Mss4t8lN4qUQ9-7Y0Q1nA", "name": "Мы и Они", "url": "https://www.youtube.com/@myandthey"},
+        {"id": "UC6uFo0i20oRjv4jM6Vn0Y6A", "name": "Основа", "url": "https://www.youtube.com/@Osnova"},
     ],
     "videos_ru_society": [
-        "UC3bbYb7N7o2dC6Fsl9M6m2Q",  # Жиза
-        "UCW7sU3D8R8b8TnLq4v9P8bw",  # Черный кабинет
+        {"id": "UC3bbYb7N7o2dC6Fsl9M6m2Q", "name": "Жиза", "url": "https://www.youtube.com/@zhiza"},
+        {"id": "UCW7sU3D8R8b8TnLq4v9P8bw", "name": "Черный кабинет", "url": "https://www.youtube.com/@blackcabinetyt"},
     ],
     "videos_ru_travel": [
-        "UCm0x7wraT70xW4K8v3a3d7Q",  # Хочу домой
+        {"id": "UCm0x7wraT70xW4K8v3a3d7Q", "name": "Хочу домой", "url": "https://www.youtube.com/@khochudomoy"},
     ],
     "videos_ru_food": [
-        "UC5m6D8V7kW9f8tY1j3n6kPQ",  # Покашеварим
+        {"id": "UC5m6D8V7kW9f8tY1j3n6kPQ", "name": "Покашеварим", "url": "https://www.youtube.com/@pokashevarim"},
     ],
 }
 
@@ -72,183 +72,213 @@ PODCAST_SOURCES = [
     # English podcasts
     {
         "title": "Data Skeptic",
-        "url": "https://dataskeptic.libsyn.com/rss",
+        "rss_url": "https://dataskeptic.libsyn.com/rss",
+        "channel_url": "https://dataskeptic.com/",
         "language": "en",
         "category": "ai_data",
     },
     {
         "title": "The Gradient",
-        "url": "https://feeds.buzzsprout.com/1832356.rss",
+        "rss_url": "https://feeds.buzzsprout.com/1832356.rss",
+        "channel_url": "https://thegradient.pub/",
         "language": "en",
         "category": "ai",
     },
     {
         "title": "Lex Fridman Podcast",
-        "url": "https://lexfridman.com/feed/podcast/",
+        "rss_url": "https://lexfridman.com/feed/podcast/",
+        "channel_url": "https://lexfridman.com/",
         "language": "en",
         "category": "ai_tech",
     },
     {
         "title": "Darknet Diaries",
-        "url": "https://feeds.megaphone.fm/darknetdiaries",
+        "rss_url": "https://feeds.megaphone.fm/darknetdiaries",
+        "channel_url": "https://darknetdiaries.com/",
         "language": "en",
         "category": "tech_security",
     },
     {
         "title": "Software Engineering Daily",
-        "url": "https://feeds.softwareengineeringdaily.com/rss.xml",
+        "rss_url": "https://feeds.softwareengineeringdaily.com/rss.xml",
+        "channel_url": "https://softwareengineeringdaily.com/",
         "language": "en",
         "category": "tech_engineering",
     },
     {
         "title": "The Changelog",
-        "url": "https://feeds.changelog.com/podcast",
+        "rss_url": "https://feeds.changelog.com/podcast",
+        "channel_url": "https://changelog.com/podcast",
         "language": "en",
         "category": "tech_engineering",
     },
     {
         "title": "a16z Podcast",
-        "url": "https://feeds.simplecast.com/JGE3yC0V",
+        "rss_url": "https://feeds.simplecast.com/JGE3yC0V",
+        "channel_url": "https://a16z.com/podcast/",
         "language": "en",
         "category": "business_startups",
     },
     {
         "title": "Y Combinator Podcast",
-        "url": "https://feeds.megaphone.fm/ycombinator",
+        "rss_url": "https://feeds.megaphone.fm/ycombinator",
+        "channel_url": "https://www.ycombinator.com/podcast/",
         "language": "en",
         "category": "business_startups",
     },
     {
         "title": "Masters of Scale",
-        "url": "https://feeds.megaphone.fm/masterscale",
+        "rss_url": "https://feeds.megaphone.fm/masterscale",
+        "channel_url": "https://mastersofscale.com/",
         "language": "en",
         "category": "business_startups",
     },
     {
         "title": "The Tim Ferriss Show",
-        "url": "https://feeds.megaphone.fm/timferriss",
+        "rss_url": "https://feeds.megaphone.fm/timferriss",
+        "channel_url": "https://tim.blog/podcast/",
         "language": "en",
         "category": "productivity",
     },
     {
         "title": "Huberman Lab",
-        "url": "https://feeds.megaphone.fm/hubermanlab",
+        "rss_url": "https://feeds.megaphone.fm/hubermanlab",
+        "channel_url": "https://hubermanlab.com/",
         "language": "en",
         "category": "health_productivity",
     },
     {
         "title": "StarTalk Radio",
-        "url": "https://feeds.megaphone.fm/startalk",
+        "rss_url": "https://feeds.megaphone.fm/startalk",
+        "channel_url": "https://www.startalkradio.net/",
         "language": "en",
         "category": "science",
     },
     # Russian podcasts - main
     {
         "title": "Радио-Т",
-        "url": "https://radio-t.com/podcast.rss",
+        "rss_url": "https://radio-t.com/podcast.rss",
+        "channel_url": "https://radio-t.com/",
         "language": "ru",
         "category": "tech",
     },
     {
         "title": "Закат Империи",
-        "url": "https://anchor.fm/s/11d8d8c4/podcast/rss",
+        "rss_url": "https://anchor.fm/s/11d8d8c4/podcast/rss",
+        "channel_url": "https://anchor.fm/zakatimperii",
         "language": "ru",
         "category": "history",
     },
     {
         "title": "Сперва роди",
-        "url": "https://feeds.simplecast.com/xq6WTx9j",
+        "rss_url": "https://feeds.simplecast.com/xq6WTx9j",
+        "channel_url": "https://spervarodi.simplecast.com/",
         "language": "ru",
         "category": "society",
     },
     {
         "title": "Норм",
-        "url": "https://feeds.simplecast.com/eAKaDgaQ",
+        "rss_url": "https://feeds.simplecast.com/eAKaDgaQ",
+        "channel_url": "https://norm.simplecast.com/",
         "language": "ru",
         "category": "culture_society",
     },
     {
         "title": "Короче, история",
-        "url": "https://feeds.simplecast.com/7wzebh8X",
+        "rss_url": "https://feeds.simplecast.com/7wzebh8X",
+        "channel_url": "https://koroche-historia.simplecast.com/",
         "language": "ru",
         "category": "history",
     },
     {
         "title": "Это провал",
-        "url": "https://feeds.simplecast.com/o6w7K_-I",
+        "rss_url": "https://feeds.simplecast.com/o6w7K_-I",
+        "channel_url": "https://etoprovalnow.simplecast.com/",
         "language": "ru",
         "category": "business_failures",
     },
     {
         "title": "Деньги пришли",
-        "url": "https://feeds.megaphone.fm/MEDUZA6636460993",
+        "rss_url": "https://feeds.megaphone.fm/MEDUZA6636460993",
+        "channel_url": "https://meduza.io/",
         "language": "ru",
         "category": "finance",
     },
     {
         "title": "Хочу не могу",
-        "url": "https://feeds.simplecast.com/9Wn6mA6m",
+        "rss_url": "https://feeds.simplecast.com/9Wn6mA6m",
+        "channel_url": "https://khochunemogou.simplecast.com/",
         "language": "ru",
         "category": "psychology_relationships",
     },
     {
         "title": "Либо выйдет, либо нет",
-        "url": "https://feeds.simplecast.com/Vuxy4v5Z",
+        "rss_url": "https://feeds.simplecast.com/Vuxy4v5Z",
+        "channel_url": "https://libo-vydet.simplecast.com/",
         "language": "ru",
         "category": "startups_business",
     },
     {
         "title": "Arzamas",
-        "url": "https://arzamas.academy/feed_v1/podcast.rss",
+        "rss_url": "https://arzamas.academy/feed_v1/podcast.rss",
+        "channel_url": "https://arzamas.academy/",
         "language": "ru",
         "category": "culture_education",
     },
     # Russian podcasts - underground
     {
         "title": "Так вышло",
-        "url": "https://feeds.megaphone.fm/meduza-tak-vyshlo",
+        "rss_url": "https://feeds.megaphone.fm/meduza-tak-vyshlo",
+        "channel_url": "https://meduza.io/",
         "language": "ru",
         "category": "society_ethics",
     },
     {
         "title": "Проветримся!",
-        "url": "https://feeds.simplecast.com/4_j8wz0P",
+        "rss_url": "https://feeds.simplecast.com/4_j8wz0P",
+        "channel_url": "https://provetrimsia.simplecast.com/",
         "language": "ru",
         "category": "mental_health",
     },
     {
         "title": "Либо получится, либо сдохнем",
-        "url": "https://feeds.simplecast.com/Wp9s6x4B",
+        "rss_url": "https://feeds.simplecast.com/Wp9s6x4B",
+        "channel_url": "https://libo-poluchitsia.simplecast.com/",
         "language": "ru",
         "category": "startups",
     },
     {
         "title": "Кавачай",
-        "url": "https://feeds.soundcloud.com/users/soundcloud:users:231188278/sounds.rss",
+        "rss_url": "https://feeds.soundcloud.com/users/soundcloud:users:231188278/sounds.rss",
+        "channel_url": "https://soundcloud.com/kavachay",
         "language": "ru",
         "category": "internet_culture",
     },
     {
         "title": "Blitz and Chips",
-        "url": "https://feeds.soundcloud.com/users/soundcloud:users:447105959/sounds.rss",
+        "rss_url": "https://feeds.soundcloud.com/users/soundcloud:users:447105959/sounds.rss",
+        "channel_url": "https://soundcloud.com/blitz-and-chips",
         "language": "ru",
         "category": "science_future",
     },
     {
         "title": "Ночной подкаст",
-        "url": "https://feeds.simplecast.com/Q0v7mP9x",
+        "rss_url": "https://feeds.simplecast.com/Q0v7mP9x",
+        "channel_url": "https://nochnoj-podkast.simplecast.com/",
         "language": "ru",
         "category": "calm_talk",
     },
     {
         "title": "Это разве секс?",
-        "url": "https://feeds.simplecast.com/jm0lPB7M",
+        "rss_url": "https://feeds.simplecast.com/jm0lPB7M",
+        "channel_url": "https://etoraves-sex.simplecast.com/",
         "language": "ru",
         "category": "relationships",
     },
     {
         "title": "Полка",
-        "url": "https://polka.academy/feed/podcast/",
+        "rss_url": "https://polka.academy/feed/podcast/",
+        "channel_url": "https://polka.academy/",
         "language": "ru",
         "category": "books_culture",
     },
@@ -297,50 +327,47 @@ MUSIC_PLAYLISTS = [
 async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
     """
     Fetch recent videos from English YouTube channels.
+    Returns links to channel pages, not individual videos.
 
     Args:
         max_results: max videos to return
 
     Returns:
-        List of video dicts with title, creator, url, description
+        List of video dicts with title, creator, channel_url, description
     """
     try:
         # Get only English channels (exclude videos_ru*)
         en_categories = {
             k: v for k, v in YOUTUBE_CHANNELS.items() if not k.startswith("videos_ru")
         }
-        all_channel_ids = []
-        for channel_ids in en_categories.values():
-            all_channel_ids.extend(channel_ids)
+        all_channels = []
+        for channels_list in en_categories.values():
+            all_channels.extend(channels_list)
         videos = []
 
-        for channel_id in all_channel_ids:
+        for channel in all_channels:
             try:
+                channel_id = channel["id"]
+                channel_name = channel["name"]
+                channel_url = channel["url"]
+
                 # YouTube RSS feed: /feeds/videos.xml?channel_id=CHANNEL_ID
-                url = (
-                    f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-                )
+                rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(url)
+                    response = await client.get(rss_url)
                     response.raise_for_status()
 
                 # Parse RSS
                 feed = feedparser.parse(response.content)
 
-                for entry in feed.entries[:3]:  # Get 3 latest from each channel
-                    # Extract video info
-                    video_id = entry.get("yt_videoid", "")
-                    video_url = (
-                        f"https://www.youtube.com/watch?v={video_id}"
-                        if video_id
-                        else entry.get("link", "")
-                    )
-
+                if feed.entries:
+                    # Create one entry per channel (not per video) with link to channel
+                    entry = feed.entries[0]  # Get first (most recent) for context
                     video = {
-                        "title": entry.get("title", ""),
-                        "creator": feed.feed.get("title", "YouTube"),
-                        "url": video_url,
+                        "title": channel_name,
+                        "creator": channel_name,
+                        "url": channel_url,  # Link to channel, not video
                         "description": entry.get("summary", "")[:150],
                         "type": "video",
                         "platform": "youtube",
@@ -349,15 +376,10 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
 
                     if video["title"] and video["url"]:
                         videos.append(video)
-
-                logger.debug(
-                    f"✓ Fetched {len([v for v in videos])} videos from {feed.feed.get('title', 'YouTube')}"
-                )
+                        logger.debug(f"✓ Fetched channel: {channel_name}")
 
             except Exception as e:
-                logger.debug(
-                    f"Failed to fetch from YouTube channel {channel_id}: {type(e).__name__}"
-                )
+                logger.debug(f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}")
                 continue
 
         return videos[:max_results]
@@ -390,24 +412,24 @@ async def get_podcasts(
 
         for source in sources:
             try:
-                url = source["url"]
+                # Use RSS URL for fetching, but return channel URL
+                rss_url = source.get("rss_url") or source.get("url")  # fallback for old format
+                channel_url = source.get("channel_url")
 
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(url)
+                    response = await client.get(rss_url)
                     response.raise_for_status()
 
                 # Parse RSS
                 feed = feedparser.parse(response.content)
 
-                for entry in feed.entries[:2]:  # Get 2 latest from each podcast
-                    # Extract podcast info
+                if feed.entries:
+                    # Create one entry per podcast (not per episode) with link to channel
+                    entry = feed.entries[0]  # Get first (most recent) for context
                     podcast = {
-                        "title": entry.get("title", ""),
-                        "creator": source.get(
-                            "title", feed.feed.get("title", "Podcast")
-                        ),
-                        "url": entry.get("link", "")
-                        or entry.get("enclosures", [{}])[0].get("href", ""),
+                        "title": source.get("title", feed.feed.get("title", "Podcast")),
+                        "creator": source.get("title", feed.feed.get("title", "Podcast")),
+                        "url": channel_url or entry.get("link", ""),  # Link to channel, not episode
                         "description": entry.get("summary", "")[:150],
                         "type": "podcast",
                         "platform": "podcast",
@@ -417,7 +439,7 @@ async def get_podcasts(
                     if podcast["title"] and podcast["url"]:
                         podcasts.append(podcast)
 
-                logger.debug(f"✓ Fetched podcasts from {source['title']}")
+                logger.debug(f"✓ Fetched podcast: {source['title']}")
 
             except Exception as e:
                 logger.debug(
@@ -464,34 +486,33 @@ async def get_music(max_results: int = 3) -> List[Dict[str, Any]]:
 
 
 async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any]]:
-    """Fetch recent videos from Russian YouTube channels."""
+    """Fetch recent videos from Russian YouTube channels.
+    Returns links to channel pages, not individual videos."""
     try:
         videos = []
         # Filter Russian channels from unified YOUTUBE_CHANNELS
         ru_categories = {
             k: v for k, v in YOUTUBE_CHANNELS.items() if k.startswith("videos_ru")
         }
-        for channel_ids in ru_categories.values():
-            for channel_id in channel_ids:
+        for channels_list in ru_categories.values():
+            for channel in channels_list:
                 try:
-                    url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                    channel_id = channel["id"]
+                    channel_name = channel["name"]
+                    channel_url = channel["url"]
+
+                    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
                     async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.get(url)
+                        response = await client.get(rss_url)
                         response.raise_for_status()
 
                     feed = feedparser.parse(response.content)
-                    for entry in feed.entries[:2]:
-                        video_id = entry.get("yt_videoid", "")
-                        video_url = (
-                            f"https://www.youtube.com/watch?v={video_id}"
-                            if video_id
-                            else entry.get("link", "")
-                        )
-
+                    if feed.entries:
+                        entry = feed.entries[0]  # First entry for context
                         video = {
-                            "title": entry.get("title", ""),
-                            "creator": feed.feed.get("title", "YouTube"),
-                            "url": video_url,
+                            "title": channel_name,
+                            "creator": channel_name,
+                            "url": channel_url,  # Link to channel, not video
                             "description": entry.get("summary", "")[:150],
                             "type": "video",
                             "platform": "youtube",
@@ -504,7 +525,7 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
 
                 except Exception as e:
                     logger.debug(
-                        f"Failed to fetch Russian YouTube {channel_id}: {type(e).__name__}"
+                        f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}"
                     )
                     continue
 
@@ -525,18 +546,21 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
 
         for source in ru_sources:
             try:
-                url = source["url"]
+                # Use RSS URL for fetching, but return channel URL
+                rss_url = source.get("rss_url") or source.get("url")  # fallback for old format
+                channel_url = source.get("channel_url")
+
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(url)
+                    response = await client.get(rss_url)
                     response.raise_for_status()
 
                 feed = feedparser.parse(response.content)
-                for entry in feed.entries[:1]:  # 1 latest from each Russian podcast
+                if feed.entries:
+                    entry = feed.entries[0]  # First entry for context
                     podcast = {
-                        "title": entry.get("title", ""),
+                        "title": source.get("title", feed.feed.get("title", "Podcast")),
                         "creator": source.get("title", "Podcast"),
-                        "url": entry.get("link", "")
-                        or entry.get("enclosures", [{}])[0].get("href", ""),
+                        "url": channel_url or entry.get("link", ""),  # Link to channel, not episode
                         "description": entry.get("summary", "")[:150],
                         "type": "podcast",
                         "platform": "podcast",
@@ -680,13 +704,13 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
 - Кратким и полезным
 - Объяснять, почему это стоит смотреть/слушать"""
 
-        response = client.messages.create(
+        response = await client.chat.completions.create(
             model="gpt-5.4-mini",
-            max_tokens=200,
+            max_completion_tokens=200,
             messages=[{"role": "user", "content": prompt}],
         )
 
-        response_text = response.content[0].text.strip()
+        response_text = response.choices[0].message.content.strip()
         logger.debug(f"AI selection response: {response_text}")
 
         # Parse JSON response

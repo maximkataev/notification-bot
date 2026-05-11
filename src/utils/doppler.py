@@ -25,10 +25,14 @@ def get_secret(key: str) -> Optional[str]:
             capture_output=True,
             text=True,
             check=True,
+            timeout=5,
         )
         secret = result.stdout.strip()
         logger.info(f"✓ Secret fetched from Doppler: {key}")
         return secret
+    except subprocess.TimeoutExpired:
+        logger.error(f"Doppler timeout for {key} (5s)")
+        return None
     except subprocess.CalledProcessError as e:
         logger.debug(f"Doppler failed for {key}: {e.stderr}")
         return None
@@ -43,10 +47,14 @@ def get_all_secrets() -> dict:
             capture_output=True,
             text=True,
             check=True,
+            timeout=5,
         )
         secrets = json.loads(result.stdout)
         logger.info(f"✓ Loaded {len(secrets)} secrets from Doppler")
         return secrets
+    except subprocess.TimeoutExpired:
+        logger.error("✗ Doppler timeout (5s)")
+        return {}
     except subprocess.CalledProcessError as e:
         logger.error(f"✗ Failed to fetch secrets: {e.stderr}")
         return {}

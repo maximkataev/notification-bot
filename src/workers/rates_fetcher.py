@@ -137,6 +137,42 @@ async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
         return {}
 
 
+async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:
+    """Fetch forex rates from European Central Bank (official, reliable fallback).
+
+    ECB provides daily rates for all major currencies via free XML feed.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            ecb_url = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+            response = await client.get(ecb_url)
+            response.raise_for_status()
+
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
+
+            rates = {}
+            for cube in root.iter('{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube'):
+                currency = cube.get('currency')
+                rate = cube.get('rate')
+                if currency and rate:
+                    try:
+                        rates[currency] = float(rate)
+                    except ValueError:
+                        pass
+
+            if 'USD' in rates:
+                eur_per_usd = 1.0 / rates['USD']
+                return {
+                    'usd_eur': eur_per_usd,
+                    'usd_rub': rates.get('RUB')
+                }
+        return None
+    except Exception as e:
+        logger.debug(f"ECB fallback failed: {e}")
+        return None
+
+
 async def get_crypto_and_forex_rates() -> Optional[Dict]:
     """Fetch BTC, ETH, USD/EUR, USD/RUB rates with 24h and 30d changes."""
     try:
@@ -193,17 +229,27 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
 
             logger.info(f"✓ Crypto: BTC={btc_info}, ETH={eth_info}")
 
-            # Fetch forex rates from exchangerate-api
+            # Fetch forex rates from exchangerate-api (primary)
             logger.info("Fetching forex rates from exchangerate-api")
-            forex_url = "https://api.exchangerate-api.com/v4/latest/USD"
-            forex_response = await client.get(forex_url)
-            forex_response.raise_for_status()
-            forex_data = forex_response.json()
+            try:
+                forex_url = "https://api.exchangerate-api.com/v4/latest/USD"
+                forex_response = await client.get(forex_url)
+                forex_response.raise_for_status()
+                forex_data = forex_response.json()
 
-            eur_rate = forex_data.get("rates", {}).get("EUR")
-            rub_rate = forex_data.get("rates", {}).get("RUB")
-            rates["usd_eur"] = eur_rate if eur_rate and eur_rate > 0 else None
-            rates["usd_rub"] = rub_rate if rub_rate and rub_rate > 0 else None
+                eur_rate = forex_data.get("rates", {}).get("EUR")
+                rub_rate = forex_data.get("rates", {}).get("RUB")
+                rates["usd_eur"] = eur_rate if eur_rate and eur_rate > 0 else None
+                rates["usd_rub"] = rub_rate if rub_rate and rub_rate > 0 else None
+            except Exception as e:
+                logger.warning(f"exchangerate-api failed, trying ECB fallback: {e}")
+                ecb_rates = await _get_rates_from_ecb()
+                if ecb_rates:
+                    rates["usd_eur"] = ecb_rates.get("usd_eur")
+                    rates["usd_rub"] = ecb_rates.get("usd_rub")
+                else:
+                    rates["usd_eur"] = None
+                    rates["usd_rub"] = None
 
             # Get historical forex rates
             logger.info("Fetching historical forex changes")

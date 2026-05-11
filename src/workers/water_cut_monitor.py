@@ -33,7 +33,9 @@ class WaterCutMonitor:
             # Send alert if never alerted OR different day
             if self.last_alert_date is None or self.last_alert_date != today:
                 message = f"🚨 {water_cuts}"
-                await self.bot.send_message(chat_id=self.chat_id, text=message)
+                await self.bot.send_message(
+                    chat_id=self.chat_id, text=message, disable_web_page_preview=True
+                )
                 self.last_alert_date = today
                 self.last_alert_message = water_cuts
                 logger.info(f"Water cut alert sent for {today}")

@@ -22,7 +22,7 @@ async def show_news_prompt(message: types.Message):
     else:
         response = "📝 Default промпт для новостей:\n\n" + DEFAULT_NEWS_PROMPT
 
-    await message.reply(response)
+    await message.reply(response, disable_web_page_preview=True)
 
 
 @router.message(Command("newsset"), AuthorizedOnly())
@@ -35,7 +35,8 @@ async def set_news_prompt_cmd(message: types.Message, command: CommandObject):
         logger.info("No args provided, sending help message")
         await message.reply(
             "Используй: /news_set <новый промпт>\n\n"
-            "Пример: /news_set Выбери только новости о конфликтах. Игнорируй спорт."
+            "Пример: /news_set Выбери только новости о конфликтах. Игнорируй спорт.",
+            disable_web_page_preview=True,
         )
         return
 
@@ -48,7 +49,10 @@ async def set_news_prompt_cmd(message: types.Message, command: CommandObject):
     logger.info(f"✓ News prompt saved for user {user_id}")
 
     logger.info(f"Sending confirmation reply")
-    await message.reply("✓ Промпт обновлен! Будет использован при следующем дайджесте.")
+    await message.reply(
+        "✓ Промпт обновлен! Будет использован при следующем дайджесте.",
+        disable_web_page_preview=True,
+    )
     logger.info(f"✓ Reply sent")
 
 
@@ -60,4 +64,4 @@ async def reset_news_prompt_cmd(message: types.Message):
     await reset_news_prompt(user_id)
     logger.info(f"News prompt reset for user {user_id}")
 
-    await message.reply("✓ Промпт сброшен на default.")
+    await message.reply("✓ Промпт сброшен на default.", disable_web_page_preview=True)

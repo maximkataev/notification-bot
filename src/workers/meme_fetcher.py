@@ -148,9 +148,9 @@ async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
         return []
 
 
-async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
+async def get_fresh_memes_for_digest(max_results: int = 3) -> Optional[List[Dict[str, Any]]]:
     """
-    Fetch fresh memes and get AI summaries (2-3 sentences in Russian).
+    Fetch fresh memes (no AI processing, just title + url + source).
 
     Returns:
         [
@@ -158,7 +158,6 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
                 "title": str,
                 "url": str,
                 "source": str,
-                "summary": str (2-3 sentences in Russian),
                 "language": "ru" | "en"
             },
             ...
@@ -166,93 +165,27 @@ async def get_meme_summaries() -> Optional[List[Dict[str, Any]]]:
         or None if no memes found
     """
     try:
-        # Fetch fresh memes
-        memes = await get_fresh_memes(max_results=5)
+        memes = await get_fresh_memes(max_results=max_results)
 
         if not memes:
             logger.warning("No fresh memes found")
             return None
 
-        logger.info(f"Got {len(memes)} memes, generating summaries...")
+        # Return as-is (no AI processing)
+        result = [
+            {
+                "title": meme.get("title", ""),
+                "url": meme.get("url", ""),
+                "source": meme.get("source", ""),
+                "language": meme.get("language", "en"),
+            }
+            for meme in memes
+        ]
 
-        # Prepare list for AI
-        meme_list = []
-        for idx, meme in enumerate(memes, 1):
-            meme_list.append(
-                {
-                    "index": idx,
-                    "title": meme.get("title", ""),
-                    "description": meme.get("description", ""),
-                    "url": meme.get("url", ""),
-                    "source": meme.get("source", ""),
-                }
-            )
-
-        # Send to GPT-4o for summaries
-        client = get_client()
-        prompt = f"""У тебя есть список свежих мемов/интернет-явлений.
-Для каждого напиши краткий пересказ (2-3 предложения) на русском, объясняя что это такое и почему это мемом стало.
-
-Мемы:
-"""
-        for item in meme_list:
-            prompt += (
-                f"\n{item['index']}. {item['title']}\n   {item['description'][:200]}"
-            )
-
-        prompt += f"""
-
-Ответь ТОЛЬКО JSON (без markdown):
-{{
-  "summaries": [
-    {{
-      "index": 1,
-      "summary": "краткое объяснение (2-3 предложения на русском)"
-    }},
-    ...
-  ]
-}}"""
-
-        response = client.messages.create(
-            model="gpt-5.4-mini",
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        response_text = response.content[0].text.strip()
-        logger.debug(f"AI response length: {len(response_text)}")
-
-        # Parse JSON response
-        import json
-
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-
-        result_data = json.loads(response_text)
-        summaries_data = result_data.get("summaries", [])
-
-        # Combine with original meme data
-        result = []
-        for summary_item in summaries_data:
-            idx = summary_item.get("index", 1) - 1
-            if 0 <= idx < len(memes):
-                meme = memes[idx]
-                result.append(
-                    {
-                        "title": meme.get("title", ""),
-                        "url": meme.get("url", ""),
-                        "source": meme.get("source", ""),
-                        "summary": summary_item.get("summary", ""),
-                        "language": meme.get("language", "en"),
-                    }
-                )
-
-        logger.info(f"✓ Generated summaries for {len(result)} memes")
+        logger.info(f"✓ Fetched {len(result)} fresh memes (no AI processing)")
         return result if result else None
     except Exception as e:
-        logger.error(f"Failed to get meme summaries: {type(e).__name__}: {e}")
+        logger.error(f"Failed to fetch memes: {type(e).__name__}: {e}")
         return None
 
 

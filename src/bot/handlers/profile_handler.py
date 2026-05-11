@@ -26,7 +26,8 @@ async def me_command(message: types.Message, command: CommandObject):
             f"🌍 Временная зона: {profile.timezone}\n"
             f"📝 Предпочтения: {profile.preferences or '(не указаны)'}\n\n"
             f"Используй: /me <предпочтения>\n"
-            f"Пример: /me просыпаюсь в 11:00, предпочитаю дневное время"
+            f"Пример: /me просыпаюсь в 11:00, предпочитаю дневное время",
+            disable_web_page_preview=True,
         )
         return
 
@@ -36,5 +37,8 @@ async def me_command(message: types.Message, command: CommandObject):
     profile.preferences = text
     await save_user_profile(profile)
 
-    await message.reply(f"✓ Профиль обновлен.\n\nПредпочтения: {text}")
+    await message.reply(
+        f"✓ Профиль обновлен.\n\nПредпочтения: {text}",
+        disable_web_page_preview=True,
+    )
     logger.info(f"Profile updated for user {user_id}: {text}")

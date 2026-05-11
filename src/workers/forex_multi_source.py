@@ -41,37 +41,43 @@ async def _fetch_from_exchangerate_api_v4() -> Optional[float]:
         return None
 
 
-async def _fetch_from_cbr_api() -> Optional[float]:
-    """Fetch EUR/USD from CBR API (Russian Central Bank - free)."""
+async def _fetch_from_ecb_api() -> Optional[float]:
+    """Fetch EUR/USD from ECB (European Central Bank - official daily rates)."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Get USD/RUB and EUR/RUB, then calculate EUR/USD
             response = await client.get(
-                "https://www.cbr-xml-daily.ru/daily_json.js",
+                "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml",
             )
             response.raise_for_status()
-            data = response.json()
 
-            valutes = data.get("Valute", {})
-            usd_info = valutes.get("USD", {})
-            eur_info = valutes.get("EUR", {})
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(response.content)
 
-            usd_value = usd_info.get("Value")  # RUB per USD
-            eur_value = eur_info.get("Value")  # RUB per EUR
+            # ECB uses namespace in XML
+            namespace = {
+                'default': 'http://www.ecb.int/vocabulary/2002-08-01/eurofxref'
+            }
 
-            if usd_value and eur_value and usd_value > 0:
-                eur_usd = eur_value / usd_value
-                logger.debug(f"✓ CBR API: EUR/USD = {eur_usd}")
-                return eur_usd
-            else:
-                logger.debug(f"CBR API returned invalid rates: USD={usd_value}, EUR={eur_value}")
-                return None
+            for cube in root.iter('{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube'):
+                currency = cube.get('currency')
+                rate = cube.get('rate')
+                if currency == 'USD' and rate:
+                    try:
+                        # ECB gives "1 USD = X EUR" directly (same as exchangerate-api)
+                        usd_eur = float(rate)
+                        logger.debug(f"✓ ECB API: USD/EUR = {usd_eur:.5f}")
+                        return usd_eur
+                    except ValueError:
+                        pass
+
+            logger.debug(f"ECB API: USD rate not found in response")
+            return None
 
     except httpx.TimeoutException:
-        logger.debug(f"CBR API: timeout (10s)")
+        logger.debug(f"ECB API: timeout (10s)")
         return None
     except Exception as e:
-        logger.debug(f"CBR API failed: {type(e).__name__}: {str(e)[:100]}")
+        logger.debug(f"ECB API failed: {type(e).__name__}: {str(e)[:100]}")
         return None
 
 
@@ -82,7 +88,7 @@ async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
     Returns:
         {
             "eur_usd_source1": float,           # exchangerate-api.com v4
-            "eur_usd_source2": float,           # CBR API
+            "eur_usd_source2": float,           # ECB API (European Central Bank)
             "eur_usd_avg": float,               # Average of available sources
             "timestamp": ISO datetime string,
             "sources_available": int,           # How many sources succeeded
@@ -95,7 +101,7 @@ async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
         # Fetch from both sources in parallel
         source1, source2 = await asyncio.gather(
             _fetch_from_exchangerate_api_v4(),
-            _fetch_from_cbr_api(),
+            _fetch_from_ecb_api(),
             return_exceptions=False,
         )
 
@@ -121,8 +127,8 @@ async def get_eur_usd_multi_source() -> Optional[Dict[str, Any]]:
 
         if avg_rate:
             logger.info(
-                f"✓ EUR/USD fetched: "
-                f"source1={source1}, source2={source2}, avg={avg_rate:.5f}"
+                f"✓ EUR/USD fetched from exchangerate-api + ECB: "
+                f"api={source1:.5f}, ecb={source2:.5f}, avg={avg_rate:.5f}"
             )
 
         return result
@@ -162,7 +168,7 @@ async def check_eur_usd_threshold(
         if source1 and source1 > threshold:
             sources_exceeded.append("exchangerate-api.com")
         if source2 and source2 > threshold:
-            sources_exceeded.append("exchangerate.host")
+            sources_exceeded.append("ECB API")
 
         exceeded = len(sources_exceeded) > 0
 

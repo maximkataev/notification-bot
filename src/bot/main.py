@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import hmac
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from aiogram import Bot, Dispatcher, types
@@ -62,7 +63,7 @@ async def ping_command(message: types.Message):
 
 
 async def debug_command(message: types.Message):
-    """Show debug info."""
+    """Show debug info (no auth required for initial setup)."""
     user_id = message.from_user.id
     chat_id = message.chat.id
     await message.reply(
@@ -181,10 +182,10 @@ def setup_fastapi(
     async def webhook(request: Request):
         """Handle Telegram webhook updates."""
         try:
-            # Verify secret
-            secret = request.headers.get("X-Telegram-Bot-API-Secret-Token")
-            if secret != webhook_secret:
-                logger.warning(f"⚠️  Invalid webhook secret: {secret}")
+            # Verify secret (constant-time comparison to prevent timing attacks)
+            secret = request.headers.get("X-Telegram-Bot-API-Secret-Token", "")
+            if not hmac.compare_digest(secret, webhook_secret):
+                logger.warning("⚠️  Invalid webhook secret (first 8 chars: [REDACTED])")
                 raise HTTPException(status_code=401, detail="Invalid secret")
 
             # Parse update
@@ -199,33 +200,12 @@ def setup_fastapi(
             raise
         except Exception as e:
             logger.error(f"Error processing webhook update: {type(e).__name__}: {e}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False}
 
     @app.get("/health")
     async def health():
         """Health check endpoint."""
         return {"status": "ok", "mode": "webhook"}
-
-    @app.post("/")
-    async def webhook_fallback(request: Request):
-        """Fallback webhook handler on root path (in case webhook_path extraction fails)."""
-        logger.warning("⚠️  Webhook fallback handler triggered on / - path extraction may be incorrect")
-        try:
-            secret = request.headers.get("X-Telegram-Bot-API-Secret-Token")
-            if secret != webhook_secret:
-                logger.warning(f"⚠️  Invalid webhook secret in fallback: {secret}")
-                raise HTTPException(status_code=401, detail="Invalid secret")
-
-            update_data = await request.json()
-            update = types.Update(**update_data)
-            await dp.feed_update(bot, update)
-            return {"ok": True}
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error in fallback webhook: {type(e).__name__}: {e}")
-            return {"ok": False, "error": str(e)}
 
     return app
 
@@ -285,7 +265,7 @@ async def main():
     try:
         user_id = int(get_secret("TELEGRAM_USER_ID"))
         logger.info(f"Using TELEGRAM_USER_ID: {user_id}")
-    except:
+    except (ValueError, TypeError):
         user_id = chat_id
         logger.warning(
             f"⚠️  TELEGRAM_USER_ID not set, using TELEGRAM_CHAT_ID ({chat_id}). If bot is in group, set TELEGRAM_USER_ID to your Telegram user ID."

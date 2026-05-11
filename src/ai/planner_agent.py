@@ -275,7 +275,7 @@ RECURRING TASKS: Detect patterns like:
 - "по вторникам и пятницам" → is_recurring: true, recurrence_pattern: "tue_fri"
 - "каждый день" → is_recurring: true, recurrence_pattern: "every_day"
 - "каждую неделю" → is_recurring: true, recurrence_pattern: "weekly"
-- "по выходным" → is_recurring: true, recurrence_pattern: "sat_sun"
+- "по выходным" / "в выходные" → is_recurring: true, recurrence_pattern: "sat_sun"
 - "рабочие дни" / "будни" → is_recurring: true, recurrence_pattern: "mon_tue_wed_thu_fri"
 
 If recurring task has no specific date but has time (e.g. "каждый пн в 19:00"):
@@ -283,6 +283,18 @@ If recurring task has no specific date but has time (e.g. "каждый пн в 
 - when_time: "19:00"
 - is_recurring: true
 - recurrence_pattern: "every_monday"
+
+TIME OF DAY PATTERNS: Detect phrases like:
+- "до обеда" / "до полудня" → proposed_time: "12:00", when_time: "до 12:00", constraints: "до обеда"
+- "после обеда" → proposed_time: "14:00", when_time: "после 12:00", constraints: "после обеда"
+- "с утра" / "утром" → proposed_time: "09:00", constraints: "с утра"
+- "вечером" → proposed_time: "18:00", constraints: "вечером"
+- "ночью" → proposed_time: "21:00", constraints: "ночью"
+
+WEEKDAY SHORTCUTS: When user says specific day without date:
+- "в субботу" / "в выходные" → when_date: next Saturday (YYYY-MM-DD)
+- "в понедельник" → when_date: next Monday (YYYY-MM-DD)
+- etc. (always calculate NEXT occurrence if today is that day)
 
 Return valid JSON with this schema (or array of 2 if reminder pattern detected):
 {{

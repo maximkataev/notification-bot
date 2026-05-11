@@ -23,7 +23,7 @@ from src.workers.quote_of_day import get_quote_of_day
 from src.workers.football_matches import get_today_matches
 from src.workers.football_analyzer import get_match_analysis
 from src.workers.forex_multi_source import get_eur_usd_multi_source
-from src.workers.meme_fetcher import get_meme_summaries
+from src.workers.meme_fetcher import get_fresh_memes_for_digest
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
                 await bot.send_message(
                     chat_id=chat_id,
                     text="🌅 Доброе утро! (дайджест не готов - превышен timeout)",
+                    disable_web_page_preview=True,
                 )
             except Exception as fallback_err:
                 logger.error(f"Failed to send timeout fallback message: {fallback_err}")
@@ -91,7 +92,9 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
             if chat_id is None:
                 chat_id = get_secret("TELEGRAM_CHAT_ID")
             await bot.send_message(
-                chat_id=chat_id, text=f"❌ Дайджест не отправлен: {type(e).__name__}"
+                chat_id=chat_id,
+                text=f"❌ Дайджест не отправлен: {type(e).__name__}",
+                disable_web_page_preview=True,
             )
         except Exception as fallback_err:
             logger.error(f"Failed to send error fallback message: {fallback_err}")
@@ -286,7 +289,22 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         aqi = air_quality.get("aqi", "?")
         desc = air_quality.get("description", "")
         pm25 = air_quality.get("pm25")
-        pm25_str = f", PM2.5: {pm25:.1f}" if pm25 else ""
+        # Add PM2.5 with quality assessment
+        if pm25:
+            # PM2.5 quality: 0-12 Good, 12-35 Moderate, 35-55 Unhealthy for Sensitive, 55+ Unhealthy
+            if pm25 <= 12:
+                pm25_quality = "отлично"
+            elif pm25 <= 35:
+                pm25_quality = "хорошо"
+            elif pm25 <= 55:
+                pm25_quality = "умеренно"
+            elif pm25 <= 150:
+                pm25_quality = "вредно"
+            else:
+                pm25_quality = "опасно"
+            pm25_str = f", PM2.5: {pm25:.1f}µg/m³ ({pm25_quality})"
+        else:
+            pm25_str = ""
         message_lines.append(f"💨 Качество воздуха: AQI {aqi} {desc}{pm25_str}")
         message_lines.append("")
     else:
@@ -325,9 +343,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         logger.info("No scheduled works on Vazha Iverievi")
 
     # Fetch and add news via ChatGPT selection
-    logger.info("Fetching recent news from RSS feeds (12 hours)")
-    news_items = await get_recent_news(hours=12)
-    logger.info(f"✓ News fetched: {len(news_items)} items found (last 12 hours)")
+    logger.info("Fetching recent news from RSS feeds (24 hours)")
+    news_items = await get_recent_news(hours=24)
+    logger.info(f"✓ News fetched: {len(news_items)} items found (last 24 hours)")
 
     if news_items:
         logger.info("Sending all news to ChatGPT for selection and summarization")
@@ -524,10 +542,10 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
             if source1:
                 source1_str = format_currency(source1, decimals=5)
-                message_lines.append(f"EUR (exchangerate-api.com): {source1_str} USD")
+                message_lines.append(f"EUR (ExchangeRate): {source1_str} USD")
             if source2:
                 source2_str = format_currency(source2, decimals=5)
-                message_lines.append(f"EUR (exchangerate.host): {source2_str} USD")
+                message_lines.append(f"EUR (ECB): {source2_str} USD")
             if avg and rates.get("eur_change_24h") is not None:
                 eur_str = format_currency(avg, decimals=5)
                 change_str = format_change(
@@ -621,12 +639,12 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     content = None
     try:
         if hasattr(asyncio, "timeout"):  # Python 3.11+
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(20):
                 content = await get_content_recommendation()
         else:  # Python 3.10 and earlier
-            content = await asyncio.wait_for(get_content_recommendation(), timeout=10.0)
+            content = await asyncio.wait_for(get_content_recommendation(), timeout=20.0)
     except asyncio.TimeoutError:
-        logger.warning("Content recommendation timed out (10s), skipping this section")
+        logger.warning("Content recommendation timed out (20s), skipping this section")
     except Exception as e:
         logger.warning(f"Failed to get content recommendation: {e}")
 
@@ -644,26 +662,24 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         message_lines.append(review)
         message_lines.append("")
 
-    # Add fresh memes with summaries
+    # Add fresh memes (3 per day, no AI summaries)
     logger.info("Fetching fresh memes")
-    meme_summaries = await get_meme_summaries()
+    memes = await get_fresh_memes_for_digest(max_results=3)
 
-    if meme_summaries:
-        message_lines.append("<b>🎭 Свежие мемы</b>:")
-        for meme in meme_summaries:
+    if memes:
+        message_lines.append("<b>🎭 Мемы дня:</b>")
+        for meme in memes:
             title = meme.get("title", "")
-            summary = meme.get("summary", "")
             url = meme.get("url", "")
             source = meme.get("source", "")
 
+            # Format: "Title (link) — Source"
             if url:
-                message_lines.append(f'<a href="{url}"><b>{title}</b></a>')
+                message_lines.append(f'<a href="{url}">{title}</a> — {source}')
             else:
-                message_lines.append(f"<b>{title}</b>")
+                message_lines.append(f"{title} — {source}")
 
-            message_lines.append(summary)
-            message_lines.append(f"<i>— {source}</i>")
-            message_lines.append("")
+        message_lines.append("")
 
     final_message = "\n".join(message_lines)
     logger.info(

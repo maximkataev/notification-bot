@@ -74,7 +74,8 @@ async def plan_command(message: types.Message, command: CommandObject):
             "Примеры:\n"
             "  /plan купить молоко\n"
             "  /plan в субботу на маковые поля с утра\n"
-            "  /plan позвонить другу завтра"
+            "  /plan позвонить другу завтра",
+            disable_web_page_preview=True,
         )
         return
 
@@ -84,7 +85,9 @@ async def plan_command(message: types.Message, command: CommandObject):
     logger.info(f"📝 /plan command from user {user_id}: {text[:50]}...")
 
     # Show "creating..." message
-    creating_msg = await message.reply("🔄 Парсирую задачу и создаю в Todoist...")
+    creating_msg = await message.reply(
+        "🔄 Создаю в Todoist...", disable_web_page_preview=True
+    )
 
     try:
         # Get user profile for task parsing context
@@ -99,7 +102,7 @@ async def plan_command(message: types.Message, command: CommandObject):
         try:
             parsed = await parse_task(text, user_profile)
         except Exception as parse_err:
-            logger.error(f"⚠️  AI parsing failed, using fallback: {parse_err}")
+            logger.error(f"⚠️  AI parsing failed, using fallback: {parse_err}", exc_info=True)
             # Fallback: create task without date/priority parsing
             parsed = {
                 "what": text,
@@ -110,12 +113,13 @@ async def plan_command(message: types.Message, command: CommandObject):
 
         if parsed.get("needs_clarification"):
             response = f"❓ {parsed.get('clarification_question', 'Не понял. Опиши задачу подробнее.')}"
-            await creating_msg.edit_text(response)
+            await creating_msg.edit_text(response, disable_web_page_preview=True)
             return
 
         # Extract parsed fields
         when_date = parsed.get("when_date")
-        when_time = parsed.get("when_time") or parsed.get("proposed_time")
+        # Prefer proposed_time (HH:MM format) over when_time (Russian text like "утром")
+        when_time = parsed.get("proposed_time") or parsed.get("when_time")
         is_urgent = parsed.get("is_urgent", False)
         what = parsed.get("what", text)
 
@@ -176,4 +180,7 @@ async def plan_command(message: types.Message, command: CommandObject):
         logger.error(
             f"✗ Error creating task in Todoist for user {user_id}: {e}", exc_info=True
         )
-        await creating_msg.edit_text(f"❌ Ошибка: {str(e)}")
+        await creating_msg.edit_text(
+            "❌ Ошибка при создании задачи. Попробуй позже или проверь конфигурацию.",
+            disable_web_page_preview=True,
+        )

@@ -1041,6 +1041,11 @@ When working on this project:
 
 11. **Model Choice**: Use `gpt-5.4-mini` for all AI tasks (not gpt-4o)
 
+12. **Disable Link Previews**: All message sending methods must include `disable_web_page_preview=True`
+    - Applies to: `send_message()`, `reply()`, `answer()`, `edit_text()`
+    - Prevents Telegram from generating link previews in chat
+    - Cleaner, faster message display
+
 ---
 
 **Last Updated**: May 2026  
