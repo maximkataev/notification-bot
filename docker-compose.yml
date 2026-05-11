@@ -4,16 +4,32 @@ services:
   notification-bot:
     image: "${DOCKER_HUB_USERNAME}/notification-bot:latest"
     pull_policy: always
+    network_mode: host  # Use host network for proper DNS and network access
     environment:
       - PYTHONUNBUFFERED=1
       - DOCKER_MODE=true
       - LOG_LEVEL=INFO
       - DOPPLER_TOKEN=${NOTIFICATION_BOT_DOPPLER_TOKEN}
+      - TZ=Asia/Tbilisi  # Set timezone to Tbilisi for correct scheduling
+    dns:  # Use public DNS resolvers
+      - 8.8.8.8
+      - 8.8.4.4
+      - 1.1.1.1
     volumes:
       - notification-bot-logs:/app/logs
       - notification-bot-data:/app/data
     restart: on-failure
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     # Logs:
     # - Docker: docker logs -f notification-bot
     # - File: /opt/notification-bot/logs/log.log
     # - JSON to stdout for aggregation
+    # Network fixes:
+    # - network_mode: host ensures DNS resolution works properly
+    # - TZ: Asia/Tbilisi ensures correct scheduler timing (08:00 morning digest)
+    # - dns entries specify public DNS servers as fallback

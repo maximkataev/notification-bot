@@ -20,87 +20,67 @@ WATCH_STREETS = [
 
 
 async def check_gwp_works() -> Optional[List[str]]:
-    """Check GWP website for works on Vazha Iverievi street."""
+    """Check GWP website for works on Vazha Iverievi street using Playwright."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            page = await browser.new_page()
             works_found = []
 
             # Check both scheduled and unscheduled works
-            urls = {
-                "https://www.gwp.ge/en/news/scheduled-works/": "Scheduled",
-                "https://www.gwp.ge/en/news/nonscheduled-works/": "Unscheduled",
-            }
+            urls = [
+                ("https://www.gwp.ge/en/news/scheduled-works/", "Scheduled"),
+                ("https://www.gwp.ge/en/news/nonscheduled-works/", "Unscheduled"),
+            ]
 
-            for url, work_type in urls.items():
+            for url, work_type in urls:
                 logger.info(f"Checking {url}")
                 try:
-                    response = await client.get(url, follow_redirects=True)
-                    response.raise_for_status()
-                except Exception as e:
-                    logger.debug(f"Error with {url}: {e}, trying alternative...")
-                    # Try with trailing slash
-                    if not url.endswith('/'):
-                        alt_url = url + '/'
-                        response = await client.get(alt_url, follow_redirects=True)
-                        response.raise_for_status()
-                    else:
-                        raise
+                    await page.goto(url, wait_until="networkidle", timeout=15000)
+                    await page.wait_for_timeout(2000)
 
-                soup = BeautifulSoup(response.text, "html.parser")
+                    content = await page.content()
+                    soup = BeautifulSoup(content, "html.parser")
 
-                # Look for news items/articles - try multiple selectors
-                articles = (
-                    soup.find_all("div", class_="item-news") or
-                    soup.find_all("article") or
-                    soup.find_all("div", class_="news-item") or
-                    soup.find_all("div", class_="news") or
-                    soup.find_all("li", class_="news")
-                )
+                    # GWP uses region-card class for work items
+                    articles = soup.find_all("div", class_="region-card")
+                    logger.debug(f"Found {len(articles)} articles on {url}")
 
-                logger.debug(f"Found {len(articles)} articles on {url}")
+                    for article in articles:
+                        # Get full text including all nested elements
+                        article_text = article.get_text(separator=" ", strip=True)
+                        article_text_lower = article_text.lower()
 
-                for article in articles:
-                    # Get full text including all nested elements
-                    article_text = article.get_text(separator=" ", strip=True)
-                    article_text_lower = article_text.lower()
-
-                    # Check if any watched street is mentioned
-                    street_found = None
-                    for street in WATCH_STREETS:
-                        street_lower = street.lower()
-                        if street_lower in article_text_lower:
-                            street_found = street
-                            break
-
-                    if street_found:
-                        # Extract title - prefer headings that mention the street itself
-                        title_elem = None
-                        for heading_tag in ["h2", "h3", "h4"]:
-                            for heading in article.find_all(heading_tag):
-                                heading_text = heading.get_text().lower()
-                                if any(s.lower() in heading_text for s in WATCH_STREETS):
-                                    title_elem = heading
-                                    break
-                            if title_elem:
+                        # Check if any watched street is mentioned
+                        street_found = None
+                        for street in WATCH_STREETS:
+                            street_lower = street.lower()
+                            if street_lower in article_text_lower:
+                                street_found = street
                                 break
 
-                        # If no heading mentions street, try title class or first link
-                        if not title_elem:
-                            title_elem = (
-                                article.find("a", class_="title") or
-                                article.find("a")
-                            )
+                        if street_found:
+                            # Extract title - look for headings or first substantial text
+                            title = None
+                            for heading_tag in ["h2", "h3", "h4", "h5"]:
+                                heading = article.find(heading_tag)
+                                if heading:
+                                    title = heading.get_text(strip=True)
+                                    break
 
-                        # Extract title text
-                        if title_elem:
-                            title = title_elem.get_text(strip=True)
-                        else:
-                            # Fallback: use first 80 chars of text
-                            title = article_text[:80].strip()
+                            if not title:
+                                # Use first 100 chars as title
+                                title = article_text[:100].strip()
 
-                        if title:  # Only add if we got a title
-                            works_found.append(f"{work_type} work: {title}")
-                            logger.info(f"Found work on Vazha Iverievi ({street_found}): {title}")
+                            if title:
+                                works_found.append(f"{work_type} work: {title}")
+                                logger.info(f"Found work on Vazha Iverievi ({street_found}): {title}")
+
+                except Exception as e:
+                    logger.debug(f"Error checking {url}: {e}")
+                    continue
+
+            await browser.close()
 
             if works_found:
                 logger.info(f"✓ Found {len(works_found)} works on Vazha Iverievi")

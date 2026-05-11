@@ -1,8 +1,9 @@
-"""Main bot entry point with aiogram."""
+"""Main bot entry point with aiogram + FastAPI webhooks."""
 import asyncio
 import logging
 import os
 from dotenv import load_dotenv
+from fastapi import FastAPI, Request, HTTPException
 from aiogram import Bot, Dispatcher, types
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
@@ -20,6 +21,12 @@ from src.workers.currency_monitor import CurrencyMonitor
 from src.workers.water_cut_monitor import WaterCutMonitor
 
 logger = get_logger(__name__)
+
+# Global variables for webhook handling
+app: FastAPI = None
+bot: Bot = None
+dp: Dispatcher = None
+webhook_secret: str = None
 
 
 class DebugMiddleware(BaseMiddleware):
@@ -86,27 +93,8 @@ async def info_command(message: types.Message):
     )
 
 
-async def main():
-    """Initialize and run bot."""
-    # Determine if running in Docker
-    docker_mode = os.getenv("DOCKER_MODE", "false").lower() == "true"
-    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-
-    # Initialize logging
-    setup_logging(level=getattr(logging, log_level), docker_mode=docker_mode)
-    logger.info(f"🚀 Bot starting (Docker: {docker_mode}, Level: {log_level})")
-
-    # Initialize database
-    await init_db()
-    logger.info("✓ Database initialized")
-
-    # Get credentials
-    bot_token = get_secret("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
-        raise ValueError("TELEGRAM_BOT_TOKEN not found in Doppler")
-
-    # Initialize bot
-    bot = Bot(token=bot_token)
+async def setup_dispatcher(bot: Bot) -> Dispatcher:
+    """Setup dispatcher with all routers and handlers."""
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
 
@@ -141,38 +129,158 @@ async def main():
     logger.info("  ✓ /info command registered (auth required)")
 
     logger.info("✓ All routers and handlers registered")
+    return dp
 
-    # Initialize scheduler for morning digest only
-    chat_id = int(get_secret("TELEGRAM_CHAT_ID"))  # Chat ID for morning digest
 
-    # For single-user bot: chat_id should be same as user_id
-    # If bot is in group: TELEGRAM_CHAT_ID is the group, need separate USER_ID for task queries
+async def register_webhook(bot: Bot, webhook_url: str) -> bool:
+    """Register webhook with Telegram."""
+    try:
+        # Delete old webhook first
+        await bot.delete_webhook(drop_pending_updates=False)
+        logger.info("✓ Old webhook deleted (if existed)")
+
+        # Set new webhook
+        await bot.set_webhook(url=webhook_url)
+        logger.info(f"✓ Webhook registered: {webhook_url}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to register webhook: {type(e).__name__}: {e}")
+        return False
+
+
+def setup_fastapi(bot: Bot, dp: Dispatcher, webhook_url: str, webhook_secret: str) -> FastAPI:
+    """Setup FastAPI app with webhook endpoint."""
+    app = FastAPI(title="Telegram Bot Webhook")
+
+    # Extract path from webhook URL (e.g., /telegram/webhook from https://example.com/telegram/webhook)
+    webhook_path = "/" + webhook_url.split("/", 3)[-1] if "/" in webhook_url else "/webhook"
+
+    @app.post(webhook_path)
+    async def webhook(request: Request):
+        """Handle Telegram webhook updates."""
+        try:
+            # Verify secret
+            secret = request.headers.get("X-Telegram-Bot-API-Secret-Token")
+            if secret != webhook_secret:
+                logger.warning(f"⚠️  Invalid webhook secret: {secret}")
+                raise HTTPException(status_code=401, detail="Invalid secret")
+
+            # Parse update
+            update_data = await request.json()
+            update = types.Update(**update_data)
+
+            # Process update through dispatcher
+            await dp.feed_update(bot, update)
+            return {"ok": True}
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing webhook update: {type(e).__name__}: {e}")
+            return {"ok": False, "error": str(e)}
+
+    @app.get("/health")
+    async def health():
+        """Health check endpoint."""
+        return {"status": "ok", "mode": "webhook"}
+
+    return app
+
+
+async def main():
+    """Initialize and run bot with FastAPI webhook."""
+    global app, bot, dp, webhook_secret
+
+    # Determine if running in Docker
+    docker_mode = os.getenv("DOCKER_MODE", "false").lower() == "true"
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+
+    # Initialize logging
+    setup_logging(level=getattr(logging, log_level), docker_mode=docker_mode)
+    logger.info(f"🚀 Bot starting (Docker: {docker_mode}, Level: {log_level})")
+
+    # Initialize database
+    await init_db()
+    logger.info("✓ Database initialized")
+
+    # Get credentials
+    bot_token = get_secret("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
+        raise ValueError("TELEGRAM_BOT_TOKEN not found in Doppler")
+
+    webhook_url = get_secret("WEBHOOK_URL")
+    webhook_port = get_secret("WEBHOOK_PORT")
+    webhook_secret = get_secret("WEBHOOK_SECRET")
+
+    if not webhook_url or not webhook_port or not webhook_secret:
+        raise ValueError("WEBHOOK_URL, WEBHOOK_PORT, or WEBHOOK_SECRET not found in Doppler")
+
+    webhook_port = int(webhook_port)
+
+    # Initialize bot and dispatcher
+    bot = Bot(token=bot_token)
+    dp = await setup_dispatcher(bot)
+
+    logger.info(f"✓ Bot initialized with token (last 5 chars: ...{bot_token[-5:]})")
+
+    # Register webhook with Telegram
+    webhook_registered = await register_webhook(bot, webhook_url)
+    if not webhook_registered:
+        logger.error("Failed to register webhook, exiting")
+        await bot.session.close()
+        raise RuntimeError("Webhook registration failed")
+
+    # Setup FastAPI
+    app = setup_fastapi(bot, dp, webhook_url, webhook_secret)
+    logger.info("✓ FastAPI app configured")
+
+    # Initialize scheduler for morning digest
+    chat_id = int(get_secret("TELEGRAM_CHAT_ID"))
+
     try:
         user_id = int(get_secret("TELEGRAM_USER_ID"))
         logger.info(f"Using TELEGRAM_USER_ID: {user_id}")
     except:
-        # Fallback: assume private chat where chat_id == user_id
         user_id = chat_id
         logger.warning(f"⚠️  TELEGRAM_USER_ID not set, using TELEGRAM_CHAT_ID ({chat_id}). If bot is in group, set TELEGRAM_USER_ID to your Telegram user ID.")
 
     logger.info(f"Scheduler config: chat_id={chat_id}, user_id={user_id}")
     scheduler = init_scheduler(bot, user_id, chat_id)
     scheduler.start()
-    logger.info("Scheduler started: morning digest (04:00 UTC = 08:00 Tbilisi)")
+    logger.info("✓ Scheduler started: morning digest (04:00 UTC = 08:00 Tbilisi)")
 
     # Start currency monitor as background task
     currency_monitor = CurrencyMonitor(bot=bot, chat_id=chat_id)
     monitor_task = asyncio.create_task(currency_monitor.run_loop())
-    logger.info("Currency monitor started in background")
+    logger.info("✓ Currency monitor started in background")
 
     # Start water cut monitor as background task
     water_monitor = WaterCutMonitor(bot=bot, chat_id=chat_id)
     water_monitor_task = asyncio.create_task(water_monitor.run_loop())
-    logger.info("Water cut monitor started in background")
+    logger.info("✓ Water cut monitor started in background")
+
+    # Run FastAPI server
+    import uvicorn
+
+    logger.info(f"🌐 Starting Webhook Server on 0.0.0.0:{webhook_port}")
+    logger.info(f"📍 Webhook URL: {webhook_url}")
 
     try:
-        await dp.start_polling(bot)
+        # Create uvicorn server config
+        config = uvicorn.Config(
+            app=app,
+            host="0.0.0.0",
+            port=webhook_port,
+            log_level=log_level.lower(),
+        )
+        server = uvicorn.Server(config)
+
+        # Run server
+        await server.serve()
+    except KeyboardInterrupt:
+        logger.info("⏹️  Shutdown signal received")
     finally:
+        logger.info("Cleaning up...")
         monitor_task.cancel()
         water_monitor_task.cancel()
         try:
@@ -185,6 +293,7 @@ async def main():
             logger.info("Water cut monitor task cancelled")
         scheduler.shutdown()
         await bot.session.close()
+        logger.info("✓ Cleanup complete")
 
 
 if __name__ == "__main__":

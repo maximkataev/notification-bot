@@ -17,13 +17,14 @@ I'm using gpt-5.4-mini model. Don't ever fucking change it.
 6. **Infrastructure Alerts** — GWP (Georgian Water & Power) works on Vazha Iverievi street
 7. **Holiday/Event Tracking** — Georgia, Russia, Cyprus holidays + DST changes
 
-**Architecture**: Single-user bot instance running on asyncio event loop. Both Telegram polling and background tasks share the same loop and SQLite database.
+**Architecture**: Single-user bot instance with FastAPI webhook server. Telegram sends updates via HTTP webhooks to the server, processed through aiogram dispatcher. Background tasks (scheduler, monitors) run on same asyncio event loop with SQLite database.
 
 ## Tech Stack
 
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Bot Framework | aiogram 3.x | Telegram API integration with Router/Dispatcher pattern |
+| Webhook Server | FastAPI + uvicorn | HTTP webhook endpoint for Telegram updates |
 | Async Runtime | asyncio | All I/O operations (HTTP, database, Telegram) |
 | Database | SQLite (aiosqlite) | Task persistence, user profiles, custom rules |
 | AI Models | OpenAI GPT-4o | Task parsing, morning intro, task explanations |
@@ -853,20 +854,37 @@ doppler projects  # Verify access
 ```
 
 ### Required Secrets (via Doppler)
+
+**Telegram Credentials:**
 ```bash
 doppler secrets set TELEGRAM_BOT_TOKEN <token>
 doppler secrets set TELEGRAM_CHAT_ID <chat-id>
+doppler secrets set TELEGRAM_USER_ID <user-id>          # Optional, defaults to TELEGRAM_CHAT_ID
 doppler secrets set OPENAI_API_KEY <key>
 ```
 
-### Running Locally
+**Webhook Configuration (FastAPI mode):**
 ```bash
-# With Doppler access
+doppler secrets set WEBHOOK_URL https://example.com/telegram/webhook
+doppler secrets set WEBHOOK_PORT 8080                    # Port to listen on
+doppler secrets set WEBHOOK_SECRET <random-secret-key>   # For validating Telegram requests
+```
+
+### Running Locally (Webhook Mode)
+```bash
+# With Doppler access - runs FastAPI webhook server on WEBHOOK_PORT
 PYTHONPATH=. doppler run --project notifications-bot --config dev -- python3 src/bot/main.py
 
-# Or with .env (if Doppler unavailable)
-source .env
-python3 src/bot/main.py
+# The server will:
+# 1. Delete old webhook from Telegram
+# 2. Register WEBHOOK_URL with Telegram
+# 3. Listen for updates on 0.0.0.0:WEBHOOK_PORT
+# 4. Validate incoming updates with WEBHOOK_SECRET
+
+# For local development, you need:
+# - WEBHOOK_URL to be publicly accessible (use ngrok or similar)
+# - WEBHOOK_PORT must be accessible from internet
+# - WEBHOOK_SECRET for security
 ```
 
 ### Running in Docker
@@ -996,16 +1014,32 @@ All AI calls use **GPT-4o** (upgraded from gpt-5.4-mini for better quality):
 
 When working on this project:
 
-1. **No Hardcoding**: All dynamic data from external APIs
-2. **Real Data Only**: Never use AI to generate news — keyword filter or fetch from sources
-3. **Async-First**: All I/O operations must be async (httpx, aiosqlite, etc.)
-4. **Error Logging**: Log errors with context (URL, status, timeout)
-5. **Timeout All Requests**: Default 10 seconds for external APIs
-6. **Field Names Matter**: news items have `description`, not `summary`
-7. **Markdown Links**: Format news as `[Source](url): text`
-8. **Russian Output**: All user-facing text in Russian
-9. **Test End-to-End**: Verify digest actually sends to Telegram
-10. **Model Choice**: Use `gpt-4o` for all AI tasks (not gpt-5.4-mini)
+1. **NO HARDCODED FALLBACKS**: If all API sources fail, return `None` (skip block in digest)
+   - Better to omit a section than show fake/outdated data
+   - Examples: quote_of_day returns None if all APIs fail (no fallback list)
+   - This applies to: quotes, products, recommendations, any dynamic content
+   
+2. **Real Data Only**: All content must be from actual external APIs or RSS feeds
+   - Never use AI to generate news — keyword filter or fetch from real sources
+   - Never generate fake quotes, products, or recommendations when APIs fail
+   
+3. **No Hardcoding**: All dynamic data from external APIs, never embed static fallback lists
+
+4. **Async-First**: All I/O operations must be async (httpx, aiosqlite, etc.)
+
+5. **Error Logging**: Log errors with context (URL, status, timeout)
+
+6. **Timeout All Requests**: Default 10 seconds for external APIs
+
+7. **Field Names Matter**: news items have `description`, not `summary`
+
+8. **Markdown Links**: Format news as `[Source](url): text`
+
+9. **Russian Output**: All user-facing text in Russian
+
+10. **Test End-to-End**: Verify digest actually sends to Telegram
+
+11. **Model Choice**: Use `gpt-5.4-mini` for all AI tasks (not gpt-4o)
 
 ---
 

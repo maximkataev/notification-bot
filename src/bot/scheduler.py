@@ -20,6 +20,9 @@ from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.quote_of_day import get_quote_of_day
 from src.workers.football_matches import get_today_matches
+from src.workers.football_analyzer import get_match_analysis
+from src.workers.forex_multi_source import get_eur_usd_multi_source
+from src.workers.meme_fetcher import get_meme_summaries
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +47,15 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
     logger.info(f"🌅 Starting morning digest for user {user_id}")
 
     try:
-        # Set global timeout for entire digest (60 seconds)
+        # Set global timeout for entire digest (120 seconds = 2 minutes for all API calls)
         try:
             if hasattr(asyncio, 'timeout'):  # Python 3.11+
-                async with asyncio.timeout(60):
+                async with asyncio.timeout(120):
                     await _morning_digest_impl(bot, user_id, chat_id)
             else:  # Python 3.10 and earlier
-                await asyncio.wait_for(_morning_digest_impl(bot, user_id, chat_id), timeout=60.0)
+                await asyncio.wait_for(_morning_digest_impl(bot, user_id, chat_id), timeout=120.0)
         except asyncio.TimeoutError:
-            logger.error(f"❌ Morning digest exceeded 60s timeout for user {user_id}")
+            logger.error(f"❌ Morning digest exceeded 120s timeout for user {user_id}")
             try:
                 if chat_id is None:
                     chat_id = get_secret("TELEGRAM_CHAT_ID")
@@ -151,22 +154,39 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 Стиль: просто, понятно, практично.
 
 3️⃣ РЕКОМЕНДАЦИЯ ПО ОДЕЖДЕ (одна строка, краткий список):
-⚠️ ВАЖНО: у меня НИКОГДА нет зонта - только куртка! Если дождь, рекомендуй куртку вместо зонта.
+🔥 ПРАВИЛА ОДЕЖДЫ (АДЕКВАТНО ТЕМПЕРАТУРЕ И ПОГОДЕ):
 
-Конкретная рекомендация как одеться, например:
-- Штаны, лёгкая кофта, белые кроссовки (сухо)
-- Куртка, джинсы, непромокаемые ботинки (дождь - БЕЗ ЗОНТА)
-- Солнцезащитный крем (SPF зависит от UV индекса и погоды)
-- Очки если солнечно
+⚠️ ТЕМПИРАТУРА (главный фактор):
+- 25°C+: ШОРТЫ + лёгкая футболка/рубашка. БЕЗ курток! (переменная облачность НЕ меняет это)
+- 20-25°C: ШОРТЫ летом/обычное. Куртка нужна ТОЛЬКО если дождь или сильный ветер
+- 15-20°C: ШТАНЫ + средняя кофта. Куртка в дождь или для верхнего слоя
+- 10-15°C: ШТАНЫ + куртка обязательна (переменная облачность + возможный ветер)
+- <10°C: ТЕПЛАЯ куртка + штаны + слои
 
-Формат: просто перечисли главное без лишних слов
+🌧️ ДОЖДЬ (главное):
+- С дождём → КУРТКА (не зонт! зонта у меня нет). Даже если +25°C
+- Легкий дождь: лёгкая ветровка или непромокаемая куртка
+- Сильный дождь: утеплённая куртка
+
+💨 ВЕТЕР:
+- Сильный ветер + 20°C → ШТАНЫ вместо шорт + куртка
+- Лёгкий ветер + 25°C → шорты, но может быть легкая куртка в руке
+
+☀️ СОЛНЦЕ:
+- Очки если солнечно и яркие лучи
+- Солнцезащитный крем (SPF 30+)
+
+ФОРМАТ: просто перечисли главное без лишних слов. Пример:
+"Шорты, лёгкая рубашка, белые кроссовки, очки"
+или
+"Штаны, куртка, кроссовки (дождь)"
 
 {weather_details}
 
 Формат ответа - ТРИ СТРОКИ:
 [простой привет]
 [совет про погоду]
-[одежда: штаны, кофта, обувь, аксессуары]"""
+[одежда: краткий перечень]"""
 
     logger.info("🔄 Calling AI to generate morning greeting, weather advice, and outfit")
 
@@ -443,13 +463,23 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             change_str = format_change(rates.get("eth_change_24h"), rates.get("eth_change_30d"))
             message_lines.append(f"ETH: {eth_str} USD{change_str}")
 
-        # EUR
-        if rates.get("usd_eur") and rates['usd_eur'] > 0:
-            eur_usd = 1.0 / rates['usd_eur']
-            eur_str = format_currency(eur_usd, decimals=5)
-            logger.debug(f"EUR rates: usd_eur={rates.get('usd_eur')}, eur_change_24h={rates.get('eur_change_24h')}, eur_change_30d={rates.get('eur_change_30d')}")
-            change_str = format_change(rates.get("eur_change_24h"), rates.get("eur_change_30d"))
-            message_lines.append(f"EUR: {eur_str} USD{change_str}")
+        # EUR (multi-source)
+        eur_multi = await get_eur_usd_multi_source()
+        if eur_multi:
+            source1 = eur_multi.get("eur_usd_source1")
+            source2 = eur_multi.get("eur_usd_source2")
+            avg = eur_multi.get("eur_usd_avg")
+
+            if source1:
+                source1_str = format_currency(source1, decimals=5)
+                message_lines.append(f"EUR (exchangerate-api.com): {source1_str} USD")
+            if source2:
+                source2_str = format_currency(source2, decimals=5)
+                message_lines.append(f"EUR (exchangerate.host): {source2_str} USD")
+            if avg and rates.get("eur_change_24h") is not None:
+                eur_str = format_currency(avg, decimals=5)
+                change_str = format_change(rates.get("eur_change_24h"), rates.get("eur_change_30d"))
+                message_lines.append(f"EUR (avg): {eur_str} USD{change_str}")
 
         # RUB
         if rates.get("usd_rub"):
@@ -473,39 +503,42 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         logger.info("No water cuts found on Vazha Ivereli street")
     message_lines.append("")
 
-    # Check for football matches (Barcelona/Real Madrid priority)
+    # Check for football matches (Barcelona/Real Madrid/PSG priority)
     logger.info("Checking for football matches today")
     football_matches = await get_today_matches()
+    product = None
 
     if football_matches and football_matches.get("matches"):
         # Show football matches instead of Product Hunt
         matches = football_matches["matches"]
-        match_type = football_matches.get("type", "match_of_day")
+        logger.info(f"✓ Found {len(matches)} football match(es)")
 
-        if match_type == "both":
-            message_lines.append("⚽ <b>Матчи сегодня</b> (Barcelona & Real Madrid):")
-        elif match_type == "barcelona":
-            message_lines.append("🔵 <b>Barcelona сегодня</b>:")
-        elif match_type == "real_madrid":
-            message_lines.append("⚪ <b>Real Madrid сегодня</b>:")
-        elif match_type == "match_of_day":
-            message_lines.append("⚽ <b>Матч дня</b>:")
-        else:
-            message_lines.append("⚽ <b>Матчи сегодня</b>:")
+        # Get AI analysis for matches
+        logger.info("Generating AI commentary for matches")
+        match_analysis = await get_match_analysis(matches, max_matches=3)
+        logger.info(f"✓ Generated commentary for {len(match_analysis)} matches")
 
-        for match in matches:
+        message_lines.append("⚽ <b>Матчи сегодня</b>:")
+        message_lines.append("")
+
+        for i, match in enumerate(matches):
             home = match.get("home", "Unknown")
             away = match.get("away", "Unknown")
             time = match.get("time", "TBD")
             league = match.get("league", "")
             emoji = match.get("emoji", "⚽")
 
-            message_lines.append(f"{emoji} {home} vs {away} | {time}")
-            if league:
-                message_lines.append(f"<i>{league}</i>")
+            message_lines.append(f"{emoji} {home} vs {away}")
+            message_lines.append(f"<i>{league}</i> • {time}")
 
-        message_lines.append("")
-        product = None
+            # Add AI commentary if available
+            if i in match_analysis:
+                commentary = match_analysis[i]
+                message_lines.append(f"💭 {commentary}")
+
+            message_lines.append("")
+
+        logger.info(f"Displayed {len(matches)} matches with AI commentary")
     else:
         # No matches - fetch Product Hunt as fallback
         logger.info("No football matches, fetching Product Hunt instead")
@@ -523,24 +556,52 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         except Exception as e:
             logger.error(f"Failed to fetch Product Hunt: {e}")
 
-    # Add Content recommendation
-    logger.info("Fetching content recommendation")
-    content = await get_content_recommendation()
+    # Add Content recommendation (with timeout to prevent digest delays)
+    logger.info("Fetching content recommendation (max 10s)")
+    content = None
+    try:
+        if hasattr(asyncio, 'timeout'):  # Python 3.11+
+            async with asyncio.timeout(10):
+                content = await get_content_recommendation()
+        else:  # Python 3.10 and earlier
+            content = await asyncio.wait_for(get_content_recommendation(), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.warning("Content recommendation timed out (10s), skipping this section")
+    except Exception as e:
+        logger.warning(f"Failed to get content recommendation: {e}")
 
     if not isinstance(content, Exception) and content:
         emoji = content.get("emoji", "📺")
         title = content.get("title", "")
         creator = content.get("creator", "")
-        description = content.get("description", "")
+        review = content.get("review", "")
         url = content.get("url", "")
         message_lines.append(f"<b>{emoji} Для вас</b> ({content['type']}):")
-        if url:
-            message_lines.append(f"<b><a href=\"{url}\">{title}</a></b>")
-        else:
-            message_lines.append(f"<b>{title}</b>")
+        message_lines.append(f"<a href=\"{url}\"><b>{title}</b></a>" if url else f"<b>{title}</b>")
         message_lines.append(f"<i>{creator}</i>")
-        message_lines.append(description[:100])
+        message_lines.append(review)
         message_lines.append("")
+
+    # Add fresh memes with summaries
+    logger.info("Fetching fresh memes")
+    meme_summaries = await get_meme_summaries()
+
+    if meme_summaries:
+        message_lines.append("<b>🎭 Свежие мемы</b>:")
+        for meme in meme_summaries:
+            title = meme.get("title", "")
+            summary = meme.get("summary", "")
+            url = meme.get("url", "")
+            source = meme.get("source", "")
+
+            if url:
+                message_lines.append(f"<a href=\"{url}\"><b>{title}</b></a>")
+            else:
+                message_lines.append(f"<b>{title}</b>")
+
+            message_lines.append(summary)
+            message_lines.append(f"<i>— {source}</i>")
+            message_lines.append("")
 
     final_message = "\n".join(message_lines)
     logger.info(f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}")

@@ -138,8 +138,23 @@ async def get_todoist_tasks() -> List[Task]:
         return []
 
 
-async def create_todoist_task(content: str) -> Optional[str]:
-    """Create a new task in Todoist 'Личное' project."""
+async def create_todoist_task(
+    content: str,
+    due_date: Optional[str] = None,
+    priority: int = 1,
+    labels: Optional[list] = None
+) -> Optional[str]:
+    """Create a new task in Todoist 'Личное' project.
+
+    Args:
+        content: Task description
+        due_date: Due date in YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS format
+        priority: 1=Normal, 2=Low, 3=Medium, 4=High (Todoist uses 1-4)
+        labels: List of label IDs or names
+
+    Returns:
+        Todoist task URL or None on error
+    """
     token = await get_todoist_token()
     if not token:
         logger.error("Cannot create task: TODOIST_API_KEY is missing")
@@ -151,19 +166,29 @@ async def create_todoist_task(content: str) -> Optional[str]:
         return None
 
     try:
+        task_payload = {
+            "content": content,
+            "project_id": project_id,
+        }
+
+        # Add optional fields
+        if due_date:
+            task_payload["due_date"] = due_date
+        if priority and priority >= 1 and priority <= 4:
+            task_payload["priority"] = priority
+        if labels:
+            task_payload["labels"] = labels
+
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.post(
                 f"{TODOIST_API_URL}/tasks",
                 headers={"Authorization": f"Bearer {token}"},
-                json={
-                    "content": content,
-                    "project_id": project_id,
-                }
+                json=task_payload
             )
             response.raise_for_status()
             task_data = response.json()
             task_id = task_data.get("id")
-            logger.info(f"Created Todoist task: {task_id}")
+            logger.info(f"Created Todoist task: {task_id} | due_date={due_date} | priority={priority}")
 
             # Return Todoist web URL
             # Note: Todoist uses task ID strings in URLs

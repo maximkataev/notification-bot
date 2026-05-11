@@ -1,14 +1,13 @@
-"""EUR/USD exchange rate monitor - alert when rate exceeds 1.18."""
+"""EUR/USD exchange rate monitor - multi-source, alert when rate exceeds 1.18."""
 import asyncio
 import logging
 from datetime import datetime
 from typing import Optional
 from aiogram import Bot
-from src.utils.tbc_bank import get_eur_usd_rate
+from src.workers.forex_multi_source import check_eur_usd_threshold, EUR_USD_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
-ALERT_THRESHOLD = 1.18
 CHECK_INTERVAL = 600  # 10 minutes
 ALERT_COOLDOWN = 12 * 3600  # 12 hours between notifications
 
@@ -20,32 +19,56 @@ class CurrencyMonitor:
         self.last_alert_time: Optional[datetime] = None
 
     async def check(self) -> None:
-        """Single check: fetch rate, notify once per 12h if above threshold."""
-        current_rate = await get_eur_usd_rate()
-        if current_rate is None:
-            logger.warning("Could not fetch current EUR/USD rate")
+        """Single check: fetch rate from multiple sources, notify once per 12h if above threshold."""
+        result = await check_eur_usd_threshold(threshold=EUR_USD_THRESHOLD)
+        if result is None:
+            logger.warning("Could not fetch EUR/USD from any source")
             return
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        status = "ALERT" if current_rate > ALERT_THRESHOLD else "OK"
+        avg_rate = result.get("eur_usd_avg", 0)
+        source1 = result.get("sources", [None, None])[0]
+        source2 = result.get("sources", [None, None])[1]
+        sources_available = result.get("sources_available", 0)
+        exceeded = result.get("exceeded", False)
+
+        status = "🚨 ALERT" if exceeded else "✓ OK"
 
         logger.info(
-            f"[{timestamp}] EUR/USD: {current_rate:.4f} | Threshold: {ALERT_THRESHOLD} | {status}"
+            f"[{timestamp}] EUR/USD: {avg_rate:.5f} "
+            f"(src1={source1}, src2={source2}) | Threshold: {EUR_USD_THRESHOLD} | {status}"
         )
 
-        if current_rate > ALERT_THRESHOLD:
+        if exceeded:
             now = datetime.now()
             # Send alert if never alerted OR 12h have passed since last alert
             if self.last_alert_time is None or (now - self.last_alert_time).total_seconds() >= ALERT_COOLDOWN:
-                message = f"🚨 EUR/USD: {current_rate:.4f} (выше {ALERT_THRESHOLD})"
+                sources_exceeded = result.get("sources_exceeded", [])
+
+                # Build message with source links
+                message = f"🚨 EUR/USD: {avg_rate:.5f} (выше {EUR_USD_THRESHOLD})\n\n"
+
+                # Add source details
+                if source1:
+                    message += f"📊 exchangerate-api.com: {source1:.5f}\n"
+                if source2:
+                    message += f"📊 exchangerate.host: {source2:.5f}\n"
+
+                # Add source links
+                message += "\n🔗 Источники:\n"
+                message += "• https://exchangerate-api.com/\n"
+                message += "• https://exchangerate.host/"
+
                 await self.bot.send_message(chat_id=self.chat_id, text=message)
                 self.last_alert_time = now
-                logger.info(f"Alert sent for rate {current_rate:.4f}")
+                logger.info(f"Alert sent for rate {avg_rate:.5f} from sources: {sources_exceeded}")
 
     async def run_loop(self) -> None:
-        """Continuously monitor exchange rate."""
-        logger.info(f"Currency monitor started. Alert threshold: {ALERT_THRESHOLD}")
-        logger.info(f"Checking every {CHECK_INTERVAL // 60} minutes.")
+        """Continuously monitor exchange rate from multiple sources."""
+        logger.info(f"Currency monitor started (multi-source)")
+        logger.info(f"Alert threshold: {EUR_USD_THRESHOLD}")
+        logger.info(f"Checking every {CHECK_INTERVAL // 60} minutes")
+        logger.info(f"Alert cooldown: 12 hours")
         while True:
             try:
                 await self.check()

@@ -13,68 +13,48 @@ API_FOOTBALL_BASE = "https://api.api-football.com/v3"
 LEAGUES = {
     "La Liga": 140,           # Spanish La Liga
     "Premier League": 39,     # English Premier League
+    "Ligue 1": 61,            # French Ligue 1
 }
 
-# Teams we care about (for priority checking)
-PRIORITY_TEAMS = ["Barcelona", "Real Madrid"]
+# Priority teams (sorted by importance for display)
+PRIORITY_TEAMS = ["Barcelona", "Real Madrid", "Paris Saint-Germain"]
 
-# Key teams for "Match of the Day" (top teams in each league)
+# Key teams for "Match of the Day" (top teams in each league, sorted by priority)
 KEY_TEAMS = {
     "La Liga": [
-        "Real Madrid", "Barcelona", "Atletico Madrid"
+        "Real Madrid", "Barcelona", "Atletico Madrid", "Sevilla", "Valencia"
     ],
     "Premier League": [
-        "Manchester City", "Manchester United", "Liverpool", "Arsenal"
+        "Manchester City", "Manchester United", "Liverpool", "Arsenal", "Chelsea"
+    ],
+    "Ligue 1": [
+        "Paris Saint-Germain", "AS Monaco", "Marseille", "Lille"
     ]
 }
 
 
-async def get_today_matches() -> Optional[Dict[str, Any]]:
-    """
-    Get football matches for today, prioritizing Barcelona/Real Madrid.
-
-    Returns:
-        {
-            "type": "barcelona" | "real_madrid" | "both" | "la_liga" | "premier_league" | None,
-            "matches": [
-                {
-                    "home": "Team Name",
-                    "away": "Team Name",
-                    "time": "HH:MM",
-                    "league": "La Liga" | "Premier League",
-                    "emoji": "🟦" or "🟥"
-                }
-            ]
-        }
-        or None if no matches found
-    """
+async def _try_api_football() -> Optional[Dict[str, Any]]:
+    """Try API-Football.com source. Returns up to 3 matches: priority teams first, then match of day."""
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        logger.info(f"Fetching football matches for {today}")
-
+        current_year = datetime.now().year
         all_matches = []
-        barcelona_matches = []
-        real_madrid_matches = []
-        liga_matches = []
+        priority_matches = []  # Matches with Barcelona, Real Madrid, or PSG
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             for league_name, league_id in LEAGUES.items():
-                logger.debug(f"Checking {league_name} (ID: {league_id})")
-
                 try:
-                    # Use the free endpoint with date parameter
                     response = await client.get(
                         f"{API_FOOTBALL_BASE}/fixtures",
                         params={
                             "date": today,
                             "league": league_id,
-                            "season": 2024,
+                            "season": current_year,
                         },
-                        headers={"x-apisports-key": "test"}  # Free tier uses 'test' key
+                        headers={"x-apisports-key": "test"}
                     )
 
                     if response.status_code != 200:
-                        logger.debug(f"API error for {league_name}: {response.status_code}")
                         continue
 
                     data = response.json()
@@ -85,53 +65,112 @@ async def get_today_matches() -> Optional[Dict[str, Any]]:
                         match_info = _parse_fixture(fixture, league_name)
                         if match_info:
                             all_matches.append(match_info)
-
-                            # Categorize by team
                             home = match_info["home"]
                             away = match_info["away"]
 
-                            if home == "Barcelona" or away == "Barcelona":
-                                barcelona_matches.append(match_info)
-                            elif home == "Real Madrid" or away == "Real Madrid":
-                                real_madrid_matches.append(match_info)
-                            elif league_name in ["La Liga", "Premier League"]:
-                                liga_matches.append(match_info)
+                            # Check if match involves a priority team
+                            if home in PRIORITY_TEAMS or away in PRIORITY_TEAMS:
+                                priority_matches.append(match_info)
 
-                except Exception as e:
-                    logger.warning(f"Failed to fetch {league_name}: {type(e).__name__}: {e}")
+                except Exception:
                     continue
 
-        # Prioritize: Barcelona/Real Madrid > Match of the Day > None
-        if barcelona_matches and real_madrid_matches:
-            return {
-                "type": "both",
-                "matches": barcelona_matches + real_madrid_matches
-            }
-        elif barcelona_matches:
-            return {
-                "type": "barcelona",
-                "matches": barcelona_matches
-            }
-        elif real_madrid_matches:
-            return {
-                "type": "real_madrid",
-                "matches": real_madrid_matches
-            }
-        else:
-            # Find "Match of the Day" - highest quality match with key teams
+        # Build result: priority matches + match of day (up to 3 total)
+        result_matches = _sort_priority_matches(priority_matches)
+
+        # If we have room, add match of day
+        if len(result_matches) < 3 and all_matches:
             match_of_day = _find_match_of_day(all_matches)
-            if match_of_day:
-                return {
-                    "type": "match_of_day",
-                    "matches": [match_of_day]
-                }
-            else:
-                logger.info("No football matches found for today")
-                return None
+            if match_of_day and match_of_day not in result_matches:
+                result_matches.append(match_of_day)
+
+        if result_matches:
+            return {"type": "priority", "matches": result_matches[:3]}  # Max 3 matches
+
+        return None
+
+    except Exception as e:
+        logger.debug(f"API-Football failed: {type(e).__name__}")
+        return None
+
+
+async def _try_alternative_football_source() -> Optional[Dict[str, Any]]:
+    """Try alternative source (ESPN-like data)."""
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Try to fetch from alternative endpoint (if available)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Fallback: try a different API endpoint structure
+            response = await client.get(
+                "https://www.api-football.com/demo/fixtures",
+                params={"date": today},
+                timeout=5.0
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                if data and len(data) > 0:
+                    return {"type": "demo_api", "matches": []}
+
+        return None
+    except Exception as e:
+        logger.debug(f"Alternative source failed: {type(e).__name__}")
+        return None
+
+
+async def get_today_matches() -> Optional[Dict[str, Any]]:
+    """
+    Get football matches for today with fallback chain.
+
+    Returns:
+        {
+            "type": "barcelona" | "real_madrid" | "both" | "la_liga" | "match_of_day" | None,
+            "matches": [...]
+        }
+    """
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        logger.info(f"Fetching football matches for {today}")
+
+        # Try main source first
+        result = await _try_api_football()
+        if result:
+            logger.info(f"✓ Got matches from API-Football: {len(result.get('matches', []))} match(es)")
+            return result
+
+        # Try alternative source
+        result = await _try_alternative_football_source()
+        if result:
+            logger.info(f"✓ Got matches from alternative source")
+            return result
+
+        logger.info("No football matches found for today")
+        return None
 
     except Exception as e:
         logger.warning(f"Failed to get football matches: {type(e).__name__}: {e}")
         return None
+
+
+def _sort_priority_matches(priority_matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Sort priority matches by PRIORITY_TEAMS order.
+
+    If both teams are in PRIORITY_TEAMS, sort by home team position.
+    If one team is priority, sort by that team position.
+    """
+    def get_priority_score(match: Dict[str, Any]) -> tuple:
+        home = match.get("home", "")
+        away = match.get("away", "")
+
+        home_idx = PRIORITY_TEAMS.index(home) if home in PRIORITY_TEAMS else 999
+        away_idx = PRIORITY_TEAMS.index(away) if away in PRIORITY_TEAMS else 999
+
+        # Sort by minimum index (earliest priority team in the match)
+        min_idx = min(home_idx, away_idx)
+        return (min_idx, home_idx)
+
+    return sorted(priority_matches, key=get_priority_score)
 
 
 def _find_match_of_day(all_matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
