@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import hmac
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, HTTPException
 from aiogram import Bot, Dispatcher, types
@@ -170,7 +171,20 @@ def setup_fastapi(
     bot: Bot, dp: Dispatcher, webhook_url: str, webhook_secret: str
 ) -> FastAPI:
     """Setup FastAPI app with webhook endpoint."""
-    app = FastAPI(title="Telegram Bot Webhook")
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Handle startup and shutdown events."""
+        # Startup
+        logger.info("📋 FastAPI routes registered:")
+        for route in app.routes:
+            if hasattr(route, "path"):
+                logger.info(f"  {route.methods if hasattr(route, 'methods') else 'GET'} {route.path}")
+        yield
+        # Shutdown
+        logger.info("FastAPI app shutting down")
+
+    app = FastAPI(title="Telegram Bot Webhook", lifespan=lifespan)
 
     # Extract path from webhook URL (handle both with/without scheme)
     # Examples: https://example.com/webhook/tg or example.com/webhook/tg
@@ -241,60 +255,10 @@ def setup_fastapi(
         # Still try to process it in case it's a valid update
         return await process_webhook(request)
 
-    @app.on_event("startup")
-    async def log_routes():
-        """Log all registered routes on startup."""
-        logger.info("📋 FastAPI routes registered:")
-        for route in app.routes:
-            if hasattr(route, "path"):
-                logger.info(f"  {route.methods if hasattr(route, 'methods') else 'GET'} {route.path}")
-
     @app.get("/health")
     async def health():
-        """Comprehensive health check endpoint."""
-        from src.bot.handlers.health_handler import (
-            _check_database,
-            _check_openai,
-            _check_weather,
-            _check_news,
-            _check_exchange_rates,
-        )
-
-        # Run all checks in parallel
-        results = await asyncio.gather(
-            _check_database(),
-            _check_openai(),
-            _check_weather(),
-            _check_news(),
-            _check_exchange_rates(),
-        )
-
-        db_ok, db_msg = results[0]
-        openai_ok, openai_msg = results[1]
-        weather_ok, weather_msg = results[2]
-        news_ok, news_msg = results[3]
-        rates_ok, rates_msg = results[4]
-
-        all_ok = all([db_ok, openai_ok, weather_ok, news_ok, rates_ok])
-
-        return {
-            "status": "healthy" if all_ok else "degraded",
-            "mode": "webhook",
-            "checks": {
-                "database": db_ok,
-                "openai": openai_ok,
-                "weather": weather_ok,
-                "news": news_ok,
-                "exchange_rates": rates_ok,
-            },
-            "details": {
-                "database": db_msg,
-                "openai": openai_msg,
-                "weather": weather_msg,
-                "news": news_msg,
-                "exchange_rates": rates_msg,
-            },
-        }
+        """Health check endpoint."""
+        return {"status": "ok"}
 
     return app
 
