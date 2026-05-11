@@ -24,6 +24,7 @@ from src.bot.handlers import (
     ai_handler,
     news_handler,
     digest_handler,
+    health_handler,
 )
 from src.bot.scheduler import init_scheduler
 from src.workers.currency_monitor import CurrencyMonitor
@@ -97,6 +98,8 @@ async def info_command(message: types.Message):
         "ДАЙДЖЕСТ:\n"
         "/digest - отправить дайджест сейчас\n"
         "(обычно в 08:00)\n\n"
+        "СИСТЕМА:\n"
+        "/health - проверить статус всех сервисов\n\n"
         "ПРИМЕРЫ:\n"
         "/plan в пн вечером концерт\n"
         "/me просыпаюсь в 11:00\n"
@@ -126,6 +129,8 @@ async def setup_dispatcher(bot: Bot) -> Dispatcher:
     logger.info("  ✓ ai_handler router registered")
     dp.include_router(news_handler.router)
     logger.info("  ✓ news_handler router registered")
+    dp.include_router(health_handler.router)
+    logger.info("  ✓ health_handler router registered")
     dp.include_router(plan_handler.router)
     logger.info("  ✓ plan_handler router registered (last due to catch-all handler)")
 
