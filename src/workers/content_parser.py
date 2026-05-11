@@ -324,9 +324,40 @@ MUSIC_PLAYLISTS = [
 ]
 
 
+async def _fetch_single_youtube_channel(channel: Dict) -> Optional[Dict[str, Any]]:
+    """Fetch a single YouTube channel (for parallel execution)."""
+    try:
+        channel_id = channel["id"]
+        channel_name = channel["name"]
+        channel_url = channel["url"]
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(rss_url)
+            response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+        if feed.entries:
+            entry = feed.entries[0]
+            video = {
+                "title": channel_name,
+                "creator": channel_name,
+                "url": channel_url,
+                "description": entry.get("summary", "")[:150],
+                "type": "video",
+                "platform": "youtube",
+                "published": entry.get("published", ""),
+            }
+            if video["title"] and video["url"]:
+                return video
+    except Exception as e:
+        logger.debug(f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}")
+    return None
+
+
 async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
     """
-    Fetch recent videos from English YouTube channels.
+    Fetch recent videos from English YouTube channels (parallel).
     Returns links to channel pages, not individual videos.
 
     Args:
@@ -343,44 +374,26 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
         all_channels = []
         for channels_list in en_categories.values():
             all_channels.extend(channels_list)
-        videos = []
 
-        for channel in all_channels:
-            try:
-                channel_id = channel["id"]
-                channel_name = channel["name"]
-                channel_url = channel["url"]
+        # Fetch all channels in parallel with timeout
+        tasks = [_fetch_single_youtube_channel(ch) for ch in all_channels]
+        try:
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(8.0):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.debug(f"YouTube videos fetch timed out after 8s")
+            results = []
 
-                # YouTube RSS feed: /feeds/videos.xml?channel_id=CHANNEL_ID
-                rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(rss_url)
-                    response.raise_for_status()
-
-                # Parse RSS
-                feed = feedparser.parse(response.content)
-
-                if feed.entries:
-                    # Create one entry per channel (not per video) with link to channel
-                    entry = feed.entries[0]  # Get first (most recent) for context
-                    video = {
-                        "title": channel_name,
-                        "creator": channel_name,
-                        "url": channel_url,  # Link to channel, not video
-                        "description": entry.get("summary", "")[:150],
-                        "type": "video",
-                        "platform": "youtube",
-                        "published": entry.get("published", ""),
-                    }
-
-                    if video["title"] and video["url"]:
-                        videos.append(video)
-                        logger.debug(f"✓ Fetched channel: {channel_name}")
-
-            except Exception as e:
-                logger.debug(f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}")
-                continue
+        # Filter out None and Exception results
+        videos = [
+            r for r in results
+            if r and not isinstance(r, Exception)
+        ]
 
         return videos[:max_results]
 
@@ -389,11 +402,40 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
         return []
 
 
+async def _fetch_single_podcast(source: Dict) -> Optional[Dict[str, Any]]:
+    """Fetch a single podcast source (for parallel execution)."""
+    try:
+        rss_url = source.get("rss_url") or source.get("url")
+        channel_url = source.get("channel_url")
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(rss_url)
+            response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+        if feed.entries:
+            entry = feed.entries[0]
+            podcast = {
+                "title": source.get("title", feed.feed.get("title", "Podcast")),
+                "creator": source.get("title", feed.feed.get("title", "Podcast")),
+                "url": channel_url or entry.get("link", ""),
+                "description": entry.get("summary", "")[:150],
+                "type": "podcast",
+                "platform": "podcast",
+                "published": entry.get("published", ""),
+            }
+            if podcast["title"] and podcast["url"]:
+                return podcast
+    except Exception as e:
+        logger.debug(f"Failed to fetch podcast {source.get('title', 'unknown')}: {type(e).__name__}")
+    return None
+
+
 async def get_podcasts(
     language: str = "en", max_results: int = 5
 ) -> List[Dict[str, Any]]:
     """
-    Fetch recent podcast episodes from RSS feeds.
+    Fetch recent podcast episodes from RSS feeds (parallel).
 
     Args:
         language: 'en', 'ru', or 'all'
@@ -403,49 +445,31 @@ async def get_podcasts(
         List of podcast dicts with title, creator, url, description
     """
     try:
-        podcasts = []
         sources = [
             s
             for s in PODCAST_SOURCES
             if language == "all" or s.get("language") == language
         ]
 
-        for source in sources:
-            try:
-                # Use RSS URL for fetching, but return channel URL
-                rss_url = source.get("rss_url") or source.get("url")  # fallback for old format
-                channel_url = source.get("channel_url")
-
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(rss_url)
-                    response.raise_for_status()
-
-                # Parse RSS
-                feed = feedparser.parse(response.content)
-
-                if feed.entries:
-                    # Create one entry per podcast (not per episode) with link to channel
-                    entry = feed.entries[0]  # Get first (most recent) for context
-                    podcast = {
-                        "title": source.get("title", feed.feed.get("title", "Podcast")),
-                        "creator": source.get("title", feed.feed.get("title", "Podcast")),
-                        "url": channel_url or entry.get("link", ""),  # Link to channel, not episode
-                        "description": entry.get("summary", "")[:150],
-                        "type": "podcast",
-                        "platform": "podcast",
-                        "published": entry.get("published", ""),
-                    }
-
-                    if podcast["title"] and podcast["url"]:
-                        podcasts.append(podcast)
-
-                logger.debug(f"✓ Fetched podcast: {source['title']}")
-
-            except Exception as e:
-                logger.debug(
-                    f"Failed to fetch podcast from {source['title']}: {type(e).__name__}"
+        # Fetch all podcasts in parallel with timeout
+        tasks = [_fetch_single_podcast(s) for s in sources]
+        try:
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(8.0):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
                 )
-                continue
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.debug(f"Podcast fetch timed out after 8s")
+            results = []
+
+        # Filter out None and Exception results
+        podcasts = [
+            r for r in results
+            if r and not isinstance(r, Exception)
+        ]
 
         return podcasts[:max_results]
 
@@ -485,49 +509,69 @@ async def get_music(max_results: int = 3) -> List[Dict[str, Any]]:
         return []
 
 
+async def _fetch_single_russian_youtube_channel(channel: Dict) -> Optional[Dict[str, Any]]:
+    """Fetch a single Russian YouTube channel (for parallel execution)."""
+    try:
+        channel_id = channel["id"]
+        channel_name = channel["name"]
+        channel_url = channel["url"]
+        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(rss_url)
+            response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+        if feed.entries:
+            entry = feed.entries[0]
+            video = {
+                "title": channel_name,
+                "creator": channel_name,
+                "url": channel_url,
+                "description": entry.get("summary", "")[:150],
+                "type": "video",
+                "platform": "youtube",
+                "language": "ru",
+                "published": entry.get("published", ""),
+            }
+            if video["title"] and video["url"]:
+                return video
+    except Exception as e:
+        logger.debug(f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}")
+    return None
+
+
 async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any]]:
-    """Fetch recent videos from Russian YouTube channels.
+    """Fetch recent videos from Russian YouTube channels (parallel).
     Returns links to channel pages, not individual videos."""
     try:
-        videos = []
         # Filter Russian channels from unified YOUTUBE_CHANNELS
         ru_categories = {
             k: v for k, v in YOUTUBE_CHANNELS.items() if k.startswith("videos_ru")
         }
+        all_channels = []
         for channels_list in ru_categories.values():
-            for channel in channels_list:
-                try:
-                    channel_id = channel["id"]
-                    channel_name = channel["name"]
-                    channel_url = channel["url"]
+            all_channels.extend(channels_list)
 
-                    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.get(rss_url)
-                        response.raise_for_status()
+        # Fetch all channels in parallel with timeout
+        tasks = [_fetch_single_russian_youtube_channel(ch) for ch in all_channels]
+        try:
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(8.0):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.debug(f"Russian YouTube videos fetch timed out after 8s")
+            results = []
 
-                    feed = feedparser.parse(response.content)
-                    if feed.entries:
-                        entry = feed.entries[0]  # First entry for context
-                        video = {
-                            "title": channel_name,
-                            "creator": channel_name,
-                            "url": channel_url,  # Link to channel, not video
-                            "description": entry.get("summary", "")[:150],
-                            "type": "video",
-                            "platform": "youtube",
-                            "language": "ru",
-                            "published": entry.get("published", ""),
-                        }
-
-                        if video["title"] and video["url"]:
-                            videos.append(video)
-
-                except Exception as e:
-                    logger.debug(
-                        f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}"
-                    )
-                    continue
+        # Filter out None and Exception results
+        videos = [
+            r for r in results
+            if r and not isinstance(r, Exception)
+        ]
 
         return videos[:max_results]
     except Exception as e:
@@ -537,47 +581,60 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
         return []
 
 
-async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
-    """Fetch recent episodes from Russian podcasts."""
+async def _fetch_single_russian_podcast(source: Dict) -> Optional[Dict[str, Any]]:
+    """Fetch a single Russian podcast source (for parallel execution)."""
     try:
-        podcasts = []
-        # Filter Russian podcasts from unified PODCAST_SOURCES
+        rss_url = source.get("rss_url") or source.get("url")
+        channel_url = source.get("channel_url")
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(rss_url)
+            response.raise_for_status()
+
+        feed = feedparser.parse(response.content)
+        if feed.entries:
+            entry = feed.entries[0]
+            podcast = {
+                "title": source.get("title", feed.feed.get("title", "Podcast")),
+                "creator": source.get("title", "Podcast"),
+                "url": channel_url or entry.get("link", ""),
+                "description": entry.get("summary", "")[:150],
+                "type": "podcast",
+                "platform": "podcast",
+                "language": "ru",
+                "published": entry.get("published", ""),
+            }
+            if podcast["title"] and podcast["url"]:
+                return podcast
+    except Exception as e:
+        logger.debug(f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}")
+    return None
+
+
+async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
+    """Fetch recent episodes from Russian podcasts (parallel)."""
+    try:
         ru_sources = [s for s in PODCAST_SOURCES if s.get("language") == "ru"]
 
-        for source in ru_sources:
-            try:
-                # Use RSS URL for fetching, but return channel URL
-                rss_url = source.get("rss_url") or source.get("url")  # fallback for old format
-                channel_url = source.get("channel_url")
-
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(rss_url)
-                    response.raise_for_status()
-
-                feed = feedparser.parse(response.content)
-                if feed.entries:
-                    entry = feed.entries[0]  # First entry for context
-                    podcast = {
-                        "title": source.get("title", feed.feed.get("title", "Podcast")),
-                        "creator": source.get("title", "Podcast"),
-                        "url": channel_url or entry.get("link", ""),  # Link to channel, not episode
-                        "description": entry.get("summary", "")[:150],
-                        "type": "podcast",
-                        "platform": "podcast",
-                        "language": "ru",
-                        "published": entry.get("published", ""),
-                    }
-
-                    if podcast["title"] and podcast["url"]:
-                        podcasts.append(podcast)
-
-                logger.debug(f"✓ Fetched Russian podcast: {source['title']}")
-
-            except Exception as e:
-                logger.debug(
-                    f"Failed to fetch Russian podcast {source['title']}: {type(e).__name__}"
+        # Fetch all Russian podcasts in parallel with timeout
+        tasks = [_fetch_single_russian_podcast(s) for s in ru_sources]
+        try:
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(8.0):
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                results = await asyncio.wait_for(
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
                 )
-                continue
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.debug(f"Russian podcasts fetch timed out after 8s")
+            results = []
+
+        # Filter out None and Exception results
+        podcasts = [
+            r for r in results
+            if r and not isinstance(r, Exception)
+        ]
 
         return podcasts[:max_results]
     except Exception as e:
@@ -587,7 +644,7 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
 
 async def get_all_content(max_per_type: int = 5) -> List[Dict[str, Any]]:
     """
-    Fetch ALL content sources (English + Russian) in parallel.
+    Fetch ALL content sources (English + Russian) in parallel with timeout.
     Returns flat list with all items, prioritizing Russian.
 
     Returns:
@@ -596,15 +653,33 @@ async def get_all_content(max_per_type: int = 5) -> List[Dict[str, Any]]:
     try:
         logger.info("Fetching all content sources (EN + RU) in parallel...")
 
-        # Fetch all sources in parallel
-        en_videos, en_podcasts, music, ru_videos, ru_podcasts = await asyncio.gather(
-            get_youtube_videos(max_results=max_per_type),
-            get_podcasts(language="en", max_results=max_per_type),
-            get_music(max_results=max_per_type),
-            get_russian_youtube_videos(max_results=max_per_type),
-            get_russian_podcasts(max_results=max_per_type),
-            return_exceptions=True,
-        )
+        # Fetch all sources in parallel with 15-second timeout
+        try:
+            if hasattr(asyncio, "timeout"):
+                async with asyncio.timeout(15.0):
+                    en_videos, en_podcasts, music, ru_videos, ru_podcasts = await asyncio.gather(
+                        get_youtube_videos(max_results=max_per_type),
+                        get_podcasts(language="en", max_results=max_per_type),
+                        get_music(max_results=max_per_type),
+                        get_russian_youtube_videos(max_results=max_per_type),
+                        get_russian_podcasts(max_results=max_per_type),
+                        return_exceptions=True,
+                    )
+            else:
+                en_videos, en_podcasts, music, ru_videos, ru_podcasts = await asyncio.wait_for(
+                    asyncio.gather(
+                        get_youtube_videos(max_results=max_per_type),
+                        get_podcasts(language="en", max_results=max_per_type),
+                        get_music(max_results=max_per_type),
+                        get_russian_youtube_videos(max_results=max_per_type),
+                        get_russian_podcasts(max_results=max_per_type),
+                        return_exceptions=True,
+                    ),
+                    timeout=15.0,
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Content sources fetch timed out after 15s, returning partial results")
+            en_videos = en_podcasts = music = ru_videos = ru_podcasts = []
 
         # Handle exceptions
         for var_name, var in [

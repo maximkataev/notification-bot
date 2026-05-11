@@ -37,8 +37,8 @@ async def check_gwp_works() -> Optional[List[str]]:
             for url, work_type in urls:
                 logger.info(f"Checking {url}")
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=15000)
-                    await page.wait_for_timeout(2000)
+                    await page.goto(url, wait_until="load", timeout=10000)
+                    await page.wait_for_timeout(500)
 
                     content = await page.content()
                     soup = BeautifulSoup(content, "html.parser")
@@ -188,7 +188,7 @@ async def check_water_cuts_today() -> Optional[str]:
                 )
                 try:
                     await page.goto(url, wait_until="load", timeout=10000)
-                    await page.wait_for_timeout(2000)
+                    await page.wait_for_timeout(500)
 
                     page_text = await page.content()
                     soup = BeautifulSoup(page_text, "html.parser")
