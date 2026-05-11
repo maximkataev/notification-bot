@@ -143,16 +143,17 @@ async def setup_dispatcher(bot: Bot) -> Dispatcher:
     return dp
 
 
-async def register_webhook(bot: Bot, webhook_url: str) -> bool:
-    """Register webhook with Telegram."""
+async def register_webhook(bot: Bot, webhook_url: str, webhook_secret: str) -> bool:
+    """Register webhook with Telegram, including secret token validation."""
     try:
         # Delete old webhook first
         await bot.delete_webhook(drop_pending_updates=False)
         logger.info("✓ Old webhook deleted (if existed)")
 
-        # Set new webhook
-        await bot.set_webhook(url=webhook_url)
+        # Set new webhook with secret token for validation
+        await bot.set_webhook(url=webhook_url, secret_token=webhook_secret)
         logger.info(f"✓ Webhook registered: {webhook_url}")
+        logger.info(f"✓ Webhook secret configured for validation")
         return True
     except Exception as e:
         logger.error(f"Failed to register webhook: {type(e).__name__}: {e}")
@@ -268,7 +269,7 @@ async def main():
     logger.info(f"✓ Bot initialized with token (last 5 chars: ...{bot_token[-5:]})")
 
     # Register webhook with Telegram
-    webhook_registered = await register_webhook(bot, webhook_url)
+    webhook_registered = await register_webhook(bot, webhook_url, webhook_secret)
     if not webhook_registered:
         logger.error("Failed to register webhook, exiting")
         await bot.session.close()
