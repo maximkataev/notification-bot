@@ -172,16 +172,26 @@ def setup_fastapi(
     """Setup FastAPI app with webhook endpoint."""
     app = FastAPI(title="Telegram Bot Webhook")
 
-    # Extract path from webhook URL (e.g., /webhook/tg from https://example.com/webhook/tg)
-    # Split by "/" and take everything after the domain
-    parts = webhook_url.split("/", 3)  # ["https:", "", "example.com", "webhook/tg"]
-    if len(parts) > 3 and parts[3]:  # Has a path component
-        webhook_path = "/" + parts[3]
+    # Extract path from webhook URL (handle both with/without scheme)
+    # Examples: https://example.com/webhook/tg or example.com/webhook/tg
+
+    parsed_url = webhook_url.strip()
+
+    # If URL has scheme, remove it
+    if "://" in parsed_url:
+        parsed_url = parsed_url.split("://", 1)[1]  # Remove https:// or http://
+
+    # Now split by / to get domain and path
+    # e.g., "example.com/webhook/tg" → ["example.com", "webhook/tg"]
+    parts = parsed_url.split("/", 1)
+
+    if len(parts) > 1 and parts[1]:  # Has a path component
+        webhook_path = "/" + parts[1]
     else:
         webhook_path = "/webhook"  # Default path
 
     logger.info(f"📍 Webhook URL: {webhook_url}")
-    logger.info(f"📍 URL parts: {parts}")
+    logger.info(f"📍 Parsed domain: {parts[0] if parts else 'unknown'}")
     logger.info(f"📍 Extracted path: {webhook_path}")
     logger.info(f"✓ FastAPI listening on POST {webhook_path}")
 
@@ -216,8 +226,14 @@ def setup_fastapi(
     @app.post("/webhook/{path:path}")
     async def webhook_fallback(request: Request, path: str):
         """Catch-all for webhook requests at unexpected paths."""
+        # Skip if this is the main webhook path (avoid duplicate processing)
+        fallback_path = "/" + path if path else "/"
+        if fallback_path == webhook_path:
+            logger.debug(f"Fallback handler skipping main webhook path: {webhook_path}")
+            return {"ok": False, "reason": "duplicate"}
+
         logger.warning(
-            f"⚠️  Webhook POST to unexpected path: /{path} "
+            f"⚠️  Webhook POST to unexpected path: {fallback_path} "
             f"(expected: {webhook_path})"
         )
         # Still try to process it in case it's a valid update
