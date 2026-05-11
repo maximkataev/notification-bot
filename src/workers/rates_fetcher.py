@@ -19,9 +19,21 @@ except ImportError:
     YFINANCE_AVAILABLE = False
     logger.debug("yfinance not installed")
 
-# Optional: Set your Open Exchange Rates API key for better historical data
-# Get free key at: https://openexchangerates.org/
-OPEN_EXCHANGE_RATES_API_KEY = None  # Will use if available
+# Cache for historical forex rates (updated by background worker every 1 hour)
+_historical_forex_cache = {
+    "data": None,
+    "timestamp": None,
+}
+
+# Open Exchange Rates API key for historical forex data
+# Get free key at: https://openexchangerates.org/ (1000 requests/month free tier)
+# If set in Doppler, will fetch historical 24h and 30d changes
+from src.utils.doppler import get_secret
+
+try:
+    OPEN_EXCHANGE_RATES_API_KEY = get_secret("OPEN_EXCHANGE_RATES_API_KEY")
+except:
+    OPEN_EXCHANGE_RATES_API_KEY = None
 
 
 async def _get_historical_from_open_exchange_rates(
@@ -113,28 +125,43 @@ def _get_historical_from_yahoo_finance() -> Dict[str, Optional[float]]:
     return {}
 
 
-async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
-    """Get historical forex changes from Yahoo Finance.
+async def _update_historical_forex_cache():
+    """Background worker: fetch and cache historical forex rates (called every 1 hour).
 
-    Uses yfinance to download EUR/USD and RUB/USD rates.
-    Returns empty dict if Yahoo Finance is unavailable.
+    This is called by a background scheduler to update the cache.
+    Does NOT log "unavailable" - just updates cache if API available.
     """
+    if not OPEN_EXCHANGE_RATES_API_KEY:
+        logger.debug("Open Exchange Rates API key not set, skipping historical forex update")
+        return
+
     try:
-        logger.info("Getting historical forex changes")
-
-        if YFINANCE_AVAILABLE:
-            result = _get_historical_from_yahoo_finance()
-            if result:
-                return result
-
-        logger.info("Yahoo Finance unavailable, no historical data")
-        return {}
-
-    except Exception as e:
-        logger.warning(
-            f"⚠️  Failed to get historical forex rates: {type(e).__name__}: {e}"
+        logger.info("Updating historical forex rates from Open Exchange Rates API")
+        result = await _get_historical_from_open_exchange_rates(
+            OPEN_EXCHANGE_RATES_API_KEY
         )
-        return {}
+        if result:
+            _historical_forex_cache["data"] = result
+            _historical_forex_cache["timestamp"] = datetime.now()
+            logger.info(f"✓ Cached historical forex: {result}")
+        else:
+            logger.warning("Open Exchange Rates returned no data")
+    except Exception as e:
+        logger.warning(f"Failed to update forex cache: {type(e).__name__}: {e}")
+
+
+async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
+    """Return cached historical forex rates (updated by background worker every 1 hour).
+
+    Does NOT make API calls - uses data cached by _update_historical_forex_cache().
+    Returns empty dict if cache is empty.
+    """
+    if _historical_forex_cache["data"] is not None:
+        logger.debug(f"✓ Using cached historical forex: {_historical_forex_cache['data']}")
+        return _historical_forex_cache["data"]
+
+    logger.debug("Historical forex cache is empty")
+    return {}
 
 
 async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:

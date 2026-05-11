@@ -13,7 +13,10 @@ from src.ai.weather_aggregator import get_aggregated_weather
 from src.workers.news_fetcher import get_recent_news
 from src.ai.news_processor import select_and_summarize_news_with_gpt
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
-from src.workers.rates_fetcher import get_crypto_and_forex_rates
+from src.workers.rates_fetcher import (
+    get_crypto_and_forex_rates,
+    _update_historical_forex_cache,
+)
 from src.ai.task_explainer import get_task_explanations, score_task_importance
 from src.workers.holidays import get_today_holidays, get_today_events
 from src.workers.air_quality import get_air_quality_tbilisi
@@ -792,5 +795,15 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Morning task digest",
     )
 
-    logger.info("Scheduler initialized with morning digest (04:00)")
+    # Update historical forex rates every 1 hour (for digest)
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    scheduler.add_job(
+        _update_historical_forex_cache,
+        IntervalTrigger(hours=1),
+        id="update_forex_cache",
+        name="Update historical forex rates",
+    )
+
+    logger.info("Scheduler initialized with morning digest (04:00) and forex cache update (hourly)")
     return scheduler

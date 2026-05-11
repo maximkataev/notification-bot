@@ -196,7 +196,7 @@ def setup_fastapi(
     logger.info(f"✓ FastAPI listening on POST {webhook_path}")
 
     async def process_webhook(request: Request):
-        """Process Telegram webhook update."""
+        """Process Telegram webhook update (async, non-blocking)."""
         try:
             # Verify secret (constant-time comparison to prevent timing attacks)
             secret = request.headers.get("X-Telegram-Bot-API-Secret-Token", "")
@@ -208,14 +208,16 @@ def setup_fastapi(
             update_data = await request.json()
             update = types.Update(**update_data)
 
-            # Process update through dispatcher
-            await dp.feed_update(bot, update)
+            # Process update in background (don't block webhook)
+            asyncio.create_task(dp.feed_update(bot, update))
+
+            # Return 200 OK immediately (Telegram received the update)
             return {"ok": True}
 
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error processing webhook update: {type(e).__name__}: {e}")
+            logger.error(f"Error parsing webhook update: {type(e).__name__}: {e}")
             return {"ok": False}
 
     @app.post(webhook_path)
