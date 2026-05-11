@@ -669,9 +669,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     if memes:
         message_lines.append("<b>🎭 Мемы дня:</b>")
         for meme in memes:
-            title = meme.get("title", "")
-            url = meme.get("url", "")
-            source = meme.get("source", "")
+            title = meme.get("title", "").strip()
+            url = meme.get("url", "").strip()
+            source = meme.get("source", "").strip()
 
             # Format: "Title (link) — Source"
             if url:
