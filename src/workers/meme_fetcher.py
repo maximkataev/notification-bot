@@ -148,7 +148,9 @@ async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
         return []
 
 
-async def get_fresh_memes_for_digest(max_results: int = 3) -> Optional[List[Dict[str, Any]]]:
+async def get_fresh_memes_for_digest(
+    max_results: int = 3,
+) -> Optional[List[Dict[str, Any]]]:
     """
     Fetch fresh memes (no AI processing, just title + url + source).
 

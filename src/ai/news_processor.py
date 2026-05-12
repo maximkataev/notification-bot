@@ -63,7 +63,9 @@ def _has_excluded_content(text: str, exclusions: list) -> bool:
         # For compound words with hyphens (e.g., "формула-1"), check the root word
         # This handles Russian morphology: "формула-1" matches both "формула" and "формулу"
         if "-" in exclusion:
-            root = exclusion.split("-")[0]  # Get word before hyphen: "формула-1" → "формула"
+            root = exclusion.split("-")[
+                0
+            ]  # Get word before hyphen: "формула-1" → "формула"
             # Check root + common Russian endings
             for variant in [root, root + "у", root + "ы", root + "е"]:
                 if variant in text_lower:
@@ -73,19 +75,25 @@ def _has_excluded_content(text: str, exclusions: list) -> bool:
 
 
 async def select_and_summarize_news_with_gpt(
-    news_items: List[Dict[str, Any]], user_id: int
+    politics_news: List[Dict[str, Any]],
+    sports_news: List[Dict[str, Any]],
+    technology_news: List[Dict[str, Any]],
+    culture_news: List[Dict[str, Any]],
+    goodness_news: List[Dict[str, Any]],
+    user_id: int,
 ) -> Optional[List[Dict[str, Any]]]:
     """
-    Send all news to ChatGPT for selection and summarization.
-    ChatGPT returns indices of selected news + summaries.
-    We match indices back to original news to preserve URLs.
+    Send categorized news to ChatGPT for selection and summarization.
+    Each category has its own pool, GPT selects from each.
 
     Returns:
         [
             {"index": 0, "category": "politics", "summary": "Трамп объявил..."},
             {"index": 3, "category": "politics", "summary": "НАТО критикует..."},
             {"index": 7, "category": "sports", "summary": "Барселона подписала..."},
-            {"index": 12, "category": "culture", "summary": "Гориллы родили..."}
+            {"index": 12, "category": "culture", "summary": "Гориллы родили..."},
+            {"index": 15, "category": "technology", "summary": "Google запустил..."},
+            {"index": 20, "category": "goodness", "summary": "Спасли 100 собак..."}
         ]
 
         or None if ChatGPT call fails
@@ -94,26 +102,44 @@ async def select_and_summarize_news_with_gpt(
     from src.utils.doppler import get_secret
     from src.db.database import get_news_prompt
 
-    if not news_items:
+    all_news = (
+        politics_news + sports_news + technology_news + culture_news + goodness_news
+    )
+    if not all_news:
         logger.warning("No news items to process")
         return None
 
     try:
-        # Build indexed news list for ChatGPT
+        # Build indexed news list for ChatGPT with category tags
         indexed_news = []
-        for idx, item in enumerate(news_items):
-            description = item.get("description", "")
-            # Clean HTML tags from RSS feed descriptions
-            description = _clean_html(description)[:500]
+        idx_to_original = {}  # Map index -> (pool_name, original_item)
+        idx = 0
 
-            indexed_news.append(
-                {
-                    "index": idx,
-                    "title": item.get("title", ""),
-                    "description": description,  # Fuller description for better context
-                    "source": item.get("source", ""),
-                }
-            )
+        for category_name, news_list in [
+            ("politics", politics_news),
+            ("sports", sports_news),
+            ("technology", technology_news),
+            ("culture", culture_news),
+            ("goodness", goodness_news),
+        ]:
+            for item in news_list:
+                description = item.get("description", "")
+                description = _clean_html(description)[:500]
+
+                indexed_news.append(
+                    {
+                        "index": idx,
+                        "title": item.get("title", ""),
+                        "description": description,
+                        "source": item.get("source", ""),
+                        "available_in": category_name,  # Mark which pool it's from
+                    }
+                )
+                idx_to_original[idx] = (
+                    category_name,
+                    item,
+                )  # Save original for validation
+                idx += 1
 
         # Fetch user's custom news prompt if it exists
         custom_prompt = await get_news_prompt(user_id)
@@ -142,145 +168,57 @@ async def select_and_summarize_news_with_gpt(
         )
 
         # Build system prompt with user interests
-        system_prompt = f"""Я персональный помощник для отбора новостей с ЖЁСТКОЙ категоризацией.
+        system_prompt = f"""Я выбираю ровно 6 новостей из 5 специализированных пулов источников.
 
-🔴 ОБЯЗАТЕЛЬНОЕ РАСПРЕДЕЛЕНИЕ - РОВНО 6 НОВОСТЕЙ:
+РАСПРЕДЕЛЕНИЕ ПО ПОЗИЦИЯМ:
+1️⃣ #1-2: Политика (из пула "politics") — 2 разные новости
+2️⃣ #3: Спорт (из пула "sports") — или fallback на культуру, НО НЕ политику
+3️⃣ #4-6: Культура, технологии, добрые новости (по одной из каждого пула)
 
-📍 НОВОСТЬ #1 — ПОЛИТИКА/ЭКОНОМИКА:
-   ✅ ВКЛЮЧАЕТ: политика стран (США, Россия, Грузия, ЕС), экономика, финансы, торговля, ВВП, инфляция, рынки, инвестиции
-   ❌ НЕ ВКЛЮЧАЕТ: культуру, спорт, технологии, развлечение
+КРИТИЧЕСКИЕ ПРАВИЛА:
+- Выбираю ТОЛЬКО из указанного пула для каждой позиции ("available_in")
+- ровно 6 новостей, ровно 2 политики, БАН на 3+ политики
+- Спорт: только из пула "sports" (футбол, хоккей, теннис, легкая атлетика)
+- Добрые новости: ТОЛЬКО позитив, БАН на смерти/войны/трагедии
+- Исключения: читаю "ИСКЛЮЧАЮ:" в профиле и ПОЛНОСТЬЮ их игнорирую
 
-📍 НОВОСТЬ #2 — ПОЛИТИКА/ЭКОНОМИКА (ДРУГАЯ новость, НЕ третья политика!):
-   ✅ ВКЛЮЧАЕТ: еще одна новость про политику или экономику (другая страна/сектор/событие)
-   ❌ ЗАПРЕЩЕНО: третья политика! Должна быть ВТОРАЯ политика и всё.
+FORMAT:
+- summary: одна фраза, максимум 15 слов
+- description_ru: новая информация (детали, цифры, контекст), максимум 250 символов
+- description НЕ дублирует summary
 
-📍 НОВОСТЬ #3 — СПОРТ (ОБЯЗАТЕЛЬНА СПОРТИВНАЯ НОВОСТЬ):
-   ✅ ВКЛЮЧАЕТ: футбол (особенно Лига 1, Английская Премьер Лига, Ла Лига), хоккей, теннис, Олимпиада, чемпионаты, единоборства, спортивные события, турниры
-   ❌ АБСОЛЮТНО НЕ ВКЛЮЧАЕТ: баскетбол, бейсбол, формула-1, гонки, racing, скалолазание, киберспорт, экономику, политику, технологии, культуру
-   ⚠️ КРИТИЧНО: если нет чистой спортивной новости, лучше повторить культуру или позитивные новости, чем выбрать экономику
-
-📍 НОВОСТЬ #4 — КУЛЬТУРА / НАУКА / ПОЗИТИВ:
-   ✅ ВКЛЮЧАЕТ: наука, научные открытия, инновации, социальные события, социальная помощь, искусство (выставки, конкурсы), позитивные события
-   ❌ НЕ ВКЛЮЧАЕТ: кино, сериалы, премьеры фильмов, актёры, знаменитости, шоу-бизнес, музыкальные турниры, рейтинги фильмов, премии
-
-📍 НОВОСТЬ #5 — ТЕХНОЛОГИИ / IT / AI:
-   ✅ ВКЛЮЧАЕТ: AI, машинное обучение, облачные технологии, кибербезопасность, стартапы, DevOps, Data Science, новые IT-продукты
-   ❌ НЕ ВКЛЮЧАЕТ: фильмы про технологии, развлечение, мобильные тренды моды
-
-📍 НОВОСТЬ #6 — ДОБРЫЕ НОВОСТИ (ТОЛЬКО ПОЗИТИВ 😊):
-   ✅ ВКЛЮЧАЕТ: спасение животных, рождение детёнышей, смешные истории животных, волонтёрство, помощь нуждающимся, благотворительность, научные открытия в медицине, вдохновляющие персональные истории, люди которые помогли другим, достижения в образовании и здоровье, позитивные социальные инициативы, события которые вызывают улыбку
-   ❌ АБСОЛЮТНО НЕ ВКЛЮЧАЕТ: смерти, несчастные случаи, войны, пропажи людей, трагедии, конфликты, болезни, преступления, политику, экономику, спорт, технологии, кино, развлечение, негативные события
-
-❌ КРИТИЧЕСКИЕ ЗАПРЕТЫ:
-- НИКОГДА не выбирай 3 политики!
-- НИКОГДА не выбирай 2 политики + 2 культуры!
-- ВСЕГДА по одной в каждой из категорий 3, 4, 5!
-- ВСЕГДА возвращай ровно 6 новостей!
-- 🔴 АБСОЛЮТНЫЙ БАН: экономика НЕ может быть вместо спорта!
-
-✅ ЕСЛИ НЕТ ПОДХОДЯЩЕЙ СПОРТИВНОЙ НОВОСТИ (исключены или отсутствуют):
-- Спорт отсутствует → выбираю культуру, науку или позитивные новости (НЕ экономику, НЕ политику!)
-- Никогда не выбираю политику/экономику в позицию #3!
-
-⚠️ ПЕРВЫЙ ШАГ - ИСКЛЮЧЕНИЯ (ПОЛНОСТЬЮ УДАЛЯЙ):
-Прочитай профиль пользователя ниже. Найди все исключения (после "ИСКЛЮЧАЮ:").
-НИКОГДА не выбирай новости с этими словами/темами. ПОЛНОСТЬЮ ИГНОРИРУЙ их.
-
-МОИ КРИТИЧЕСКИЕ ПРАВИЛА:
-1. Я выбираю ТОЛЬКО из предоставленного списка
-2. Я НЕ выдумываю новости
-3. Я пишу одно краткое предложение (максимум 15 слов) для каждой
-4. Я объясняю смысл новости и ее основную мысль: максимум 250 символов, не больше! Главное, чтобы было интересно и информативно
-5. Я пишу обе части (summary + description) на русском
-6. Я возвращаю ответ JSON массивом ровно 6 новостей в правильном порядке
-7. КРИТИЧНО: я учитываю интересы пользователя И СТРОГО СЛЕДУЮ исключениям
-8. Если нет подходящей новости в категории (из-за исключений), я выбираю ближайшую релевантную, но НИ В КОЕМ СЛУЧАЕ не из исключений
-9. Я сохраняю смысл при сокращении описания до 250 символов
-10. Четвертая категория (КУЛЬТУРА) - ИСКЛЮЧИТЕЛЬНО позитивные новости о науке, искусстве, инновациях, социальных успехах (НЕ кино, НЕ премьеры)
-
-Профиль пользователя (то, чему я следую при отборе новостей):
+Профиль пользователя:
 {user_profile_section}
 """
 
         # Build user prompt with indexed news
-        user_prompt = f"""🔴 СТРОГОЕ РАСПРЕДЕЛЕНИЕ - РОВНО 6 НОВОСТЕЙ:
+        user_prompt = f"""ВЫБЕРИ РОВНО 6 НОВОСТЕЙ ПО СХЕМЕ:
 
-1️⃣ ПОЛИТИКА/ЭКОНОМИКА #1 (новость о политике или экономике)
-2️⃣ ПОЛИТИКА/ЭКОНОМИКА #2 (ДРУГАЯ политика/экономика, не третья!)
-3️⃣ СПОРТ #1 (футбол, хоккей, теннис, легкая атлетика, чемпионаты) 🚨 БЕЗ баскетбола, бейсбола, формулы-1, гонок!
-4️⃣ КУЛЬТУРА/НАУКА/ПОЗИТИВ (позитивные новости, наука, искусство - НЕ кино, НЕ актёры)
-5️⃣ ТЕХНОЛОГИИ/AI (IT, AI, облако, кибербезопасность, стартапы, Data Science)
-6️⃣ ДОБРЫЕ НОВОСТИ 🎉 (ТОЛЬКО позитивные истории: животные, волонтёрство, помощь, благотворительность, вдохновляющие люди - НЕ трагедии, НЕ войны, НЕ смерти!)
+Позиция 1 & 2: "available_in": "politics" (2 разные новости)
+Позиция 3: "available_in": "sports" (или культура, если спорта нет, но НЕ политика!)
+Позиция 4: "available_in": "culture"
+Позиция 5: "available_in": "technology"
+Позиция 6: "available_in": "goodness" (ТОЛЬКО позитив: животные, волонтёрство, благотворительность)
 
-ДОСТУПНЫЕ НОВОСТИ (выбирай индексы):
-
+НОВОСТИ:
 {json.dumps(indexed_news, ensure_ascii=False, indent=2)}
 
-🔴 АБСОЛЮТНЫЕ ПРАВИЛА:
-- ТОЧНО 6 новостей (не больше, не меньше!)
-- ПО ОДНОЙ в каждой категории 4, 5, 6 (культура, технологии, добрые новости)
-- РОВНО 1 спорт (позиция 3)
-- РОВНО 2 политики/экономики (ВТОРАЯ - другая новость, не третья политика!)
-- 3️⃣ СПОРТ 🚨 ТОЛЬКО спортивная новость! (футбол, хоккей, теннис, легкая атлетика, единоборства, чемпионаты) — БЕЗ формулы-1 и гонок!
-- 4️⃣ КУЛЬТУРА (ТОЛЬКО: наука, позитивные новости, искусство, инновации в обществе)
-- 5️⃣ ТЕХНОЛОГИИ (AI, ML, облако, кибербезопасность, стартапы, Big Data)
-- 6️⃣ ДОБРЫЕ НОВОСТИ 🎉 (животные, волонтёрство, помощь, благотворительность, вдохновляющие люди - ТОЛЬКО позитивные 100%! БАН на: смерти, войны, пропажи, трагедии, конфликты, болезни, преступления!)
+ПРАВИЛА:
+✅ Точно 6 новостей, ровно 2 политики
+❌ БАН: 3+ политики, политика вместо спорта, трагедии/смерти в позиции 6
+✅ summary: макс 15 слов (главная идея)
+✅ description_ru: макс 250 символов (новая информация, НЕ пересказ)
+✅ Только JSON, без текста
 
-❌ ПОЛНЫЙ БАН (никогда не выбирай):
-- Кино, сериалы, премьеры фильмов
-- Актёры, знаменитости, шоу-бизнес
-- Развлечение, музыкальные турниры, награды
-- Баскетбол, бейсбол, формула-1, гонки, racing
-- Киберспорт, мобильные тренды моды
-- 🚨 ТРАГЕДИИ В ПОЗИЦИИ #6 (добрые новости) - АБСОЛЮТНЫЙ БАН!
-  - БАН: смерти людей, пропажи, несчастные случаи, войны, конфликты, преступления, болезни
-  - Пример ПЛОХОЙ выбор: "Останки солдата найдены", "Погиб в аварии", "Заложник освобождён", "Жертвы наводнения"
-  - Пример ХОРОШИЙ выбор: "Спасли 100 собак из приюта", "Волонтёры помогли малообеспеченным", "Ребёнок исцелился от редкой болезни"
-- 🚨 ЭКОНОМИКА В ПОЗИЦИИ #6 (добрые новости) - АБСОЛЮТНЫЙ БАН!
-- 🚨 СПОРТ В ПОЗИЦИИ #6 (добрые новости) - АБСОЛЮТНЫЙ БАН!
-
-✅ ЕСЛИ ДОБРЫХ НОВОСТЕЙ НЕТ:
-- Добрые новости отсутствуют → выбираю культуру, науку или позитивные новости
-- Но БЕЗ спорта, экономики и политики в позицию 6!
-- Главное: вдохновляющие, позитивные истории про людей и животных
-
-🔴 КРИТИЧЕСКОЕ ПРАВИЛО: summary и description_ru — РАЗНЫЕ ЧАСТИ!
-✅ summary = краткий заголовок/главная идея (максимум 15 слов)
-✅ description_ru = НОВАЯ информация из текста: детали, цифры, контекст, почему это важно (максимум 250 символов)
-❌ description_ru НЕ должна пересказывать summary или дублировать его
-
-СТРОГИЕ ТРЕБОВАНИЯ ДЛЯ КАЖДОЙ НОВОСТИ:
-1. summary: одно предложение на русском максимум 15 слов (ГЛАВНАЯ ИДЕЯ)
-2. description_ru: НОВАЯ информация из текста (почему/как/детали/цифры/контекст) МАКСИМУМ 250 СИМВОЛОВ (не более!)
-
-⚠️ ПРОВЕРКА: description_ru должна содержать ДРУГИЕ факты, чем summary, не пересказывать его!
-Считай символы! Если перевод длиннее 250 символов - укороти его, но сохраняй смысл.
-
-🔴 ОБЯЗАТЕЛЬНЫЙ ФОРМАТ - РОВНО 6 НОВОСТЕЙ:
-{{"index": N, "category": "politics", ...}} — НОВОСТЬ #1 (ПОЛИТИКА/ЭКОНОМИКА)
-{{"index": N, "category": "politics", ...}} — НОВОСТЬ #2 (ПОЛИТИКА/ЭКОНОМИКА, ДРУГАЯ!)
-{{"index": N, "category": "sports", ...}} — НОВОСТЬ #3 (СПОРТ)
-{{"index": N, "category": "culture", ...}} — НОВОСТЬ #4 (КУЛЬТУРА/НАУКА/ПОЗИТИВ)
-{{"index": N, "category": "tech", ...}} — НОВОСТЬ #5 (ТЕХНОЛОГИИ/AI/IT)
-{{"index": N, "category": "goodness", ...}} — НОВОСТЬ #6 (ДОБРЫЕ НОВОСТИ - животные, волонтёрство, добрые дела)
-
-СТРУКТУРА КАЖДОЙ НОВОСТИ:
-- index: индекс из списка (0, 3, 7 и т.д.)
-- category: РОВНО ОДИН из: "politics", "sports", "culture", "tech", "goodness"
-- summary: одна фраза на русском, максимум 15 слов (главная идея)
-- description_ru: НОВАЯ информация (факты/цифры/детали/контекст, НЕ пересказ), макс 250 символов
-
-Пример ПРАВИЛЬНОГО ответа:
+ПРИМЕР:
 [
-  {{"index": 0, "category": "politics", "summary": "Президент США объявил о новых санкциях против страны X", "description_ru": "Санкции касаются энергетического сектора и затронут 15 компаний. Решение принято в ответ на нарушения международного права."}},
-  {{"index": 3, "category": "politics", "summary": "Грузия и ЕС договорились об укреплении экономических связей", "description_ru": "В соглашении предусмотрены инвестиции в размере $200 млн и развитие портовой инфраструктуры на протяжении 5 лет."}},
-  {{"index": 7, "category": "sports", "summary": "Barcelona и Real Madrid сыграют в полуфинале Лиги чемпионов", "description_ru": "Матчи пройдут 15 и 22 мая. Barcelona входит как фаворит с коэффициентом 1,5, сыграла 4 последних матча без поражений."}},
-  {{"index": 12, "category": "culture", "summary": "Российский учёный получил Нобелевскую премию за открытие в биотехнологии", "description_ru": "Открытие позволит разрабатывать новые методы лечения редких генетических заболеваний. Премия составляет $1 млн."}},
-  {{"index": 15, "category": "tech", "summary": "Новый AI алгоритм Google превосходит конкурентов в обработке видео", "description_ru": "Алгоритм использует графические нейросети и обрабатывает видео 10x быстрее. Доступен бесплатно в облачном сервисе Google Cloud."}},
-  {{"index": 18, "category": "goodness", "summary": "Волонтёры спасли 500 бездомных кошек и открыли новый приют в городе", "description_ru": "Организация получила грант $50 тыс. от благотворительного фонда. Все животные прошли ветеринарное обследование и готовы к усыновлению. Это историческое достижение для региона."}}
+  {{"index": 0, "category": "politics", "summary": "Санкции США против нефтяного сектора", "description_ru": "Затрагивают 10+ компаний. Введены в ответ на нарушения международного права."}},
+  {{"index": 3, "category": "politics", "summary": "ЕС и Грузия подписали торговое соглашение", "description_ru": "Инвестиции $200 млн в портовую инфраструктуру на 5 лет."}},
+  {{"index": 7, "category": "sports", "summary": "Barcelona победила Madrid в полуфинале", "description_ru": "Финальный счет 2:1. Barcelona выходит в финал Лиги чемпионов."}},
+  {{"index": 12, "category": "culture", "summary": "Новая выставка русского авангарда в Лондоне", "description_ru": "150 работ из 1920-х годов. Экспозиция будет открыта 6 месяцев."}},
+  {{"index": 15, "category": "tech", "summary": "Google запустил новый AI для обработки видео", "description_ru": "Обрабатывает видео в 10x быстрее конкурентов. Бесплатно на Google Cloud."}},
+  {{"index": 18, "category": "goodness", "summary": "Волонтёры спасли 500 бездомных собак", "description_ru": "Открыт новый приют. Получен грант $50 тыс. Все животные здоровы."}}
 ]
-
-Ответ ТОЛЬКО JSON массивом, без комментариев и объяснений.
 """
 
         # Get API key (not async)
@@ -337,12 +275,32 @@ async def select_and_summarize_news_with_gpt(
         # Extract exclusions from user profile
         exclusions = _extract_exclusions(user_profile_section)
 
-        # Validate indices are within range and filter out invalid ones
+        # Validate indices are within range, check pool assignment, filter exclusions
         valid_news = []
+        category_counts = {
+            "politics": 0,
+            "sports": 0,
+            "technology": 0,
+            "culture": 0,
+            "goodness": 0,
+        }
+
         for item in selected_news:
-            if isinstance(item, dict) and 0 <= item.get("index", -1) < len(news_items):
-                # Check if this news item violates exclusions
-                original_news = news_items[item.get("index")]
+            if not isinstance(item, dict) or not (
+                0 <= item.get("index", -1) < len(indexed_news)
+            ):
+                idx = item.get("index") if isinstance(item, dict) else "unknown"
+                logger.warning(
+                    f"Invalid index {idx} (max {len(indexed_news)-1}), skipping"
+                )
+                continue
+
+            idx = item.get("index")
+            category = item.get("category", "unknown")
+
+            # Get original news item from saved mapping
+            if idx in idx_to_original:
+                _, original_news = idx_to_original[idx]
                 title = original_news.get("title", "")
                 description = original_news.get("description", "")
                 combined_text = f"{title} {description}"
@@ -352,11 +310,9 @@ async def select_and_summarize_news_with_gpt(
                     continue
 
                 valid_news.append(item)
+                category_counts[category] = category_counts.get(category, 0) + 1
             else:
-                idx = item.get("index") if isinstance(item, dict) else "unknown"
-                logger.warning(
-                    f"Invalid index {idx} (max {len(news_items)-1}), skipping"
-                )
+                logger.warning(f"Index {idx} not found in mapping, skipping")
 
         if not valid_news:
             logger.warning("All news items were invalid or excluded, returning None")

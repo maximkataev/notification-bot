@@ -179,7 +179,9 @@ def setup_fastapi(
         logger.info("📋 FastAPI routes registered:")
         for route in app.routes:
             if hasattr(route, "path"):
-                logger.info(f"  {route.methods if hasattr(route, 'methods') else 'GET'} {route.path}")
+                logger.info(
+                    f"  {route.methods if hasattr(route, 'methods') else 'GET'} {route.path}"
+                )
         yield
         # Shutdown
         logger.info("FastAPI app shutting down")

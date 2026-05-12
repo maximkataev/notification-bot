@@ -102,7 +102,9 @@ async def plan_command(message: types.Message, command: CommandObject):
         try:
             parsed = await parse_task(text, user_profile)
         except Exception as parse_err:
-            logger.error(f"⚠️  AI parsing failed, using fallback: {parse_err}", exc_info=True)
+            logger.error(
+                f"⚠️  AI parsing failed, using fallback: {parse_err}", exc_info=True
+            )
             # Fallback: create task without date/priority parsing
             parsed = {
                 "what": text,

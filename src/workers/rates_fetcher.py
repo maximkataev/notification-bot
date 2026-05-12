@@ -132,7 +132,9 @@ async def _update_historical_forex_cache():
     Does NOT log "unavailable" - just updates cache if API available.
     """
     if not OPEN_EXCHANGE_RATES_API_KEY:
-        logger.debug("Open Exchange Rates API key not set, skipping historical forex update")
+        logger.debug(
+            "Open Exchange Rates API key not set, skipping historical forex update"
+        )
         return
 
     try:
@@ -157,7 +159,9 @@ async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
     Returns empty dict if cache is empty.
     """
     if _historical_forex_cache["data"] is not None:
-        logger.debug(f"✓ Using cached historical forex: {_historical_forex_cache['data']}")
+        logger.debug(
+            f"✓ Using cached historical forex: {_historical_forex_cache['data']}"
+        )
         return _historical_forex_cache["data"]
 
     logger.debug("Historical forex cache is empty")
@@ -176,24 +180,24 @@ async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:
             response.raise_for_status()
 
             import xml.etree.ElementTree as ET
+
             root = ET.fromstring(response.content)
 
             rates = {}
-            for cube in root.iter('{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube'):
-                currency = cube.get('currency')
-                rate = cube.get('rate')
+            for cube in root.iter(
+                "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
+            ):
+                currency = cube.get("currency")
+                rate = cube.get("rate")
                 if currency and rate:
                     try:
                         rates[currency] = float(rate)
                     except ValueError:
                         pass
 
-            if 'USD' in rates:
-                eur_per_usd = 1.0 / rates['USD']
-                return {
-                    'usd_eur': eur_per_usd,
-                    'usd_rub': rates.get('RUB')
-                }
+            if "USD" in rates:
+                eur_per_usd = 1.0 / rates["USD"]
+                return {"usd_eur": eur_per_usd, "usd_rub": rates.get("RUB")}
         return None
     except Exception as e:
         logger.debug(f"ECB fallback failed: {e}")

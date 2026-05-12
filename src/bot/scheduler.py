@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta
+from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from aiogram import Bot
@@ -10,7 +12,13 @@ from src.utils.openai_client import get_client
 from src.db.database import get_user_profile, get_news_prompt
 from src.workers.todoist_client import get_todoist_tasks
 from src.ai.weather_aggregator import get_aggregated_weather
-from src.workers.news_fetcher import get_recent_news
+from src.workers.news_fetcher import (
+    get_politics_economy_news,
+    get_sports_news,
+    get_technology_news,
+    get_culture_science_news,
+    get_good_news,
+)
 from src.ai.news_processor import select_and_summarize_news_with_gpt
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
 from src.workers.rates_fetcher import (
@@ -27,11 +35,15 @@ from src.workers.football_matches import get_today_matches
 from src.workers.football_analyzer import get_match_analysis
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
+from src.workers.precipitation_checker import get_upcoming_precipitation
 
 logger = logging.getLogger(__name__)
 
 # Global scheduler instance
 scheduler: AsyncIOScheduler = None
+
+# Track last precipitation alert to avoid spam (3-hour cooldown)
+_last_precipitation_alert: Optional[datetime] = None
 
 
 def _is_task_urgent_by_keywords(task) -> bool:
@@ -150,17 +162,20 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                 if temp:
                     break
 
+        # Check for precipitation (new: use precipitation_mm instead of condition string)
         is_raining = any(
             isinstance(weather.get(period), dict)
-            and "дождь" in weather[period].get("condition", "").lower()
-            for period in ["morning", "day", "evening", "night"]
+            and weather[period].get("precipitation_mm", 0) > 0
+            for period in ["morning", "day", "evening"]
         )
 
         weather_details = f"Температура: {temp}°C" if temp else ""
         if is_raining:
-            weather_details += " (идёт дождь)" if weather_details else "Идёт дождь"
+            weather_details += (
+                " (ожидаются осадки)" if weather_details else "Ожидаются осадки"
+            )
 
-    intro_prompt = f"""Напиши мне утренний привет и рекомендации в три этапа:
+    intro_prompt = f"""Напиши мне утренний привет и совет про погоду в два этапа:
 
 1️⃣ ПРОСТОЙ ПРИВЕТ (одна строка):
 Простое, ясное приветствие. БЕЗ клише и странных метафор.
@@ -178,44 +193,13 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
 Стиль: просто, понятно, практично.
 
-3️⃣ РЕКОМЕНДАЦИЯ ПО ОДЕЖДЕ (одна строка, краткий список):
-🔥 ПРАВИЛА ОДЕЖДЫ (АДЕКВАТНО ТЕМПЕРАТУРЕ И ПОГОДЕ):
-
-⚠️ ТЕМПИРАТУРА (главный фактор):
-- 25°C+: ШОРТЫ + лёгкая футболка/рубашка. БЕЗ курток! (переменная облачность НЕ меняет это)
-- 20-25°C: ШОРТЫ летом/обычное. Куртка нужна ТОЛЬКО если дождь или сильный ветер
-- 15-20°C: ШТАНЫ + средняя кофта. Куртка в дождь или для верхнего слоя
-- 10-15°C: ШТАНЫ + куртка обязательна (переменная облачность + возможный ветер)
-- <10°C: ТЕПЛАЯ куртка + штаны + слои
-
-🌧️ ДОЖДЬ (главное):
-- С дождём → КУРТКА (не зонт! зонта у меня нет). Даже если +25°C
-- Легкий дождь: лёгкая ветровка или непромокаемая куртка
-- Сильный дождь: утеплённая куртка
-
-💨 ВЕТЕР:
-- Сильный ветер + 20°C → ШТАНЫ вместо шорт + куртка
-- Лёгкий ветер + 25°C → шорты, но может быть легкая куртка в руке
-
-☀️ СОЛНЦЕ:
-- Очки если солнечно и яркие лучи
-- Солнцезащитный крем (SPF 30+)
-
-ФОРМАТ: просто перечисли главное без лишних слов. Пример:
-"Шорты, лёгкая рубашка, белые кроссовки, очки"
-или
-"Штаны, куртка, кроссовки (дождь)"
-
 {weather_details}
 
-Формат ответа - ТРИ СТРОКИ:
+Формат ответа - ДВЕ СТРОКИ:
 [простой привет]
-[совет про погоду]
-[одежда: краткий перечень]"""
+[совет про погоду]"""
 
-    logger.info(
-        "🔄 Calling AI to generate morning greeting, weather advice, and outfit"
-    )
+    logger.info("🔄 Calling AI to generate morning greeting and weather advice")
 
     response = await get_client().chat.completions.create(
         model="gpt-5.4-mini",
@@ -238,20 +222,27 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     response_text = response.choices[0].message.content
     logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
 
-    # Parse response - should be three lines
+    # Parse response - should be two lines
     lines = response_text.strip().split("\n") if response_text else []
     simple_greeting = lines[0] if len(lines) > 0 else "Доброе утро!"
     weather_advice = lines[1] if len(lines) > 1 else "Подготовьтесь к предстоящему дню."
-    outfit_advice = lines[2] if len(lines) > 2 else "Обычная одежда по сезону"
 
     if not simple_greeting or not weather_advice:
         logger.error("❌ AI returned incomplete response, using fallback")
         simple_greeting = "Доброе утро!"
         weather_advice = "Подготовьтесь к переменчивой погоде."
-        outfit_advice = "Обычная одежда по сезону"
+
+    # Compute clothing recommendation based on weather rules (not AI)
+    morning_temp = None
+    if weather and isinstance(weather.get("morning"), dict):
+        morning_temp = weather["morning"].get("temperature", 15)
+
+    needs_jacket = (morning_temp is not None and morning_temp < 10) or is_raining
+    outer_layer = "куртку" if needs_jacket else "худи"
+    outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
 
     logger.info(
-        f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice[:50]}..."
+        f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice}"
     )
 
     # Build full message: greeting + quote + weather advice + weather + news + gwp + task list
@@ -345,19 +336,71 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     else:
         logger.info("No scheduled works on Vazha Iverievi")
 
-    # Fetch and add news via ChatGPT selection
-    logger.info("Fetching recent news from RSS feeds (24 hours)")
-    news_items = await get_recent_news(hours=24)
-    logger.info(f"✓ News fetched: {len(news_items)} items found (last 24 hours)")
+    # Fetch news from 5 specialized pools in parallel
+    logger.info(
+        "Fetching news from 5 specialized pools (politics, sports, tech, culture, good news)"
+    )
+    (politics_news, sports_news, technology_news, culture_news, goodness_news) = (
+        await asyncio.gather(
+            get_politics_economy_news(hours=24),
+            get_sports_news(hours=24),
+            get_technology_news(hours=24),
+            get_culture_science_news(hours=24),
+            get_good_news(hours=24),
+            return_exceptions=True,
+        )
+    )
 
-    if news_items:
-        logger.info("Sending all news to ChatGPT for selection and summarization")
+    # Handle exceptions from gather
+    if isinstance(politics_news, Exception):
+        logger.warning(f"Failed to fetch politics news: {politics_news}")
+        politics_news = []
+    if isinstance(sports_news, Exception):
+        logger.warning(f"Failed to fetch sports news: {sports_news}")
+        sports_news = []
+    if isinstance(technology_news, Exception):
+        logger.warning(f"Failed to fetch technology news: {technology_news}")
+        technology_news = []
+    if isinstance(culture_news, Exception):
+        logger.warning(f"Failed to fetch culture news: {culture_news}")
+        culture_news = []
+    if isinstance(goodness_news, Exception):
+        logger.warning(f"Failed to fetch good news: {goodness_news}")
+        goodness_news = []
+
+    total_news = (
+        len(politics_news)
+        + len(sports_news)
+        + len(technology_news)
+        + len(culture_news)
+        + len(goodness_news)
+    )
+    logger.info(
+        f"✓ News fetched: {total_news} items total | politics: {len(politics_news)}, sports: {len(sports_news)}, tech: {len(technology_news)}, culture: {len(culture_news)}, good: {len(goodness_news)}"
+    )
+
+    if total_news > 0:
+        logger.info("Sending news pools to ChatGPT for selection and summarization")
         selected_with_indices = await select_and_summarize_news_with_gpt(
-            news_items, user_id
+            politics_news,
+            sports_news,
+            technology_news,
+            culture_news,
+            goodness_news,
+            user_id,
         )
 
         if selected_with_indices:
             logger.info(f"✓ ChatGPT selected {len(selected_with_indices)} news items")
+
+            # Build combined news list for index matching
+            all_news = (
+                politics_news
+                + sports_news
+                + technology_news
+                + culture_news
+                + goodness_news
+            )
 
             # Match indices back to original news items and format with URLs
             message_lines.append("Новости:")
@@ -370,8 +413,8 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                 description_ru = item.get("description_ru", "")
 
                 # Get original news item by index (with safety check)
-                if 0 <= idx < len(news_items):
-                    original_news = news_items[idx]
+                if 0 <= idx < len(all_news):
+                    original_news = all_news[idx]
                     source = original_news.get("source", "Unknown")
                     url = original_news.get("url", "")
 
@@ -399,7 +442,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             message_lines.append("(новости недоступны)")
             message_lines.append("")
     else:
-        logger.warning("No news items fetched from RSS feeds")
+        logger.warning("No news items fetched from any pool")
         message_lines.append("Новости:")
         message_lines.append("(новости недоступны)")
         message_lines.append("")
@@ -665,9 +708,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         message_lines.append(review)
         message_lines.append("")
 
-    # Add fresh memes (3 per day, no AI summaries)
+    # Add fresh memes (1 per day, no AI summaries)
     logger.info("Fetching fresh memes")
-    memes = await get_fresh_memes_for_digest(max_results=3)
+    memes = await get_fresh_memes_for_digest(max_results=1)
 
     if memes:
         message_lines.append("<b>🎭 Мемы дня:</b>")
@@ -776,6 +819,46 @@ def _format_weather(weather: dict) -> str:
     return "\n".join(lines)
 
 
+async def check_precipitation_alert(bot: Bot, chat_id: int):
+    """Check for upcoming precipitation in next 3 hours and send alert if found."""
+    global _last_precipitation_alert
+
+    # Cooldown: don't send more than once per 3 hours
+    if _last_precipitation_alert and (
+        datetime.now() - _last_precipitation_alert
+    ) < timedelta(hours=3):
+        return
+
+    try:
+        precip = await get_upcoming_precipitation(hours=3)
+        if not precip:
+            return
+
+        # Precipitation detected
+        condition = precip.get("condition", "осадки")
+        emoji = precip.get("emoji", "🌧️")
+        hours_from_now = precip.get("hours_from_now", 0)
+        time_str = precip.get("time", "")
+
+        # Build message
+        message = f"{emoji} Через ~{hours_from_now} ч. ожидается {condition}"
+        if time_str:
+            message += f" (около {time_str})"
+        message += f"\n💧 {condition}"
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            disable_web_page_preview=True,
+        )
+
+        _last_precipitation_alert = datetime.now()
+        logger.info(f"✓ Precipitation alert sent: {condition} in ~{hours_from_now}h")
+
+    except Exception as e:
+        logger.warning(f"Precipitation alert failed: {e}")
+
+
 def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     """Initialize APScheduler with morning digest."""
     global scheduler
@@ -805,5 +888,16 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Update historical forex rates",
     )
 
-    logger.info("Scheduler initialized with morning digest (04:00) and forex cache update (hourly)")
+    # Hourly precipitation alert check
+    scheduler.add_job(
+        check_precipitation_alert,
+        CronTrigger(minute=0),  # every hour at :00
+        args=[bot, chat_id],
+        id="precipitation_alert",
+        name="Hourly precipitation check",
+    )
+
+    logger.info(
+        "Scheduler initialized with morning digest (04:00), forex cache update (hourly), and precipitation alerts (hourly)"
+    )
     return scheduler

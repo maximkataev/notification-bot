@@ -1,4 +1,4 @@
-"""Fetch and parse news from RSS feeds."""
+"""Fetch and parse news from RSS feeds - organized by 5 category pools."""
 
 import logging
 import re
@@ -13,132 +13,188 @@ logger = logging.getLogger(__name__)
 
 def _clean_html(text: str) -> str:
     """Remove HTML tags and decode HTML entities."""
-    # Remove HTML tags
     text = re.sub(r"<[^>]+>", "", text)
-    # Decode HTML entities
     text = unescape(text)
-    # Remove extra whitespace
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-# Free RSS news feeds (verified working sources)
-RSS_FEEDS = [
-    # Politics & Economics
+# POOL 1: Politics & Economics
+POLITICS_ECONOMY_FEEDS = [
     "https://feeds.bloomberg.com/markets/news.rss",  # Bloomberg Markets
     "https://www.politico.eu/feed/",  # Politico Europe
-    # World News & Culture
     "https://feeds.bbci.co.uk/news/rss.xml",  # BBC News
-    "https://www.theguardian.com/international/rss",  # The Guardian
-    "https://feeds.npr.org/1001/rss.xml",  # NPR News (culture, society, good news)
-    # Technology & AI (for tech-savvy analyst)
+]
+
+# POOL 2: Sports (football, hockey, tennis, track - NO F1, basketball, baseball)
+SPORTS_FEEDS = [
+    "https://feeds.bbci.co.uk/sport/rss.xml",  # BBC Sport
+    "https://www.espn.com/espn/rss/news",  # ESPN
+    "https://www.eurosport.com/rss/eurosport_rss_news.xml",  # Eurosport
+    "https://www.goal.com/feeds/news",  # Goal.com (football)
+    "https://feeds.sky.com/feed/sports/football",  # Sky Sports Football
+    "https://www.marca.com/rss/futbol/",  # Marca (Spanish football)
+    "https://www.as.com/rss/futbol/",  # AS.com (Spanish sports)
+    "https://feeds.theguardian.com/theguardian/sport/football/rss",  # Guardian Football
+]
+
+# POOL 3: Technology & AI
+TECHNOLOGY_FEEDS = [
     "https://techcrunch.com/feed/",  # TechCrunch
     "https://feeds.arstechnica.com/arstechnica/index",  # Ars Technica
     "https://news.ycombinator.com/rss",  # Hacker News
-    "https://www.theverge.com/rss/index.xml",  # The Verge (tech & gadgets)
+    "https://www.theverge.com/rss/index.xml",  # The Verge
     "https://feeds.bloomberg.com/technology/news.rss",  # Bloomberg Technology
-    # Russia & CIS
-    "https://meduza.io/rss/news",  # Meduza (Russian news)
+]
+
+# POOL 4: Culture & Science
+CULTURE_SCIENCE_FEEDS = [
+    "https://www.theguardian.com/international/rss",  # The Guardian
+    "https://feeds.npr.org/1001/rss.xml",  # NPR News (culture, society)
+    "https://feeds.bbci.co.uk/news/rss.xml",  # BBC News (also has culture)
+]
+
+# POOL 5: Good News (positive, inspiring stories)
+GOOD_NEWS_FEEDS = [
+    "https://feeds.npr.org/1001/rss.xml",  # NPR (has uplifting stories)
+    "https://www.theguardian.com/world/rss",  # Guardian World (good news section)
+    "https://feeds.bbci.co.uk/news/rss.xml",  # BBC (uplifting human interest)
 ]
 
 
-async def get_recent_news(hours: int = 8) -> List[Dict[str, Any]]:
-    """
-    Fetch news from RSS feeds from the last N hours.
-
-    Args:
-        hours: How many hours back to look (default 8)
-
-    Returns:
-        List of news items with: title, description, source, url, published_time
-    """
-    logger.info(f"Starting news fetch from {len(RSS_FEEDS)} RSS feeds (last {hours}h)")
+async def _fetch_from_feeds(
+    feed_urls: List[str], hours: int, category: str, limit_per_feed: int = 15
+) -> List[Dict[str, Any]]:
+    """Generic fetch function for any pool of feeds."""
+    logger.info(f"Fetching {category} news from {len(feed_urls)} feeds (last {hours}h)")
     all_items = []
     cutoff_time = datetime.utcnow() - timedelta(hours=hours)
-    successful_feeds = 0
-    failed_feeds = 0
+    successful = 0
+    failed = 0
 
-    for feed_url in RSS_FEEDS:
+    for feed_url in feed_urls:
         try:
-            logger.debug(f"Fetching: {feed_url}")
-            # Fetch with timeout
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(feed_url)
                 response.raise_for_status()
-            logger.debug(f"✓ HTTP 200: {feed_url}")
 
-            # Parse RSS
             feed = feedparser.parse(response.text)
             source_name = feed.feed.get("title", feed_url.split("/")[2])
-            entries_count = len(feed.entries)
-            logger.debug(f"  Parsed {entries_count} entries from {source_name}")
 
             items_added = 0
-            for entry in feed.entries[:10]:  # Limit to 10 per feed
-                # Parse publish time
+            for entry in feed.entries[:limit_per_feed]:
                 pub_time = None
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     pub_time = datetime(*entry.published_parsed[:6])
                 elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
                     pub_time = datetime(*entry.updated_parsed[:6])
 
-                # Skip if older than cutoff
                 if pub_time and pub_time < cutoff_time:
-                    logger.debug(f"  Skipping old entry: {pub_time}")
                     continue
 
-                # Skip if no URL
                 url = entry.get("link", "").strip()
-                if not url:
-                    logger.debug(f"  Skipping entry without URL")
-                    continue
-
-                # Skip if URL looks invalid
-                if not url.startswith(("http://", "https://")):
-                    logger.debug(f"  Skipping invalid URL: {url}")
+                if not url or not url.startswith(("http://", "https://")):
                     continue
 
                 description = entry.get("summary", "")
-                # Clean HTML tags from RSS feed descriptions
                 description = _clean_html(description)[:800]
 
                 item = {
                     "title": entry.get("title", ""),
-                    "description": description,  # First 800 chars for fuller context
+                    "description": description,
                     "source": source_name,
                     "url": url,
                     "published": pub_time.isoformat() if pub_time else None,
+                    "category": category,  # Tag with category
                 }
 
-                if item["title"]:  # Only add if has title
+                if item["title"]:
                     all_items.append(item)
                     items_added += 1
 
-            logger.info(f"✓ {source_name}: {items_added} items added")
-            successful_feeds += 1
+            logger.debug(f"  ✓ {source_name}: {items_added} items")
+            successful += 1
 
         except Exception as e:
-            failed_feeds += 1
-            logger.warning(
-                f"✗ Failed to fetch from {feed_url}: {type(e).__name__}: {e}"
-            )
-            logger.debug(f"Full error:", exc_info=True)
+            failed += 1
+            logger.debug(f"  ✗ {feed_url}: {type(e).__name__}")
             continue
 
     logger.info(
-        f"✓ News fetch complete: {len(all_items)} items, "
-        f"{successful_feeds}/{len(RSS_FEEDS)} feeds OK, {failed_feeds} failed"
+        f"✓ {category}: {len(all_items)} items ({successful}/{len(feed_urls)} feeds)"
     )
-
-    # Track and warn about high failure rate
-    failure_rate = failed_feeds / len(RSS_FEEDS) if RSS_FEEDS else 0
-    if failure_rate > 0.5:
-        logger.error(
-            f"⚠️  HIGH FEED FAILURE RATE: {failed_feeds}/{len(RSS_FEEDS)} feeds failed ({failure_rate*100:.1f}%)"
-        )
-    if not all_items:
-        logger.warning(
-            "⚠️  No news items fetched from any feed - digest will have no news section"
-        )
-
     return all_items
+
+
+async def get_politics_economy_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch politics & economics news."""
+    return await _fetch_from_feeds(POLITICS_ECONOMY_FEEDS, hours, "politics")
+
+
+async def get_sports_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch sports news (football, hockey, tennis, track - NO F1, basketball, baseball)."""
+    items = await _fetch_from_feeds(SPORTS_FEEDS, hours, "sports", limit_per_feed=20)
+
+    # Filter out banned sports
+    filtered = []
+    for item in items:
+        combined = f"{item['title']} {item['description']}".lower()
+        if not any(
+            ban in combined
+            for ban in [
+                "formula 1",
+                "f1",
+                "nascar",
+                "motogp",
+                "indycar",
+                "basketball",
+                "nba",
+                "baseball",
+                "mlb",
+                "esports",
+            ]
+        ):
+            filtered.append(item)
+
+    return filtered
+
+
+async def get_technology_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch technology & AI news."""
+    return await _fetch_from_feeds(TECHNOLOGY_FEEDS, hours, "technology")
+
+
+async def get_culture_science_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch culture, science, and innovation news."""
+    return await _fetch_from_feeds(CULTURE_SCIENCE_FEEDS, hours, "culture")
+
+
+async def get_good_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch positive, inspiring news stories."""
+    items = await _fetch_from_feeds(GOOD_NEWS_FEEDS, hours, "goodness")
+
+    # Filter out negative content for good news section
+    filtered = []
+    negative_keywords = [
+        "dead",
+        "death",
+        "died",
+        "war",
+        "conflict",
+        "tragedy",
+        "disaster",
+        "accident",
+        "crash",
+        "killed",
+        "missing",
+        "crime",
+        "murder",
+        "attack",
+    ]
+
+    for item in items:
+        combined = f"{item['title']} {item['description']}".lower()
+        if not any(neg in combined for neg in negative_keywords):
+            filtered.append(item)
+
+    return filtered

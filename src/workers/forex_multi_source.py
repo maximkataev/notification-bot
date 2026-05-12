@@ -37,7 +37,9 @@ async def _fetch_from_exchangerate_api_v4() -> Optional[float]:
         logger.debug(f"exchangerate-api.com v4: timeout (10s)")
         return None
     except Exception as e:
-        logger.debug(f"exchangerate-api.com v4 failed: {type(e).__name__}: {str(e)[:100]}")
+        logger.debug(
+            f"exchangerate-api.com v4 failed: {type(e).__name__}: {str(e)[:100]}"
+        )
         return None
 
 
@@ -51,17 +53,20 @@ async def _fetch_from_ecb_api() -> Optional[float]:
             response.raise_for_status()
 
             import xml.etree.ElementTree as ET
+
             root = ET.fromstring(response.content)
 
             # ECB uses namespace in XML
             namespace = {
-                'default': 'http://www.ecb.int/vocabulary/2002-08-01/eurofxref'
+                "default": "http://www.ecb.int/vocabulary/2002-08-01/eurofxref"
             }
 
-            for cube in root.iter('{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube'):
-                currency = cube.get('currency')
-                rate = cube.get('rate')
-                if currency == 'USD' and rate:
+            for cube in root.iter(
+                "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
+            ):
+                currency = cube.get("currency")
+                rate = cube.get("rate")
+                if currency == "USD" and rate:
                     try:
                         # ECB gives "1 USD = X EUR" directly (same as exchangerate-api)
                         usd_eur = float(rate)

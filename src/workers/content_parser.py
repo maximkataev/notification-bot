@@ -9,11 +9,13 @@ import logging
 import httpx
 import asyncio
 from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import feedparser
 import re
 import json
+import base64
 from src.utils.openai_client import get_client
+from src.utils.doppler import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -22,49 +24,161 @@ logger = logging.getLogger(__name__)
 YOUTUBE_CHANNELS = {
     # English channels
     "videos_educational": [
-        {"id": "UCsooa4yRKGN_zEE8iknghZA", "name": "TED-Ed", "url": "https://www.youtube.com/@TEDed"},
-        {"id": "UCAuUUnT6oDeKwE6v1NGQxug", "name": "TED", "url": "https://www.youtube.com/@TED"},
-        {"id": "UCHnyfMqiRRG1u-2MsSQLbXA", "name": "Veritasium", "url": "https://www.youtube.com/@veritasium"},
-        {"id": "UCYO_jab_esuFRV4b17AJtAw", "name": "3Blue1Brown", "url": "https://www.youtube.com/@3blue1brown"},
-        {"id": "UCX6b17PVsYBQ0ip5gyeme-Q", "name": "Crash Course", "url": "https://www.youtube.com/@crashcourse"},
-        {"id": "UC9-y-6csu5mg-rbJ7_TcQAA", "name": "Computerphile", "url": "https://www.youtube.com/@Computerphile"},
-        {"id": "UCsXVk37bltHxD1rDPwtNM8Q", "name": "Kurzgesagt", "url": "https://www.youtube.com/@kurzgesagt"},
-        {"id": "UC2D2CMWXMOVWx7giW1n3LIg", "name": "Huberman Lab", "url": "https://www.youtube.com/@hubermanlab"},
-        {"id": "UCSHZKyawb77ixDdsGog4iWA", "name": "Lex Fridman", "url": "https://www.youtube.com/@lexfridman"},
+        {
+            "id": "UCsooa4yRKGN_zEE8iknghZA",
+            "name": "TED-Ed",
+            "url": "https://www.youtube.com/@TEDed",
+        },
+        {
+            "id": "UCAuUUnT6oDeKwE6v1NGQxug",
+            "name": "TED",
+            "url": "https://www.youtube.com/@TED",
+        },
+        {
+            "id": "UCHnyfMqiRRG1u-2MsSQLbXA",
+            "name": "Veritasium",
+            "url": "https://www.youtube.com/@veritasium",
+        },
+        {
+            "id": "UCYO_jab_esuFRV4b17AJtAw",
+            "name": "3Blue1Brown",
+            "url": "https://www.youtube.com/@3blue1brown",
+        },
+        {
+            "id": "UCX6b17PVsYBQ0ip5gyeme-Q",
+            "name": "Crash Course",
+            "url": "https://www.youtube.com/@crashcourse",
+        },
+        {
+            "id": "UC9-y-6csu5mg-rbJ7_TcQAA",
+            "name": "Computerphile",
+            "url": "https://www.youtube.com/@Computerphile",
+        },
+        {
+            "id": "UCsXVk37bltHxD1rDPwtNM8Q",
+            "name": "Kurzgesagt",
+            "url": "https://www.youtube.com/@kurzgesagt",
+        },
+        {
+            "id": "UC2D2CMWXMOVWx7giW1n3LIg",
+            "name": "Huberman Lab",
+            "url": "https://www.youtube.com/@hubermanlab",
+        },
+        {
+            "id": "UCSHZKyawb77ixDdsGog4iWA",
+            "name": "Lex Fridman",
+            "url": "https://www.youtube.com/@lexfridman",
+        },
     ],
     "videos_productivity": [
-        {"id": "UCoOae5nYA7VqaXzerajD0lg", "name": "Ali Abdaal", "url": "https://www.youtube.com/@aliabdaal"},
-        {"id": "UCG-KntY7aVnIGXYEBQvmBAQ", "name": "Thomas Frank", "url": "https://www.youtube.com/@thomasfrank"},
-        {"id": "UCJ24N4O0bP7LGLBDvye7oCA", "name": "Matt D'Avella", "url": "https://www.youtube.com/@mattdavella"},
-        {"id": "UC9vLsnF6QPYuH51njmIooCQ", "name": "System Design Interview", "url": "https://www.youtube.com/@SystemDesignInterview"},
-        {"id": "UC8butISFwT-Wl7EV0hUK0BQ", "name": "freeCodeCamp", "url": "https://www.youtube.com/@freecodecamp"},
+        {
+            "id": "UCoOae5nYA7VqaXzerajD0lg",
+            "name": "Ali Abdaal",
+            "url": "https://www.youtube.com/@aliabdaal",
+        },
+        {
+            "id": "UCG-KntY7aVnIGXYEBQvmBAQ",
+            "name": "Thomas Frank",
+            "url": "https://www.youtube.com/@thomasfrank",
+        },
+        {
+            "id": "UCJ24N4O0bP7LGLBDvye7oCA",
+            "name": "Matt D'Avella",
+            "url": "https://www.youtube.com/@mattdavella",
+        },
+        {
+            "id": "UC9vLsnF6QPYuH51njmIooCQ",
+            "name": "System Design Interview",
+            "url": "https://www.youtube.com/@SystemDesignInterview",
+        },
+        {
+            "id": "UC8butISFwT-Wl7EV0hUK0BQ",
+            "name": "freeCodeCamp",
+            "url": "https://www.youtube.com/@freecodecamp",
+        },
     ],
     "videos_tech": [
-        {"id": "UCbfYPyITQ-7l4upoX8nvctg", "name": "Fireship", "url": "https://www.youtube.com/@fireship"},
-        {"id": "UCCezIgC97PvUuR4_gbFUs5g", "name": "Corey Schafer", "url": "https://www.youtube.com/@coreyms"},
-        {"id": "UCW5YeuERMmlnqo4oq8vwUpg", "name": "The Net Ninja", "url": "https://www.youtube.com/@NetNinja"},
-        {"id": "UCsBjURrPoezykLs9EqgamOA", "name": "Ben Awad", "url": "https://www.youtube.com/@benawad"},
+        {
+            "id": "UCbfYPyITQ-7l4upoX8nvctg",
+            "name": "Fireship",
+            "url": "https://www.youtube.com/@fireship",
+        },
+        {
+            "id": "UCCezIgC97PvUuR4_gbFUs5g",
+            "name": "Corey Schafer",
+            "url": "https://www.youtube.com/@coreyms",
+        },
+        {
+            "id": "UCW5YeuERMmlnqo4oq8vwUpg",
+            "name": "The Net Ninja",
+            "url": "https://www.youtube.com/@NetNinja",
+        },
+        {
+            "id": "UCsBjURrPoezykLs9EqgamOA",
+            "name": "Ben Awad",
+            "url": "https://www.youtube.com/@benawad",
+        },
     ],
     # Russian channels
     "videos_ru_documentary": [
-        {"id": "UCpHYYe5wzme6XJfYQbM8-_Q", "name": "Простые мысли", "url": "https://www.youtube.com/@simple_thoughts"},
-        {"id": "UC4q1jrIeAOLh7Jw7YazqPWQ", "name": "Файб", "url": "https://www.youtube.com/@pheeb_official"},
-        {"id": "UC0oLxL8yFsI6KyXdDgnJi4g", "name": "SUREN", "url": "https://www.youtube.com/@surenart"},
+        {
+            "id": "UCpHYYe5wzme6XJfYQbM8-_Q",
+            "name": "Простые мысли",
+            "url": "https://www.youtube.com/@simple_thoughts",
+        },
+        {
+            "id": "UC4q1jrIeAOLh7Jw7YazqPWQ",
+            "name": "Файб",
+            "url": "https://www.youtube.com/@pheeb_official",
+        },
+        {
+            "id": "UC0oLxL8yFsI6KyXdDgnJi4g",
+            "name": "SUREN",
+            "url": "https://www.youtube.com/@surenart",
+        },
     ],
     "videos_ru_science": [
-        {"id": "UC5f5IV0Bf79YLp_p9nfInRA", "name": "SciOne", "url": "https://www.youtube.com/@scione"},
-        {"id": "UC3Mss4t8lN4qUQ9-7Y0Q1nA", "name": "Мы и Они", "url": "https://www.youtube.com/@myandthey"},
-        {"id": "UC6uFo0i20oRjv4jM6Vn0Y6A", "name": "Основа", "url": "https://www.youtube.com/@Osnova"},
+        {
+            "id": "UC5f5IV0Bf79YLp_p9nfInRA",
+            "name": "SciOne",
+            "url": "https://www.youtube.com/@scione",
+        },
+        {
+            "id": "UC3Mss4t8lN4qUQ9-7Y0Q1nA",
+            "name": "Мы и Они",
+            "url": "https://www.youtube.com/@myandthey",
+        },
+        {
+            "id": "UC6uFo0i20oRjv4jM6Vn0Y6A",
+            "name": "Основа",
+            "url": "https://www.youtube.com/@Osnova",
+        },
     ],
     "videos_ru_society": [
-        {"id": "UC3bbYb7N7o2dC6Fsl9M6m2Q", "name": "Жиза", "url": "https://www.youtube.com/@zhiza"},
-        {"id": "UCW7sU3D8R8b8TnLq4v9P8bw", "name": "Черный кабинет", "url": "https://www.youtube.com/@blackcabinetyt"},
+        {
+            "id": "UC3bbYb7N7o2dC6Fsl9M6m2Q",
+            "name": "Жиза",
+            "url": "https://www.youtube.com/@zhiza",
+        },
+        {
+            "id": "UCW7sU3D8R8b8TnLq4v9P8bw",
+            "name": "Черный кабинет",
+            "url": "https://www.youtube.com/@blackcabinetyt",
+        },
     ],
     "videos_ru_travel": [
-        {"id": "UCm0x7wraT70xW4K8v3a3d7Q", "name": "Хочу домой", "url": "https://www.youtube.com/@khochudomoy"},
+        {
+            "id": "UCm0x7wraT70xW4K8v3a3d7Q",
+            "name": "Хочу домой",
+            "url": "https://www.youtube.com/@khochudomoy",
+        },
     ],
     "videos_ru_food": [
-        {"id": "UC5m6D8V7kW9f8tY1j3n6kPQ", "name": "Покашеварим", "url": "https://www.youtube.com/@pokashevarim"},
+        {
+            "id": "UC5m6D8V7kW9f8tY1j3n6kPQ",
+            "name": "Покашеварим",
+            "url": "https://www.youtube.com/@pokashevarim",
+        },
     ],
 }
 
@@ -324,12 +438,17 @@ MUSIC_PLAYLISTS = [
 ]
 
 
-async def _fetch_single_youtube_channel(channel: Dict) -> Optional[Dict[str, Any]]:
-    """Fetch a single YouTube channel (for parallel execution)."""
+async def _fetch_single_youtube_channel(
+    channel: Dict, hours: int = 24
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single YouTube channel's recent video (for parallel execution).
+
+    Returns only videos published within the last `hours` hours.
+    Links to specific videos, not channel pages.
+    """
     try:
         channel_id = channel["id"]
         channel_name = channel["name"]
-        channel_url = channel["url"]
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -337,34 +456,55 @@ async def _fetch_single_youtube_channel(channel: Dict) -> Optional[Dict[str, Any
             response.raise_for_status()
 
         feed = feedparser.parse(response.content)
-        if feed.entries:
-            entry = feed.entries[0]
-            video = {
-                "title": channel_name,
-                "creator": channel_name,
-                "url": channel_url,
-                "description": entry.get("summary", "")[:150],
-                "type": "video",
-                "platform": "youtube",
-                "published": entry.get("published", ""),
-            }
-            if video["title"] and video["url"]:
+
+        # Find first video published within time window
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        for entry in feed.entries[:5]:  # Check first 5 entries
+            try:
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if pub_time < cutoff:
+                    continue  # Too old
+
+                video_url = entry.get("link", "")
+                if not video_url:
+                    continue
+
+                # Get video title from entry
+                video_title = entry.get("title", channel_name)
+
+                video = {
+                    "title": video_title,
+                    "creator": channel_name,
+                    "url": video_url,
+                    "description": entry.get("summary", "")[:150],
+                    "type": "video",
+                    "platform": "youtube",
+                    "published": entry.get("published", ""),
+                }
                 return video
+            except (TypeError, AttributeError):
+                continue
+
     except Exception as e:
-        logger.debug(f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}")
+        logger.debug(
+            f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}"
+        )
     return None
 
 
-async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
+async def get_youtube_videos(
+    max_results: int = 5, hours: int = 24
+) -> List[Dict[str, Any]]:
     """
     Fetch recent videos from English YouTube channels (parallel).
-    Returns links to channel pages, not individual videos.
+    Only returns videos published within the last `hours` hours.
 
     Args:
         max_results: max videos to return
+        hours: time window in hours (default 24)
 
     Returns:
-        List of video dicts with title, creator, channel_url, description
+        List of video dicts with title, creator, specific video URL, description
     """
     try:
         # Get only English channels (exclude videos_ru*)
@@ -376,7 +516,7 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
             all_channels.extend(channels_list)
 
         # Fetch all channels in parallel with timeout
-        tasks = [_fetch_single_youtube_channel(ch) for ch in all_channels]
+        tasks = [_fetch_single_youtube_channel(ch, hours=hours) for ch in all_channels]
         try:
             if hasattr(asyncio, "timeout"):
                 async with asyncio.timeout(8.0):
@@ -390,10 +530,7 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
             results = []
 
         # Filter out None and Exception results
-        videos = [
-            r for r in results
-            if r and not isinstance(r, Exception)
-        ]
+        videos = [r for r in results if r and not isinstance(r, Exception)]
 
         return videos[:max_results]
 
@@ -402,47 +539,73 @@ async def get_youtube_videos(max_results: int = 5) -> List[Dict[str, Any]]:
         return []
 
 
-async def _fetch_single_podcast(source: Dict) -> Optional[Dict[str, Any]]:
-    """Fetch a single podcast source (for parallel execution)."""
+async def _fetch_single_podcast(
+    source: Dict, hours: int = 24
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single podcast's recent episode (for parallel execution).
+
+    Returns only episodes published within the last `hours` hours.
+    Links to specific episodes, not channel pages.
+    """
     try:
         rss_url = source.get("rss_url") or source.get("url")
-        channel_url = source.get("channel_url")
+        source_title = source.get("title", "Podcast")
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
         feed = feedparser.parse(response.content)
-        if feed.entries:
-            entry = feed.entries[0]
-            podcast = {
-                "title": source.get("title", feed.feed.get("title", "Podcast")),
-                "creator": source.get("title", feed.feed.get("title", "Podcast")),
-                "url": channel_url or entry.get("link", ""),
-                "description": entry.get("summary", "")[:150],
-                "type": "podcast",
-                "platform": "podcast",
-                "published": entry.get("published", ""),
-            }
-            if podcast["title"] and podcast["url"]:
+
+        # Find first episode published within time window
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        for entry in feed.entries[:5]:  # Check first 5 entries
+            try:
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if pub_time < cutoff:
+                    continue  # Too old
+
+                episode_url = entry.get("link", "")
+                if not episode_url:
+                    continue
+
+                # Get episode title
+                episode_title = entry.get("title", source_title)
+
+                podcast = {
+                    "title": episode_title,
+                    "creator": source_title,
+                    "url": episode_url,
+                    "description": entry.get("summary", "")[:150],
+                    "type": "podcast",
+                    "platform": "podcast",
+                    "published": entry.get("published", ""),
+                }
                 return podcast
+            except (TypeError, AttributeError):
+                continue
+
     except Exception as e:
-        logger.debug(f"Failed to fetch podcast {source.get('title', 'unknown')}: {type(e).__name__}")
+        logger.debug(
+            f"Failed to fetch podcast {source.get('title', 'unknown')}: {type(e).__name__}"
+        )
     return None
 
 
 async def get_podcasts(
-    language: str = "en", max_results: int = 5
+    language: str = "en", max_results: int = 5, hours: int = 24
 ) -> List[Dict[str, Any]]:
     """
     Fetch recent podcast episodes from RSS feeds (parallel).
+    Only returns episodes published within the last `hours` hours.
 
     Args:
         language: 'en', 'ru', or 'all'
         max_results: max episodes to return
+        hours: time window in hours (default 24)
 
     Returns:
-        List of podcast dicts with title, creator, url, description
+        List of podcast dicts with title, creator, specific episode URL, description
     """
     try:
         sources = [
@@ -452,7 +615,7 @@ async def get_podcasts(
         ]
 
         # Fetch all podcasts in parallel with timeout
-        tasks = [_fetch_single_podcast(s) for s in sources]
+        tasks = [_fetch_single_podcast(s, hours=hours) for s in sources]
         try:
             if hasattr(asyncio, "timeout"):
                 async with asyncio.timeout(8.0):
@@ -466,10 +629,7 @@ async def get_podcasts(
             results = []
 
         # Filter out None and Exception results
-        podcasts = [
-            r for r in results
-            if r and not isinstance(r, Exception)
-        ]
+        podcasts = [r for r in results if r and not isinstance(r, Exception)]
 
         return podcasts[:max_results]
 
@@ -509,12 +669,17 @@ async def get_music(max_results: int = 3) -> List[Dict[str, Any]]:
         return []
 
 
-async def _fetch_single_russian_youtube_channel(channel: Dict) -> Optional[Dict[str, Any]]:
-    """Fetch a single Russian YouTube channel (for parallel execution)."""
+async def _fetch_single_russian_youtube_channel(
+    channel: Dict, hours: int = 24
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single Russian YouTube channel's recent video (for parallel execution).
+
+    Returns only videos published within the last `hours` hours.
+    Links to specific videos, not channel pages.
+    """
     try:
         channel_id = channel["id"]
         channel_name = channel["name"]
-        channel_url = channel["url"]
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -522,28 +687,50 @@ async def _fetch_single_russian_youtube_channel(channel: Dict) -> Optional[Dict[
             response.raise_for_status()
 
         feed = feedparser.parse(response.content)
-        if feed.entries:
-            entry = feed.entries[0]
-            video = {
-                "title": channel_name,
-                "creator": channel_name,
-                "url": channel_url,
-                "description": entry.get("summary", "")[:150],
-                "type": "video",
-                "platform": "youtube",
-                "language": "ru",
-                "published": entry.get("published", ""),
-            }
-            if video["title"] and video["url"]:
+
+        # Find first video published within time window
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        for entry in feed.entries[:5]:  # Check first 5 entries
+            try:
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if pub_time < cutoff:
+                    continue  # Too old
+
+                video_url = entry.get("link", "")
+                if not video_url:
+                    continue
+
+                # Get video title from entry
+                video_title = entry.get("title", channel_name)
+
+                video = {
+                    "title": video_title,
+                    "creator": channel_name,
+                    "url": video_url,
+                    "description": entry.get("summary", "")[:150],
+                    "type": "video",
+                    "platform": "youtube",
+                    "language": "ru",
+                    "published": entry.get("published", ""),
+                }
                 return video
+            except (TypeError, AttributeError):
+                continue
+
     except Exception as e:
-        logger.debug(f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}")
+        logger.debug(
+            f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}"
+        )
     return None
 
 
-async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any]]:
+async def get_russian_youtube_videos(
+    max_results: int = 3, hours: int = 24
+) -> List[Dict[str, Any]]:
     """Fetch recent videos from Russian YouTube channels (parallel).
-    Returns links to channel pages, not individual videos."""
+    Only returns videos published within the last `hours` hours.
+    Links to specific videos, not channel pages.
+    """
     try:
         # Filter Russian channels from unified YOUTUBE_CHANNELS
         ru_categories = {
@@ -554,7 +741,10 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
             all_channels.extend(channels_list)
 
         # Fetch all channels in parallel with timeout
-        tasks = [_fetch_single_russian_youtube_channel(ch) for ch in all_channels]
+        tasks = [
+            _fetch_single_russian_youtube_channel(ch, hours=hours)
+            for ch in all_channels
+        ]
         try:
             if hasattr(asyncio, "timeout"):
                 async with asyncio.timeout(8.0):
@@ -568,10 +758,7 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
             results = []
 
         # Filter out None and Exception results
-        videos = [
-            r for r in results
-            if r and not isinstance(r, Exception)
-        ]
+        videos = [r for r in results if r and not isinstance(r, Exception)]
 
         return videos[:max_results]
     except Exception as e:
@@ -581,43 +768,71 @@ async def get_russian_youtube_videos(max_results: int = 3) -> List[Dict[str, Any
         return []
 
 
-async def _fetch_single_russian_podcast(source: Dict) -> Optional[Dict[str, Any]]:
-    """Fetch a single Russian podcast source (for parallel execution)."""
+async def _fetch_single_russian_podcast(
+    source: Dict, hours: int = 24
+) -> Optional[Dict[str, Any]]:
+    """Fetch a single Russian podcast's recent episode (for parallel execution).
+
+    Returns only episodes published within the last `hours` hours.
+    Links to specific episodes, not channel pages.
+    """
     try:
         rss_url = source.get("rss_url") or source.get("url")
-        channel_url = source.get("channel_url")
+        source_title = source.get("title", "Podcast")
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
         feed = feedparser.parse(response.content)
-        if feed.entries:
-            entry = feed.entries[0]
-            podcast = {
-                "title": source.get("title", feed.feed.get("title", "Podcast")),
-                "creator": source.get("title", "Podcast"),
-                "url": channel_url or entry.get("link", ""),
-                "description": entry.get("summary", "")[:150],
-                "type": "podcast",
-                "platform": "podcast",
-                "language": "ru",
-                "published": entry.get("published", ""),
-            }
-            if podcast["title"] and podcast["url"]:
+
+        # Find first episode published within time window
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+        for entry in feed.entries[:5]:  # Check first 5 entries
+            try:
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if pub_time < cutoff:
+                    continue  # Too old
+
+                episode_url = entry.get("link", "")
+                if not episode_url:
+                    continue
+
+                # Get episode title
+                episode_title = entry.get("title", source_title)
+
+                podcast = {
+                    "title": episode_title,
+                    "creator": source_title,
+                    "url": episode_url,
+                    "description": entry.get("summary", "")[:150],
+                    "type": "podcast",
+                    "platform": "podcast",
+                    "language": "ru",
+                    "published": entry.get("published", ""),
+                }
                 return podcast
+            except (TypeError, AttributeError):
+                continue
+
     except Exception as e:
-        logger.debug(f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}")
+        logger.debug(
+            f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}"
+        )
     return None
 
 
-async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
-    """Fetch recent episodes from Russian podcasts (parallel)."""
+async def get_russian_podcasts(
+    max_results: int = 3, hours: int = 24
+) -> List[Dict[str, Any]]:
+    """Fetch recent episodes from Russian podcasts (parallel).
+    Only returns episodes published within the last `hours` hours.
+    """
     try:
         ru_sources = [s for s in PODCAST_SOURCES if s.get("language") == "ru"]
 
         # Fetch all Russian podcasts in parallel with timeout
-        tasks = [_fetch_single_russian_podcast(s) for s in ru_sources]
+        tasks = [_fetch_single_russian_podcast(s, hours=hours) for s in ru_sources]
         try:
             if hasattr(asyncio, "timeout"):
                 async with asyncio.timeout(8.0):
@@ -631,10 +846,7 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
             results = []
 
         # Filter out None and Exception results
-        podcasts = [
-            r for r in results
-            if r and not isinstance(r, Exception)
-        ]
+        podcasts = [r for r in results if r and not isinstance(r, Exception)]
 
         return podcasts[:max_results]
     except Exception as e:
@@ -642,142 +854,99 @@ async def get_russian_podcasts(max_results: int = 3) -> List[Dict[str, Any]]:
         return []
 
 
-async def get_all_content(max_per_type: int = 5) -> List[Dict[str, Any]]:
+async def fetch_fresh_content(hours: int = 24) -> List[Dict[str, Any]]:
     """
-    Fetch ALL content sources (English + Russian) in parallel with timeout.
-    Returns flat list with all items, prioritizing Russian.
+    Fetch fresh content from YouTube and podcasts (EN + RU) published within last N hours.
 
     Returns:
-        List of content dicts with title, creator, url, description, language
+        List of content items with title, creator, specific video/episode URL, type, language
     """
     try:
-        logger.info("Fetching all content sources (EN + RU) in parallel...")
+        logger.debug(f"Fetching fresh content from last {hours} hours...")
 
-        # Fetch all sources in parallel with 15-second timeout
+        # Fetch all sources in parallel with timeout
         try:
             if hasattr(asyncio, "timeout"):
-                async with asyncio.timeout(15.0):
-                    en_videos, en_podcasts, music, ru_videos, ru_podcasts = await asyncio.gather(
-                        get_youtube_videos(max_results=max_per_type),
-                        get_podcasts(language="en", max_results=max_per_type),
-                        get_music(max_results=max_per_type),
-                        get_russian_youtube_videos(max_results=max_per_type),
-                        get_russian_podcasts(max_results=max_per_type),
-                        return_exceptions=True,
+                async with asyncio.timeout(12.0):
+                    en_videos, en_podcasts, ru_videos, ru_podcasts = (
+                        await asyncio.gather(
+                            get_youtube_videos(max_results=10, hours=hours),
+                            get_podcasts(language="en", max_results=10, hours=hours),
+                            get_russian_youtube_videos(max_results=10, hours=hours),
+                            get_russian_podcasts(max_results=10, hours=hours),
+                            return_exceptions=True,
+                        )
                     )
             else:
-                en_videos, en_podcasts, music, ru_videos, ru_podcasts = await asyncio.wait_for(
+                en_videos, en_podcasts, ru_videos, ru_podcasts = await asyncio.wait_for(
                     asyncio.gather(
-                        get_youtube_videos(max_results=max_per_type),
-                        get_podcasts(language="en", max_results=max_per_type),
-                        get_music(max_results=max_per_type),
-                        get_russian_youtube_videos(max_results=max_per_type),
-                        get_russian_podcasts(max_results=max_per_type),
+                        get_youtube_videos(max_results=10, hours=hours),
+                        get_podcasts(language="en", max_results=10, hours=hours),
+                        get_russian_youtube_videos(max_results=10, hours=hours),
+                        get_russian_podcasts(max_results=10, hours=hours),
                         return_exceptions=True,
                     ),
-                    timeout=15.0,
+                    timeout=12.0,
                 )
         except (asyncio.TimeoutError, TimeoutError):
-            logger.warning("Content sources fetch timed out after 15s, returning partial results")
-            en_videos = en_podcasts = music = ru_videos = ru_podcasts = []
+            logger.warning(f"Content fetch timed out after 12s")
+            en_videos = en_podcasts = ru_videos = ru_podcasts = []
 
         # Handle exceptions
-        for var_name, var in [
-            ("videos_en", en_videos),
-            ("podcasts_en", en_podcasts),
-            ("music", music),
-            ("videos_ru", ru_videos),
-            ("podcasts_ru", ru_podcasts),
-        ]:
-            if isinstance(var, Exception):
-                logger.warning(f"Failed to fetch {var_name}: {var}")
+        en_videos = en_videos if isinstance(en_videos, list) else []
+        en_podcasts = en_podcasts if isinstance(en_podcasts, list) else []
+        ru_videos = ru_videos if isinstance(ru_videos, list) else []
+        ru_podcasts = ru_podcasts if isinstance(ru_podcasts, list) else []
 
-        # Combine into flat list, prioritizing Russian content
+        # Combine: Russian first (priority), then English
         all_content = []
-
-        # Add Russian first (priority)
-        all_content.extend(ru_videos if isinstance(ru_videos, list) else [])
-        all_content.extend(ru_podcasts if isinstance(ru_podcasts, list) else [])
-
-        # Then English
-        all_content.extend(en_videos if isinstance(en_videos, list) else [])
-        all_content.extend(en_podcasts if isinstance(en_podcasts, list) else [])
-        all_content.extend(music if isinstance(music, list) else [])
-
-        # Add language tag if missing
-        for item in all_content:
-            if "language" not in item:
-                item["language"] = "en"
+        all_content.extend(ru_videos)
+        all_content.extend(ru_podcasts)
+        all_content.extend(en_videos)
+        all_content.extend(en_podcasts)
 
         logger.info(
-            f"✓ Fetched {len(all_content)} total items (RU: {len(ru_videos or [])} videos + {len(ru_podcasts or [])} podcasts)"
+            f"✓ Fetched {len(all_content)} fresh items in {hours}h window (RU: {len(ru_videos)+len(ru_podcasts)} EN: {len(en_videos)+len(en_podcasts)})"
         )
 
         return all_content
 
     except Exception as e:
-        logger.error(f"Failed to fetch all content: {type(e).__name__}: {e}")
+        logger.error(f"Failed to fetch fresh content: {type(e).__name__}: {e}")
         return []
 
 
-async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
-    """
-    Fetch all content, use AI to select fresh item, write review in Russian.
-    Prioritizes Russian content.
+async def _select_and_describe(items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Use GPT to select best item from list and write description."""
+    if not items:
+        return None
 
-    Returns:
-        {
-            "type": "video|podcast|music",
-            "title": str,
-            "creator": str,
-            "url": str,
-            "description": str,
-            "review": str (Russian review from AI),
-            "language": "ru|en",
-            "platform": str,
-        }
-        or None if no content available
-    """
+    # Prepare for AI
+    content_list = []
+    for idx, item in enumerate(items[:20], 1):
+        content_list.append(
+            {
+                "index": idx,
+                "type": item.get("type", ""),
+                "title": item.get("title", ""),
+                "creator": item.get("creator", ""),
+                "snippet": item.get("description", "")[:100],
+                "language": item.get("language", "en"),
+            }
+        )
+
     try:
-        # Fetch all available content
-        all_content = await get_all_content(max_per_type=5)
-        if not all_content:
-            logger.warning("No content available for recommendation")
-            return None
-
-        # Prepare content list for AI (include key fields)
-        content_list = []
-        for idx, item in enumerate(all_content[:20], 1):  # Limit to 20 items
-            content_list.append(
-                {
-                    "index": idx,
-                    "type": item.get("type", "unknown"),
-                    "title": item.get("title", ""),
-                    "creator": item.get("creator", ""),
-                    "description": item.get("description", ""),
-                    "language": item.get("language", "en"),
-                }
-            )
-
-        logger.debug(f"Prepared {len(content_list)} items for AI selection")
-
-        # Send to GPT-4o for selection
         client = get_client()
-        prompt = f"""У тебя есть список свежего контента. Выбери ОДИН наиболее интересный и полезный элемент, приоритет - русский контент.
+        prompt = f"""У тебя есть список свежего контента. Выбери ОДИН наиболее интересный и полезный для аналитика.
 
 Контент:
 {json.dumps(content_list, ensure_ascii=False, indent=2)}
 
-Ответь JSON (только валидный JSON без markdown):
+Ответь только JSON без markdown:
 {{
-  "index": <номер выбранного элемента>,
-  "review": "<твой краткий обзор на русском (1-3 предложения, макс 150 символов)>"
-}}
-
-Обзор должен быть:
-- На русском языке
-- Кратким и полезным
-- Объяснять, почему это стоит смотреть/слушать"""
+  "index": <номер выбранного элемента (1-{len(content_list)})>,
+  "review": "<краткий обзор на русском, 1-3 предложения, макс 150 символов>"
+}}"""
 
         response = await client.chat.completions.create(
             model="gpt-5.4-mini",
@@ -786,35 +955,160 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
         )
 
         response_text = response.choices[0].message.content.strip()
-        logger.debug(f"AI selection response: {response_text}")
-
-        # Parse JSON response
         selected = json.loads(response_text)
-        selected_idx = selected.get("index", 1) - 1  # Convert to 0-indexed
+        selected_idx = selected.get("index", 1) - 1
         review = selected.get("review", "")
 
-        if 0 <= selected_idx < len(all_content):
-            item = all_content[selected_idx]
+        if 0 <= selected_idx < len(items):
+            item = items[selected_idx]
             result = {
-                "type": item.get("type", "unknown"),
+                "type": item.get("type", ""),
                 "title": item.get("title", ""),
                 "creator": item.get("creator", ""),
                 "url": item.get("url", ""),
-                "description": item.get("description", ""),
                 "review": review,
                 "language": item.get("language", "en"),
                 "platform": item.get("platform", ""),
             }
-
             logger.info(f"✓ Selected: {result['type']} - {result['title'][:50]}")
             return result
-        else:
-            logger.warning(f"Invalid index from AI: {selected_idx}")
+
+    except Exception as e:
+        logger.warning(f"Failed to select content: {type(e).__name__}: {e}")
+    return None
+
+
+async def _spotify_search_album(album: str, artist: str) -> Optional[str]:
+    """Search Spotify for album URL. Returns spotify.com link or None."""
+    try:
+        client_id = get_secret("SPOTIFY_CLIENT_ID")
+        client_secret = get_secret("SPOTIFY_CLIENT_SECRET")
+
+        if not client_id or not client_secret:
+            logger.warning("Spotify credentials not configured")
             return None
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse AI JSON response: {e}")
-        return None
+        # Get access token
+        auth_str = f"{client_id}:{client_secret}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            token_response = await client.post(
+                "https://accounts.spotify.com/api/token",
+                headers={"Authorization": f"Basic {auth_b64}"},
+                data={"grant_type": "client_credentials"},
+            )
+            token_response.raise_for_status()
+            token_data = token_response.json()
+            access_token = token_data.get("access_token")
+
+            if not access_token:
+                logger.warning("Failed to get Spotify access token")
+                return None
+
+            # Search for album
+            search_query = f"album:{album} artist:{artist}"
+            search_response = await client.get(
+                "https://api.spotify.com/v1/search",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"q": search_query, "type": "album", "limit": 1},
+            )
+            search_response.raise_for_status()
+            search_data = search_response.json()
+
+            albums = search_data.get("albums", {}).get("items", [])
+            if albums:
+                album_url = albums[0].get("external_urls", {}).get("spotify", "")
+                if album_url:
+                    logger.info(f"✓ Found Spotify album: {album}")
+                    return album_url
+
+    except Exception as e:
+        logger.warning(f"Spotify search failed: {type(e).__name__}: {e}")
+    return None
+
+
+async def _recommend_music_album() -> Optional[Dict[str, Any]]:
+    """Fallback: GPT recommends morning album, search Spotify for it."""
+    try:
+        client = get_client()
+        prompt = """Посоветуй один хороший музыкальный альбом для утренней работы аналитика/программиста.
+
+Ответь только JSON без markdown:
+{
+  "album": "<название альбома>",
+  "artist": "<имя исполнителя>",
+  "description": "<описание альбома, 1-2 предложения>"
+}"""
+
+        response = await client.chat.completions.create(
+            model="gpt-5.4-mini",
+            max_completion_tokens=150,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        response_text = response.choices[0].message.content.strip()
+        recommendation = json.loads(response_text)
+
+        album = recommendation.get("album", "")
+        artist = recommendation.get("artist", "")
+        description = recommendation.get("description", "")
+
+        # Search on Spotify
+        spotify_url = await _spotify_search_album(album, artist)
+        if not spotify_url:
+            logger.warning(f"Could not find '{album}' by '{artist}' on Spotify")
+            return None
+
+        result = {
+            "type": "music",
+            "title": album,
+            "creator": artist,
+            "url": spotify_url,
+            "review": description,
+            "language": "ru",
+            "platform": "spotify",
+        }
+        logger.info(f"✓ Recommended album: {album} by {artist}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"Music recommendation failed: {type(e).__name__}: {e}")
+    return None
+
+
+async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
+    """
+    Main function: fetch fresh content (last 24h), have GPT select it.
+    Fallback to music album recommendation if no fresh content found.
+
+    Returns:
+        {
+            "type": "video|podcast|music",
+            "title": str,
+            "creator": str,
+            "url": str,
+            "review": str (Russian review from AI),
+            "language": "ru|en",
+            "platform": str,
+        }
+        or None if unavailable
+    """
+    try:
+        # Try to fetch fresh content (last 24 hours)
+        fresh_items = await fetch_fresh_content(hours=24)
+
+        if fresh_items:
+            logger.info(f"Found {len(fresh_items)} fresh items, selecting best...")
+            result = await _select_and_describe(fresh_items)
+            if result:
+                return result
+
+        # Fallback: recommend music album
+        logger.info("No fresh content found, recommending music album...")
+        result = await _recommend_music_album()
+        return result
+
     except Exception as e:
         logger.error(f"Failed to get content recommendation: {type(e).__name__}: {e}")
         return None
