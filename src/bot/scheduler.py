@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from pytz import timezone
 from aiogram import Bot
 from src.utils.doppler import get_secret
 from src.utils.openai_client import get_client
@@ -863,12 +864,14 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         logger.warning("Scheduler already initialized")
         return scheduler
 
-    scheduler = AsyncIOScheduler()
+    # Initialize scheduler with Asia/Tbilisi timezone
+    tbilisi_tz = timezone('Asia/Tbilisi')
+    scheduler = AsyncIOScheduler(timezone=tbilisi_tz)
 
-    # Morning digest at 04:00
+    # Morning digest at 08:00 Tbilisi time
     scheduler.add_job(
         morning_digest,
-        CronTrigger(hour=4, minute=0),
+        CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
         args=[bot, user_id, chat_id],
         id="morning_digest",
         name="Morning task digest",
@@ -887,13 +890,13 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     # Hourly precipitation alert check
     scheduler.add_job(
         check_precipitation_alert,
-        CronTrigger(minute=0),  # every hour at :00
+        CronTrigger(minute=0, timezone=tbilisi_tz),  # every hour at :00 Tbilisi time
         args=[bot, chat_id],
         id="precipitation_alert",
         name="Hourly precipitation check",
     )
 
     logger.info(
-        "Scheduler initialized with morning digest (04:00), forex cache update (hourly), and precipitation alerts (hourly)"
+        "Scheduler initialized with morning digest (08:00 Asia/Tbilisi), forex cache update (hourly), and precipitation alerts (hourly)"
     )
     return scheduler

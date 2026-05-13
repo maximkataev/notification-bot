@@ -329,7 +329,7 @@ async def main():
     logger.info(f"Scheduler config: chat_id={chat_id}, user_id={user_id}")
     scheduler = init_scheduler(bot, user_id, chat_id)
     scheduler.start()
-    logger.info("✓ Scheduler started: morning digest (04:00 UTC = 08:00 Tbilisi)")
+    logger.info("✓ Scheduler started: morning digest (08:00 Asia/Tbilisi)")
 
     # Start currency monitor as background task
     currency_monitor = CurrencyMonitor(bot=bot, chat_id=chat_id)
