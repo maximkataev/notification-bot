@@ -451,7 +451,10 @@ async def _fetch_single_youtube_channel(
         channel_name = channel["name"]
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        ) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
@@ -487,7 +490,7 @@ async def _fetch_single_youtube_channel(
 
     except Exception as e:
         logger.debug(
-            f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}"
+            f"Failed to fetch YouTube channel {channel.get('name', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
         )
     return None
 
@@ -532,6 +535,10 @@ async def get_youtube_videos(
         # Filter out None and Exception results
         videos = [r for r in results if r and not isinstance(r, Exception)]
 
+        # Log successes and failures
+        failures = sum(1 for r in results if not r or isinstance(r, Exception))
+        logger.debug(f"YouTube videos: {len(videos)} success, {failures} failures from {len(all_channels)} channels")
+
         return videos[:max_results]
 
     except Exception as e:
@@ -551,7 +558,10 @@ async def _fetch_single_podcast(
         rss_url = source.get("rss_url") or source.get("url")
         source_title = source.get("title", "Podcast")
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        ) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
@@ -587,7 +597,7 @@ async def _fetch_single_podcast(
 
     except Exception as e:
         logger.debug(
-            f"Failed to fetch podcast {source.get('title', 'unknown')}: {type(e).__name__}"
+            f"Failed to fetch podcast {source.get('title', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
         )
     return None
 
@@ -630,6 +640,10 @@ async def get_podcasts(
 
         # Filter out None and Exception results
         podcasts = [r for r in results if r and not isinstance(r, Exception)]
+
+        # Log successes and failures
+        failures = sum(1 for r in results if not r or isinstance(r, Exception))
+        logger.debug(f"Podcasts ({language}): {len(podcasts)} success, {failures} failures from {len(sources)} sources")
 
         return podcasts[:max_results]
 
@@ -682,7 +696,10 @@ async def _fetch_single_russian_youtube_channel(
         channel_name = channel["name"]
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        ) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
@@ -719,7 +736,7 @@ async def _fetch_single_russian_youtube_channel(
 
     except Exception as e:
         logger.debug(
-            f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}"
+            f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
         )
     return None
 
@@ -760,6 +777,10 @@ async def get_russian_youtube_videos(
         # Filter out None and Exception results
         videos = [r for r in results if r and not isinstance(r, Exception)]
 
+        # Log successes and failures
+        failures = sum(1 for r in results if not r or isinstance(r, Exception))
+        logger.debug(f"Russian YouTube videos: {len(videos)} success, {failures} failures from {len(all_channels)} channels")
+
         return videos[:max_results]
     except Exception as e:
         logger.warning(
@@ -780,7 +801,10 @@ async def _fetch_single_russian_podcast(
         rss_url = source.get("rss_url") or source.get("url")
         source_title = source.get("title", "Podcast")
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(
+            timeout=5.0,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+        ) as client:
             response = await client.get(rss_url)
             response.raise_for_status()
 
@@ -817,7 +841,7 @@ async def _fetch_single_russian_podcast(
 
     except Exception as e:
         logger.debug(
-            f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}"
+            f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
         )
     return None
 
@@ -847,6 +871,10 @@ async def get_russian_podcasts(
 
         # Filter out None and Exception results
         podcasts = [r for r in results if r and not isinstance(r, Exception)]
+
+        # Log successes and failures
+        failures = sum(1 for r in results if not r or isinstance(r, Exception))
+        logger.debug(f"Russian podcasts: {len(podcasts)} success, {failures} failures from {len(ru_sources)} sources")
 
         return podcasts[:max_results]
     except Exception as e:
@@ -897,6 +925,9 @@ async def fetch_fresh_content(hours: int = 24) -> List[Dict[str, Any]]:
         en_podcasts = en_podcasts if isinstance(en_podcasts, list) else []
         ru_videos = ru_videos if isinstance(ru_videos, list) else []
         ru_podcasts = ru_podcasts if isinstance(ru_podcasts, list) else []
+
+        # Log detailed source status
+        logger.debug(f"EN videos: {len(en_videos)}, EN podcasts: {len(en_podcasts)}, RU videos: {len(ru_videos)}, RU podcasts: {len(ru_podcasts)}")
 
         # Combine: Russian first (priority), then English
         all_content = []

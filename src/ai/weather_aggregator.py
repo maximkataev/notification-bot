@@ -383,6 +383,7 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
         winds = [r[1][period]["wind_speed"] for r in results if period in r[1]]
         precips = [r[1][period]["precipitation_mm"] for r in results if period in r[1]]
         codes = [r[1][period]["weather_code"] for r in results if period in r[1]]
+        conditions = [r[1][period]["condition"] for r in results if period in r[1]]
 
         if temps and winds:
             # Average numeric values
@@ -390,16 +391,28 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
             avg_wind = round(sum(winds) / len(winds), 1)
             avg_precip = round(sum(precips) / len(precips), 1) if precips else 0.0
 
-            # Use Open-Meteo's weather code if available (most reliable), else take first available
+            # Collect all unique conditions from different sources
+            unique_conditions = []
+            seen = set()
+            for cond in conditions:
+                if cond and cond.lower() not in seen:
+                    unique_conditions.append(cond)
+                    seen.add(cond.lower())
+
+            # Join conditions with "/" if they differ, else use single condition
+            if unique_conditions:
+                condition = "/".join(unique_conditions) if len(unique_conditions) > 1 else unique_conditions[0]
+            else:
+                condition = "облачно"
+
+            # Use Open-Meteo's weather code if available (most reliable)
             primary_source = next((r for r in results if r[0] == "open-meteo"), None)
             if primary_source:
-                weather_code = primary_source[1][period]["weather_code"]
-                condition = primary_source[1][period]["condition"]
                 emoji = primary_source[1][period]["emoji"]
             else:
-                # Fallback: use most common code or first source
+                # Fallback: use most common code
                 weather_code = Counter(codes).most_common(1)[0][0] if codes else 3
-                condition, emoji = WMO_CODES.get(weather_code, ("облачно", "☁️"))
+                _, emoji = WMO_CODES.get(weather_code, ("облачно", "☁️"))
 
             aggregated[period] = {
                 "temperature": avg_temp,
@@ -407,7 +420,6 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
                 "condition": condition,
                 "emoji": emoji,
                 "precipitation_mm": avg_precip,
-                "weather_code": weather_code,
             }
 
     return aggregated if aggregated else None

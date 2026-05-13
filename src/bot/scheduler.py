@@ -235,8 +235,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     # Compute clothing recommendation based on weather rules (not AI)
     morning_temp = None
     if weather and isinstance(weather.get("morning"), dict):
-        morning_temp = weather["morning"].get("temperature", 15)
+        morning_temp = weather["morning"].get("temperature")
 
+    # Jacket needed if: temp < 10°C OR precipitation expected
     needs_jacket = (morning_temp is not None and morning_temp < 10) or is_raining
     outer_layer = "куртку" if needs_jacket else "худи"
     outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
@@ -409,7 +410,6 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             for i, item in enumerate(selected_with_indices, 1):
                 idx = item["index"]
                 category = item["category"]
-                summary = item["summary"]
                 description_ru = item.get("description_ru", "")
 
                 # Get original news item by index (with safety check)
@@ -418,21 +418,17 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                     source = original_news.get("source", "Unknown")
                     url = original_news.get("url", "")
 
-                    # Format: <a href="url">Source</a>: summary + translated description
+                    # Format: <a href="url">Source</a>: description_ru (full, complete text)
                     news_text = (
-                        f'{i}. <a href="{url}">{source}</a>: {summary}'
+                        f'{i}. <a href="{url}">{source}</a>: {description_ru}'
                         if url
-                        else f"{i}. {source}: {summary}"
+                        else f"{i}. {source}: {description_ru}"
                     )
-
-                    # Add translated description if available
-                    if description_ru:
-                        news_text += f" {description_ru}"
 
                     message_lines.append(news_text)
                     message_lines.append("")
 
-                    logger.info(f"  [{i}] {category}: {summary[:60]}... | {source}")
+                    logger.info(f"  [{i}] {category}: {description_ru[:60]}... | {source}")
                 else:
                     logger.warning(f"Invalid index {idx} for news selection, skipping")
 
