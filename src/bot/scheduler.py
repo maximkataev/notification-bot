@@ -34,6 +34,7 @@ from src.workers.content_recommender import get_content_recommendation
 from src.workers.quote_of_day import get_quote_of_day
 from src.workers.football_matches import get_today_matches
 from src.workers.football_analyzer import get_match_analysis
+from src.workers.match_context import get_extended_match_analysis
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
@@ -123,28 +124,47 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
             logger.error(f"Failed to send error fallback message: {fallback_err}")
 
 
-async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
+async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, include_tasks: bool = True):
     """Implementation of morning digest (called with timeout)."""
-    logger.info(f"Loading tasks, profile, weather for user {user_id}")
+    logger.info(f"Loading tasks, profile, weather for user {user_id} (include_tasks={include_tasks})")
 
     # Parallel API calls - much faster than sequential
-    tasks, user_profile, weather = await asyncio.gather(
-        get_todoist_tasks(),
+    # Only load tasks if include_tasks=True
+    gather_tasks = [
         get_user_profile(user_id),
         get_aggregated_weather(),
-        return_exceptions=True,
-    )
+    ]
+    if include_tasks:
+        gather_tasks.insert(0, get_todoist_tasks())
 
-    # Handle exceptions from gather
-    if isinstance(tasks, Exception):
-        logger.error(f"Failed to load tasks", exc_info=True)
+    if include_tasks:
+        tasks, user_profile, weather = await asyncio.gather(
+            *gather_tasks,
+            return_exceptions=True,
+        )
+        # Handle exceptions from gather
+        if isinstance(tasks, Exception):
+            logger.error(f"Failed to load tasks", exc_info=True)
+            tasks = []
+        if isinstance(user_profile, Exception):
+            logger.error(f"Failed to load profile", exc_info=True)
+            user_profile = None
+        if isinstance(weather, Exception):
+            logger.error(f"Failed to load weather", exc_info=True)
+            weather = None
+    else:
+        user_profile, weather = await asyncio.gather(
+            *gather_tasks,
+            return_exceptions=True,
+        )
+        # Handle exceptions from gather
+        if isinstance(user_profile, Exception):
+            logger.error(f"Failed to load profile", exc_info=True)
+            user_profile = None
+        if isinstance(weather, Exception):
+            logger.error(f"Failed to load weather", exc_info=True)
+            weather = None
         tasks = []
-    if isinstance(user_profile, Exception):
-        logger.error(f"Failed to load profile", exc_info=True)
-        user_profile = None
-    if isinstance(weather, Exception):
-        logger.error(f"Failed to load weather", exc_info=True)
-        weather = None
 
     if user_profile is None:
         from src.db.models import UserProfile
@@ -455,97 +475,101 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         message_lines.append("(новости недоступны)")
         message_lines.append("")
 
-    # Tasks are already filtered by database to when_date <= today or NULL
-    # Just use them as-is (no additional date filtering needed)
-    today_tasks = tasks
-    logger.info(f"Tasks loaded: {len(today_tasks)} tasks ready for today")
+    # Tasks section (only if include_tasks=True)
+    if include_tasks:
+        # Tasks are already filtered by database to when_date <= today or NULL
+        # Just use them as-is (no additional date filtering needed)
+        today_tasks = tasks
+        logger.info(f"Tasks loaded: {len(today_tasks)} tasks ready for today")
 
-    # Sort tasks by importance
-    today_tasks_sorted = sorted(today_tasks, key=score_task_importance, reverse=True)
-    logger.info(f"Sorted {len(today_tasks_sorted)} tasks by importance")
+        # Sort tasks by importance
+        today_tasks_sorted = sorted(today_tasks, key=score_task_importance, reverse=True)
+        logger.info(f"Sorted {len(today_tasks_sorted)} tasks by importance")
 
-    # Get AI explanations for tasks with weather and profile context
-    task_explanations = {}
-    if today_tasks_sorted:
-        # Convert profile to dict for AI context
-        profile_dict = None
-        if user_profile:
-            profile_dict = {
-                "wake_time": user_profile.wake_time,
-                "sleep_time": user_profile.sleep_time,
-                "preferences": user_profile.preferences,
-                "timezone": user_profile.timezone,
-            }
+        # Get AI explanations for tasks with weather and profile context
+        task_explanations = {}
+        if today_tasks_sorted:
+            # Convert profile to dict for AI context
+            profile_dict = None
+            if user_profile:
+                profile_dict = {
+                    "wake_time": user_profile.wake_time,
+                    "sleep_time": user_profile.sleep_time,
+                    "preferences": user_profile.preferences,
+                    "timezone": user_profile.timezone,
+                }
 
-        explanations_result = await get_task_explanations(
-            today_tasks_sorted, weather=weather, profile=profile_dict
-        )
-        if not isinstance(explanations_result, Exception):
-            task_explanations = explanations_result
-            logger.info(f"Generated explanations for {len(task_explanations)} tasks")
-        else:
-            logger.warning(
-                f"Failed to generate task explanations: {explanations_result}"
+            explanations_result = await get_task_explanations(
+                today_tasks_sorted, weather=weather, profile=profile_dict
             )
-
-    # Process and organize tasks
-    if today_tasks_sorted:
-        # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
-        urgent_tasks = [
-            t
-            for t in today_tasks_sorted
-            if t.is_urgent or _is_task_urgent_by_keywords(t)
-        ]
-        non_urgent_tasks = [
-            t
-            for t in today_tasks_sorted
-            if not t.is_urgent and not _is_task_urgent_by_keywords(t)
-        ]
-
-        # Show urgent tasks
-        if urgent_tasks:
-            message_lines.append(f"СРОЧНЫЕ ({len(urgent_tasks)} задач):")
-            for task in urgent_tasks:
-                name = task.what or task.raw_text[:50]
-                task_data = task_explanations.get(task.id, {})
-                explanation = task_data.get("explanation", "")
-                time_minutes = task_data.get("time_minutes", 30)
-
-                message_lines.append(f"• {name} ({time_minutes} мин)")
-                if explanation:
-                    message_lines.append(f"  └ {explanation}")
-
-                logger.info(f"  Urgent task: {name} | {time_minutes}min")
-
-            message_lines.append("")
-
-        # Show non-urgent tasks if available
-        if non_urgent_tasks:
-            message_lines.append(f"НЕСРОЧНЫЕ (если захочешь взяться):")
-            display_non_urgent = non_urgent_tasks[:3]  # Show top 3 non-urgent
-
-            if len(non_urgent_tasks) > 3:
-                message_lines.append(
-                    f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n"
+            if not isinstance(explanations_result, Exception):
+                task_explanations = explanations_result
+                logger.info(f"Generated explanations for {len(task_explanations)} tasks")
+            else:
+                logger.warning(
+                    f"Failed to generate task explanations: {explanations_result}"
                 )
 
-            for task in display_non_urgent:
-                name = task.what or task.raw_text[:50]
-                task_data = task_explanations.get(task.id, {})
-                explanation = task_data.get("explanation", "")
-                time_minutes = task_data.get("time_minutes", 30)
+        # Process and organize tasks
+        if today_tasks_sorted:
+            # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
+            urgent_tasks = [
+                t
+                for t in today_tasks_sorted
+                if t.is_urgent or _is_task_urgent_by_keywords(t)
+            ]
+            non_urgent_tasks = [
+                t
+                for t in today_tasks_sorted
+                if not t.is_urgent and not _is_task_urgent_by_keywords(t)
+            ]
 
-                message_lines.append(f"• {name} ({time_minutes} мин)")
-                if explanation:
-                    message_lines.append(f"  └ {explanation}")
+            # Show urgent tasks
+            if urgent_tasks:
+                message_lines.append(f"СРОЧНЫЕ ({len(urgent_tasks)} задач):")
+                for task in urgent_tasks:
+                    name = task.what or task.raw_text[:50]
+                    task_data = task_explanations.get(task.id, {})
+                    explanation = task_data.get("explanation", "")
+                    time_minutes = task_data.get("time_minutes", 30)
 
-                logger.info(f"  Non-urgent task: {name} | {time_minutes}min")
+                    message_lines.append(f"• {name} ({time_minutes} мин)")
+                    if explanation:
+                        message_lines.append(f"  └ {explanation}")
 
+                    logger.info(f"  Urgent task: {name} | {time_minutes}min")
+
+                message_lines.append("")
+
+            # Show non-urgent tasks if available
+            if non_urgent_tasks:
+                message_lines.append(f"НЕСРОЧНЫЕ (если захочешь взяться):")
+                display_non_urgent = non_urgent_tasks[:3]  # Show top 3 non-urgent
+
+                if len(non_urgent_tasks) > 3:
+                    message_lines.append(
+                        f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n"
+                    )
+
+                for task in display_non_urgent:
+                    name = task.what or task.raw_text[:50]
+                    task_data = task_explanations.get(task.id, {})
+                    explanation = task_data.get("explanation", "")
+                    time_minutes = task_data.get("time_minutes", 30)
+
+                    message_lines.append(f"• {name} ({time_minutes} мин)")
+                    if explanation:
+                        message_lines.append(f"  └ {explanation}")
+
+                    logger.info(f"  Non-urgent task: {name} | {time_minutes}min")
+
+                message_lines.append("")
+        else:
+            message_lines.append("Дел на сегодня нет.")
+            logger.info("No tasks for today")
             message_lines.append("")
     else:
-        message_lines.append("Дел на сегодня нет.")
-        logger.info("No tasks for today")
-        message_lines.append("")
+        logger.info("Skipping tasks section (include_tasks=False)")
 
     # Add exchange rates with % changes
     logger.info("Fetching exchange rates with changes")
@@ -656,10 +680,31 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
             away = match.get("away", "Unknown")
             time = match.get("time", "TBD")
             league = match.get("league", "")
-            emoji = match.get("emoji", "⚽")
+            home_flag = match.get("home_flag", "⚽")
+            away_flag = match.get("away_flag", "⚽")
 
-            message_lines.append(f"{emoji} {home} vs {away}")
-            message_lines.append(f"<i>{league}</i> • {time}")
+            message_lines.append(f"{home_flag} {home} vs {away} {away_flag}")
+            # Include timezone info for clarity (Tbilisi time zone)
+            message_lines.append(f"<i>{league}</i> • {time} Tbilisi (GMT+4)")
+
+            # Get extended match context (standings, odds, form)
+            league_codes = {
+                "La Liga": ("LA", 140),
+                "Premier League": ("PL", 39),
+                "Ligue 1": ("FL1", 61),
+            }
+            league_info = league_codes.get(league, ("", None))
+            league_code, league_id = league_info
+
+            if league_code:
+                try:
+                    context = await get_extended_match_analysis(
+                        home, away, league, league_code, league_id
+                    )
+                    if context:
+                        message_lines.append(f"📊 {context}")
+                except Exception as e:
+                    logger.debug(f"Failed to get extended analysis: {e}")
 
             # Add AI commentary if available
             if i in match_analysis:
@@ -670,8 +715,32 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
         logger.info(f"Displayed {len(matches)} matches with AI commentary")
     else:
-        # No matches - fetch Product Hunt as fallback
-        logger.info("No football matches, fetching Product Hunt instead")
+        # No matches - show sports news + Product Hunt together
+        logger.info("No football matches found, showing sports news + Product Hunt")
+
+        # Show top sports news
+        if sports_news and len(sports_news) > 0:
+            logger.info(f"Showing top sports news")
+            message_lines.append("📰 <b>Спортивные новости</b>:")
+            message_lines.append("")
+
+            for i, news in enumerate(sports_news[:1]):  # Just 1 top story
+                title = news.get("title", "")
+                url = news.get("url", "")
+                source = news.get("source", "")
+
+                if url:
+                    message_lines.append(f'<a href="{url}">{title}</a>')
+                else:
+                    message_lines.append(title)
+
+                message_lines.append(f"<i>{source}</i>")
+                message_lines.append("")
+        else:
+            logger.debug("No sports news available")
+
+        # Always show Product Hunt as well
+        logger.info("Fetching Product Hunt")
         try:
             product = await get_top_product()
 
@@ -866,6 +935,18 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
         logger.warning(f"Precipitation alert failed: {e}")
 
 
+async def morning_digest_both_users(bot: Bot, user_id: int, chat_id: int = None):
+    """Send morning digest to both main user and secondary user."""
+    logger.info(f"Sending morning digest to both users")
+
+    # Send to main user with tasks
+    await morning_digest(bot, user_id, chat_id)
+
+    # Send to secondary user (498233237) without tasks
+    secondary_user_id = 498233237
+    await _morning_digest_impl(bot, user_id, chat_id=secondary_user_id, include_tasks=False)
+
+
 def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     """Initialize APScheduler with morning digest."""
     global scheduler
@@ -878,13 +959,13 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     tbilisi_tz = timezone("Asia/Tbilisi")
     scheduler = AsyncIOScheduler(timezone=tbilisi_tz)
 
-    # Morning digest at 08:00 Tbilisi time
+    # Morning digest at 08:00 Tbilisi time (to both users)
     scheduler.add_job(
-        morning_digest,
+        morning_digest_both_users,
         CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
         args=[bot, user_id, chat_id],
         id="morning_digest",
-        name="Morning task digest",
+        name="Morning digest (both users)",
     )
 
     # Update historical forex rates every 1 hour (for digest)
