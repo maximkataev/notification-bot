@@ -335,10 +335,8 @@ FORMAT - ВАЖНО:
             f"✓ ChatGPT selected {len(valid_news)} valid news items (filtered from {len(selected_news)})"
         )
         for item in valid_news:
-            desc = item.get('description_ru', '')[:50]
-            logger.info(
-                f"  [{item['index']}] {item['category']}: {desc}..."
-            )
+            desc = item.get("description_ru", "")[:50]
+            logger.info(f"  [{item['index']}] {item['category']}: {desc}...")
 
         return valid_news
 

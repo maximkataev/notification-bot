@@ -32,7 +32,7 @@ from src.utils.doppler import get_secret
 
 try:
     OPEN_EXCHANGE_RATES_API_KEY = get_secret("OPEN_EXCHANGE_RATES_API_KEY")
-except:
+except (ValueError, TypeError):
     OPEN_EXCHANGE_RATES_API_KEY = None
 
 

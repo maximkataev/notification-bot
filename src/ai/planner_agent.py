@@ -4,25 +4,11 @@ import json
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
-from openai import AsyncOpenAI
 import httpx
-import os
 from src.db.models import Task, UserProfile
+from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
-
-client = None
-
-
-def get_client():
-    """Get or create OpenAI client (lazy initialization)."""
-    global client
-    if client is None:
-        from src.utils.doppler import get_secret
-
-        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
-        client = AsyncOpenAI(api_key=api_key)
-    return client
 
 
 def _get_weather_emoji(weather_code: int) -> str:

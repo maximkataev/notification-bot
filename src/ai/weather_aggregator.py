@@ -401,7 +401,11 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
 
             # Join conditions with "/" if they differ, else use single condition
             if unique_conditions:
-                condition = "/".join(unique_conditions) if len(unique_conditions) > 1 else unique_conditions[0]
+                condition = (
+                    "/".join(unique_conditions)
+                    if len(unique_conditions) > 1
+                    else unique_conditions[0]
+                )
             else:
                 condition = "облачно"
 

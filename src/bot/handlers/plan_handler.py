@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 from aiogram import Router, types
 from aiogram.filters import CommandObject, Command
 from src.db.database import (
@@ -19,10 +20,10 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-def _get_nearest_date(date_str: str) -> str:
+def _get_nearest_date(date_str: str) -> Optional[str]:
     """Calculate nearest date if given a weekday name or relative reference.
 
-    Returns ISO format date string (YYYY-MM-DD).
+    Returns ISO format date string (YYYY-MM-DD) or None if unable to parse.
     """
     if not date_str:
         return None

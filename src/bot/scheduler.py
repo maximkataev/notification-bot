@@ -40,18 +40,24 @@ from src.workers.precipitation_checker import get_upcoming_precipitation
 
 logger = logging.getLogger(__name__)
 
+# Constants
+MORNING_DIGEST_TIMEOUT_SECONDS = 120
+TELEGRAM_MESSAGE_CHAR_LIMIT = 4000
+WEATHER_JACKET_THRESHOLD_C = 10
+PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
+
 # Global scheduler instance
 scheduler: AsyncIOScheduler = None
 
-# Track last precipitation alert to avoid spam (3-hour cooldown)
+# Track last precipitation alert to avoid spam
 _last_precipitation_alert: Optional[datetime] = None
 
 
 def _is_task_urgent_by_keywords(task) -> bool:
-    """Check if task text contains urgency keywords."""
+    """Check if task text contains urgency keywords (срочно, asap, etc)."""
     urgency_keywords = [
         "срочно",
-        "срочно",
+        "важно",
         "asap",
         "асап",
         "быстро",
@@ -84,7 +90,8 @@ async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
                     await _morning_digest_impl(bot, user_id, chat_id)
             else:  # Python 3.10 and earlier
                 await asyncio.wait_for(
-                    _morning_digest_impl(bot, user_id, chat_id), timeout=120.0
+                    _morning_digest_impl(bot, user_id, chat_id),
+                    timeout=MORNING_DIGEST_TIMEOUT_SECONDS,
                 )
         except asyncio.TimeoutError:
             logger.error(f"❌ Morning digest exceeded 120s timeout for user {user_id}")
@@ -130,13 +137,13 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
     # Handle exceptions from gather
     if isinstance(tasks, Exception):
-        logger.error(f"Failed to load tasks: {tasks}")
+        logger.error(f"Failed to load tasks", exc_info=True)
         tasks = []
     if isinstance(user_profile, Exception):
-        logger.error(f"Failed to load profile: {user_profile}")
+        logger.error(f"Failed to load profile", exc_info=True)
         user_profile = None
     if isinstance(weather, Exception):
-        logger.error(f"Failed to load weather: {weather}")
+        logger.error(f"Failed to load weather", exc_info=True)
         weather = None
 
     if user_profile is None:
@@ -238,8 +245,10 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
     if weather and isinstance(weather.get("morning"), dict):
         morning_temp = weather["morning"].get("temperature")
 
-    # Jacket needed if: temp < 10°C OR precipitation expected
-    needs_jacket = (morning_temp is not None and morning_temp < 10) or is_raining
+    # Jacket needed if: temp below threshold OR precipitation expected
+    needs_jacket = (
+        morning_temp is not None and morning_temp < WEATHER_JACKET_THRESHOLD_C
+    ) or is_raining
     outer_layer = "куртку" if needs_jacket else "худи"
     outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
 
@@ -429,7 +438,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
                     message_lines.append(news_text)
                     message_lines.append("")
 
-                    logger.info(f"  [{i}] {category}: {description_ru[:60]}... | {source}")
+                    logger.info(
+                        f"  [{i}] {category}: {description_ru[:60]}... | {source}"
+                    )
                 else:
                     logger.warning(f"Invalid index {idx} for news selection, skipping")
 
@@ -729,11 +740,10 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
         f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}"
     )
 
-    # Check Telegram message length limit (4096 chars)
-    MAX_TELEGRAM_LENGTH = 4000  # slightly under 4096 to be safe
-    if len(final_message) > MAX_TELEGRAM_LENGTH:
+    # Check Telegram message length limit
+    if len(final_message) > TELEGRAM_MESSAGE_CHAR_LIMIT:
         logger.warning(
-            f"⚠️  Digest message exceeds limit ({len(final_message)}/4096), splitting..."
+            f"⚠️  Digest message exceeds limit ({len(final_message)}/{TELEGRAM_MESSAGE_CHAR_LIMIT}), splitting..."
         )
         # Split by major sections
         parts = []
@@ -742,7 +752,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
         for line in message_lines:
             line_len = len(line) + 1  # +1 for newline
-            if current_length + line_len > MAX_TELEGRAM_LENGTH and current_part:
+            if current_length + line_len > TELEGRAM_MESSAGE_CHAR_LIMIT and current_part:
                 parts.append("\n".join(current_part))
                 current_part = [line]
                 current_length = line_len
@@ -775,7 +785,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None):
 
 
 def _format_weather(weather: dict) -> str:
-    """Format weather data by periods (morning/day/evening/night)."""
+    """Format weather data by periods (morning/day/evening/night) with emojis and conditions."""
     if not weather:
         return "неизвестная погода"
 
@@ -865,7 +875,7 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         return scheduler
 
     # Initialize scheduler with Asia/Tbilisi timezone
-    tbilisi_tz = timezone('Asia/Tbilisi')
+    tbilisi_tz = timezone("Asia/Tbilisi")
     scheduler = AsyncIOScheduler(timezone=tbilisi_tz)
 
     # Morning digest at 08:00 Tbilisi time
