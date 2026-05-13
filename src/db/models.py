@@ -50,6 +50,7 @@ class Task:
             int(self.is_recurring),
             self.recurrence_pattern,
             self.recurrence_end_date,
+            self.constraints,
             self.status,
             int(self.clarification_pending),
             self.clarification_question,

@@ -1,26 +1,12 @@
 """Generate AI explanations for tasks."""
 
 import logging
-import os
 import json
 from typing import List, Dict, Optional
-from openai import AsyncOpenAI
 from src.db.models import Task
+from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
-
-client = None
-
-
-def get_client():
-    """Get or create OpenAI client (lazy initialization)."""
-    global client
-    if client is None:
-        from src.utils.doppler import get_secret
-
-        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
-        client = AsyncOpenAI(api_key=api_key)
-    return client
 
 
 async def get_task_explanations(

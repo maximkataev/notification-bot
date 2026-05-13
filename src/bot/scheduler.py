@@ -38,6 +38,7 @@ from src.workers.match_context import get_extended_match_analysis
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
+from src.workers.tbilisi_events import get_tbilisi_events, format_events_for_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,14 @@ def _is_task_urgent_by_keywords(task) -> bool:
 
     text = f"{task.what or ''} {task.raw_text or ''}".lower()
     return any(keyword in text for keyword in urgency_keywords)
+
+
+def _handle_gather_exception(result, name: str):
+    """Log and handle exception from asyncio.gather, return None if exception."""
+    if isinstance(result, Exception):
+        logger.error(f"Failed to load {name}", exc_info=result)
+        return None
+    return result
 
 
 async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
@@ -137,33 +146,15 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
     if include_tasks:
         gather_tasks.insert(0, get_todoist_tasks())
 
+    results = await asyncio.gather(*gather_tasks, return_exceptions=True)
+
     if include_tasks:
-        tasks, user_profile, weather = await asyncio.gather(
-            *gather_tasks,
-            return_exceptions=True,
-        )
-        # Handle exceptions from gather
-        if isinstance(tasks, Exception):
-            logger.error(f"Failed to load tasks", exc_info=True)
-            tasks = []
-        if isinstance(user_profile, Exception):
-            logger.error(f"Failed to load profile", exc_info=True)
-            user_profile = None
-        if isinstance(weather, Exception):
-            logger.error(f"Failed to load weather", exc_info=True)
-            weather = None
+        tasks = _handle_gather_exception(results[0], "tasks") or []
+        user_profile = _handle_gather_exception(results[1], "profile")
+        weather = _handle_gather_exception(results[2], "weather")
     else:
-        user_profile, weather = await asyncio.gather(
-            *gather_tasks,
-            return_exceptions=True,
-        )
-        # Handle exceptions from gather
-        if isinstance(user_profile, Exception):
-            logger.error(f"Failed to load profile", exc_info=True)
-            user_profile = None
-        if isinstance(weather, Exception):
-            logger.error(f"Failed to load weather", exc_info=True)
-            weather = None
+        user_profile = _handle_gather_exception(results[0], "profile")
+        weather = _handle_gather_exception(results[1], "weather")
         tasks = []
 
     if user_profile is None:
@@ -947,6 +938,46 @@ async def morning_digest_both_users(bot: Bot, user_id: int, chat_id: int = None)
     await _morning_digest_impl(bot, user_id, chat_id=secondary_user_id, include_tasks=False)
 
 
+async def tbilisi_events_digest(bot: Bot, chat_id: int = None):
+    """Send weekly events digest for Tbilisi (Saturday 18:00)."""
+    try:
+        logger.info(f"📅 Starting Tbilisi events digest")
+
+        # Fetch events for next 7 days
+        events = await get_tbilisi_events(days_ahead=7)
+
+        if not events:
+            message = "На следующую неделю в Тбилиси пока ничего интересного не найдено 🤔"
+        else:
+            message = format_events_for_telegram(events)
+
+        if chat_id is None:
+            chat_id = int(get_secret("TELEGRAM_CHAT_ID"))
+
+        await bot.send_message(
+            chat_id=chat_id,
+            text=message,
+            parse_mode="Markdown",
+            disable_web_page_preview=True,
+        )
+
+        logger.info(f"✓ Tbilisi events digest sent ({len(events)} events)")
+
+    except Exception as e:
+        logger.error(f"❌ Tbilisi events digest failed: {e}", exc_info=True)
+        try:
+            if chat_id is None:
+                chat_id = int(get_secret("TELEGRAM_CHAT_ID"))
+
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Ошибка при загрузке событий: {str(e)[:100]}",
+                disable_web_page_preview=True,
+            )
+        except Exception as inner_e:
+            logger.error(f"Failed to send error message: {inner_e}")
+
+
 def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     """Initialize APScheduler with morning digest."""
     global scheduler
@@ -987,7 +1018,16 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Hourly precipitation check",
     )
 
+    # Weekly Tbilisi events digest on Saturday at 18:00 Tbilisi time
+    scheduler.add_job(
+        tbilisi_events_digest,
+        CronTrigger(day_of_week=5, hour=18, minute=0, timezone=tbilisi_tz),  # Saturday 18:00
+        args=[bot, chat_id],
+        id="tbilisi_events_digest",
+        name="Tbilisi events digest",
+    )
+
     logger.info(
-        "Scheduler initialized with morning digest (08:00 Asia/Tbilisi), forex cache update (hourly), and precipitation alerts (hourly)"
+        "Scheduler initialized with: morning digest (08:00), forex cache update (hourly), precipitation alerts (hourly), Tbilisi events (Sat 18:00)"
     )
     return scheduler
