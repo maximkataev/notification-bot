@@ -33,7 +33,7 @@ LEAGUE_URLS = {
 async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
     """
     Parse today's football matches from football.kulichki.net.
-    Returns up to 3 matches for priority teams.
+    Returns up to 3 matches for priority teams with standings context.
     """
     try:
         logger.info(f"[KULICHKI] Fetching matches")
@@ -49,7 +49,14 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
                     response.raise_for_status()
 
                     matches = _parse_league_page(response.text, league_name)
-                    logger.info(f"[KULICHKI] {league_name}: found {len(matches)} matches")
+                    standings = _parse_standings_table(response.text, league_name)
+
+                    logger.info(f"[KULICHKI] {league_name}: found {len(matches)} matches, standings: {len(standings) if standings else 0} teams")
+
+                    # Attach standings to matches from this league
+                    for match in matches:
+                        match["standings"] = standings
+
                     all_matches.extend(matches)
 
                 except Exception as e:
@@ -90,6 +97,92 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
     except Exception as e:
         logger.warning(f"[KULICHKI] Failed: {type(e).__name__}: {e}")
         return None
+
+
+def _parse_standings_table(html: str, league_name: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Parse standings/tournament table from kulichki.net league page HTML.
+    Returns list of teams with position, name, played, wins, draws, losses, goals, points.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    standings = []
+
+    try:
+        # Look for tables that contain standings data
+        tables = soup.find_all("table")
+        logger.debug(f"[KULICHKI] {league_name}: {len(tables)} tables found")
+
+        for table in tables:
+            rows = table.find_all("tr")
+            if not rows:
+                continue
+
+            # Check if this is a standings table by looking for header indicators
+            header_text = ""
+            if rows:
+                header_text = rows[0].get_text().lower()
+
+            # Look for standings table indicators (position, points, played, etc.)
+            if any(keyword in header_text for keyword in ["place", "pos", "team", "p", "w", "d", "l", "pts", "очк", "место", "команда"]):
+                # Parse standings rows
+                for row in rows[1:]:  # Skip header
+                    cells = row.find_all("td")
+                    if len(cells) < 3:
+                        continue
+
+                    try:
+                        # Try to extract position and team name
+                        # Format varies, but typically: [pos] [team] [matches] [wins] [draws] [losses] [goals] [points]
+                        pos_text = cells[0].get_text().strip() if len(cells) > 0 else ""
+                        team_text = cells[1].get_text().strip() if len(cells) > 1 else ""
+
+                        # Skip if looks like a sub-header or invalid row
+                        if not pos_text or not team_text or len(team_text) < 2:
+                            continue
+
+                        # Try to extract position as number
+                        try:
+                            position = int(pos_text)
+                        except (ValueError, TypeError):
+                            continue
+
+                        # Clean team name
+                        team_name = " ".join(team_text.split())
+
+                        # Extract remaining stats
+                        stats = {}
+                        if len(cells) > 2:
+                            stats_text = [c.get_text().strip() for c in cells[2:]]
+                            # Try to parse as: [played] [wins] [draws] [losses] [goals] [points]
+                            if len(stats_text) >= 2:
+                                try:
+                                    stats["played"] = int(stats_text[0]) if stats_text[0].isdigit() else None
+                                    stats["points"] = int(stats_text[-1]) if stats_text[-1].isdigit() else None
+                                except (ValueError, IndexError):
+                                    pass
+
+                        standing = {
+                            "position": position,
+                            "team": team_name,
+                            **stats
+                        }
+
+                        standings.append(standing)
+                        logger.debug(f"[KULICHKI] {league_name}: {position}. {team_name} ({stats.get('points')} pts)")
+
+                    except Exception as e:
+                        logger.debug(f"[KULICHKI] Error parsing standings row: {e}")
+                        continue
+
+                # If we found standings, return them
+                if standings:
+                    logger.info(f"[KULICHKI] {league_name}: parsed {len(standings)} standings entries")
+                    return standings
+
+    except Exception as e:
+        logger.warning(f"[KULICHKI] Error parsing standings for {league_name}: {e}")
+
+    return None
 
 
 def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:

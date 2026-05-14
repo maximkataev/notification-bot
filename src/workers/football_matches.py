@@ -128,8 +128,27 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     else:
         tbilisi_time = "TBD"
 
+    # Format standings context from league table
     standings_str = ""
     standings_info = ""
+    standings = match.get("standings")
+
+    if standings and isinstance(standings, list) and len(standings) > 0:
+        # Find positions of home and away teams in standings
+        home_pos = None
+        away_pos = None
+
+        for standing in standings:
+            team_name = standing.get("team", "").lower()
+            if team_name and team_name in home.lower():
+                home_pos = standing.get("position")
+            if team_name and team_name in away.lower():
+                away_pos = standing.get("position")
+
+        # Build standings context
+        if home_pos and away_pos:
+            standings_info = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
+            standings_str = standings_info
 
     # Fetch odds from pari.ru (non-blocking, optional, with timeout)
     odds_str = ""
