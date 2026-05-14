@@ -5,7 +5,6 @@ import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 from src.utils.openai_client import get_client
-from src.workers.pari_odds import get_pari_odds
 from src.workers.kulichki_parser import get_today_matches_from_kulichki
 
 logger = logging.getLogger(__name__)
@@ -13,17 +12,7 @@ logger = logging.getLogger(__name__)
 # Priority teams in exact order (Russian names as they appear on kulichki.net)
 PRIORITY_TEAMS = ["Барселона", "Реал Мадрид", "Арсенал", "ПСЖ", "Атлетико", "Манчестер"]
 
-# Team to league mapping
-TEAM_TO_LEAGUE = {
-    "Барселона": "La Liga",
-    "Реал Мадрид": "La Liga",
-    "Атлетико": "La Liga",
-    "Арсенал": "Premier League",
-    "Манчестер": "Premier League",
-    "ПСЖ": "Ligue 1",
-}
-
-# Team flags
+# Team flags for priority teams
 TEAM_FLAGS = {
     "Барселона": "🇪🇸",
     "Реал Мадрид": "🇪🇸",
@@ -31,6 +20,13 @@ TEAM_FLAGS = {
     "Арсенал": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
     "Манчестер": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
     "ПСЖ": "🇫🇷",
+}
+
+# League to country flag mapping
+LEAGUE_FLAGS = {
+    "La Liga": "🇪🇸",
+    "Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Ligue 1": "🇫🇷",
 }
 
 
@@ -107,26 +103,18 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     time_str = match.get("time", "TBD")
     league = match.get("league", "")
 
-    # Get flags with fuzzy matching
-    home_flag = "⚽"
-    away_flag = "⚽"
+    # Get flags with fuzzy matching, fallback to league flag
+    home_flag = LEAGUE_FLAGS.get(league, "⚽")
+    away_flag = LEAGUE_FLAGS.get(league, "⚽")
+
     for team in PRIORITY_TEAMS:
         if team.lower() in home.lower():
-            home_flag = TEAM_FLAGS.get(team, "⚽")
+            home_flag = TEAM_FLAGS.get(team, home_flag)
         if team.lower() in away.lower():
-            away_flag = TEAM_FLAGS.get(team, "⚽")
+            away_flag = TEAM_FLAGS.get(team, away_flag)
 
-    # Convert time from UTC to Tbilisi time (GMT+4)
-    # If time is HH:MM in UTC, add 4 hours
-    if time_str != "TBD":
-        try:
-            hour, minute = map(int, time_str.split(":"))
-            hour = (hour + 4) % 24
-            tbilisi_time = f"{hour:02d}:{minute:02d}"
-        except:
-            tbilisi_time = time_str
-    else:
-        tbilisi_time = "TBD"
+    # Time is already converted to Tbilisi in kulichki_parser (Moscow UTC+3 → Tbilisi UTC+4)
+    tbilisi_time = time_str
 
     # Format standings context from league table
     standings_str = ""
@@ -134,70 +122,78 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     standings = match.get("standings")
 
     if standings and isinstance(standings, list) and len(standings) > 0:
-        # Find positions of home and away teams in standings
-        home_pos = None
-        away_pos = None
+        # Find full information for home and away teams in standings
+        home_standing = None
+        away_standing = None
 
         for standing in standings:
             team_name = standing.get("team", "").lower()
             if team_name and team_name in home.lower():
-                home_pos = standing.get("position")
+                home_standing = standing
             if team_name and team_name in away.lower():
-                away_pos = standing.get("position")
+                away_standing = standing
 
-        # Build standings context
-        if home_pos and away_pos:
-            standings_info = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
-            standings_str = standings_info
+        # Build comprehensive standings context
+        if home_standing and away_standing:
+            home_pos = home_standing.get("position")
+            away_pos = away_standing.get("position")
 
-    # Fetch odds from pari.ru (non-blocking, optional, with timeout)
-    odds_str = ""
-    odds_info = ""
-    try:
-        # Use timeout to prevent Playwright from hanging
-        try:
-            if hasattr(asyncio, "timeout"):  # Python 3.11+
-                async with asyncio.timeout(5):
-                    odds = await get_pari_odds(home, away)
-            else:
-                odds = await asyncio.wait_for(get_pari_odds(home, away), timeout=5.0)
+            # Get additional stats if available
+            home_played = home_standing.get("played")
+            away_played = away_standing.get("played")
+            home_points = home_standing.get("points")
+            away_points = away_standing.get("points")
 
-            if odds:
-                home_odd, draw_odd, away_odd = odds
-                # Format: "1.25 - 3.00 - 7.01"
-                odds_str = f" Коэффициенты: {home_odd:.2f} - {draw_odd:.2f} - {away_odd:.2f}."
-                odds_info = f"Коэффициенты: {home_odd:.2f} (победа {home}), {draw_odd:.2f} (ничья), {away_odd:.2f} (победа {away})."
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.debug(f"Pari.ru parser timeout for {home} vs {away}")
-            odds_str = ""
-            odds_info = ""
-    except Exception as e:
-        logger.debug(f"Failed to get odds for {home} vs {away}: {e}")
-        odds_str = ""
-        odds_info = ""
+            standings_str = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
 
-    # Generate AI commentary (2 sentences with context)
-    prompt = f"""Напиши комментарий к предстоящему матчу футбола (1-2 предложения).
+            # Build detailed context for GPT
+            standings_parts = []
+            if home_pos and away_pos:
+                standings_parts.append(f"{home}: {home_pos} место")
+                if home_points:
+                    standings_parts.append(f"{away}: {away_pos} место с {away_points} очками")
+                else:
+                    standings_parts.append(f"{away}: {away_pos} место")
+
+            standings_info = " | ".join(standings_parts) if standings_parts else standings_str
+    else:
+        # For playoff matches or tournaments without standings, show tournament name
+        if league and any(keyword in league.lower() for keyword in ["cup", "playoff", "champions", "europa", "final", "league"]):
+            standings_str = f"🏆 {league}"
+            standings_info = f"Матч турнира: {league}"
+
+    # Generate AI commentary (1-2 sentences with maximum context)
+    prompt = f"""Напиши комментарий к предстоящему матчу футбола (1-2 предложения). Используй ВСЕ доступные данные для создания наиболее информативного описания.
 
 МАТЧ:
-{home} vs {away} ({league}) в {tbilisi_time}
+{home} vs {away}
 
-КОНТЕКСТ:
+ТУРНИР:
+{league}
+
+ВРЕМЯ:
+{tbilisi_time} Tbilisi (GMT+4)
+
+КОНТЕКСТ И СТАТИСТИКА:
 {standings_info}
-{odds_info}
 
 ТРЕБОВАНИЯ:
-- 1-2 предложения (не более 25 слов)
-- Информативно и интересно
-- Используй контекст (таблица, коэффициенты)
+- 1-2 предложения (максимум 30 слов)
+- Максимально информативно и интересно
+- Укажи позиции команд в таблице, если доступно
+- Упомяни турнир, если это кубок/плей-офф
+- Дай оценку силе сторон (фаворит/аутсайдер/равные шансы)
 - На русском языке
 - Без вводных фраз типа "Это матч" или "Будет интересно"
+- Естественный, информативный язык
 
-Примеры:
-- "Барселона может стать чемпионом при победе с коэффициентом 1.25. Рилм будет защищаться с куда худшими шансами."
-- "Классическое противостояние: лидер таблицы против второго. Букмекеры явно верят в фаворита."
+ПРИМЕРЫ ХОРОШИХ КОММЕНТАРИЕВ:
+- "Лидер таблицы против 20-го места - явный фаворит. Реал Мадрид предпочитает контролировать мяч."
+- "Матч чемпионата мира: столкновение фаворитов. Обе команды в боевом настроении."
+- "Финал кубка сулит напряженную борьбу. Реал едет на выезд без особых преимуществ."
+- "Третий и четвертый в таблице - баланс сил примерно равен, матч обещает быть интересным."
 
-Ответ - только комментарий без пояснений:"""
+Ответ - только комментарий без пояснений, без кавычек:"""
 
     commentary = None
     try:
@@ -220,12 +216,7 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     lines.append(f"{league} • {tbilisi_time} Tbilisi (GMT+4)")
 
     if standings_str:
-        if odds_str:
-            lines.append(standings_str.rstrip(".") + odds_str)
-        else:
-            lines.append(standings_str)
-    elif odds_str:
-        lines.append(f"📊{odds_str}")
+        lines.append(standings_str)
 
     if commentary:
         lines.append(f"💭 {commentary}")
