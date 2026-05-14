@@ -32,9 +32,7 @@ from src.workers.air_quality import get_air_quality_tbilisi
 from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.quote_of_day import get_quote_of_day
-from src.workers.football_matches import get_today_matches
-from src.workers.football_analyzer import get_match_analysis
-from src.workers.match_context import get_extended_match_analysis
+from src.workers.football_matches import get_today_matches, get_formatted_matches
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
@@ -210,6 +208,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 От первого лица (я вижу, я советую) - практичный совет связанный с погодой.
 Погода в Тбилиси: {weather_desc}
 
+⚠️ ВАЖНО: НЕ упоминай зонтик, зонт или что-либо связанное с зонтиком при любых условиях погоды.
 Стиль: просто, понятно, практично.
 
 {weather_details}
@@ -648,95 +647,78 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         logger.info("No water cuts found on Vazha Ivereli street")
     message_lines.append("")
 
-    # Check for football matches (Barcelona/Real Madrid/PSG priority)
+    # Check for football matches (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
     logger.info("Checking for football matches today")
-    football_matches = await get_today_matches()
-    product = None
+    matches = await get_today_matches()
 
-    if football_matches and football_matches.get("matches"):
-        # Show football matches instead of Product Hunt
-        matches = football_matches["matches"]
+    if matches:
+        # Show football matches
         logger.info(f"✓ Found {len(matches)} football match(es)")
-
-        # Get AI analysis for matches
-        logger.info("Generating AI commentary for matches")
-        match_analysis = await get_match_analysis(matches, max_matches=3)
-        logger.info(f"✓ Generated commentary for {len(match_analysis)} matches")
-
-        message_lines.append("⚽ <b>Матчи сегодня</b>:")
-        message_lines.append("")
-
-        for i, match in enumerate(matches):
-            home = match.get("home", "Unknown")
-            away = match.get("away", "Unknown")
-            time = match.get("time", "TBD")
-            league = match.get("league", "")
-            home_flag = match.get("home_flag", "⚽")
-            away_flag = match.get("away_flag", "⚽")
-
-            message_lines.append(f"{home_flag} {home} vs {away} {away_flag}")
-            # Include timezone info for clarity (Tbilisi time zone)
-            message_lines.append(f"<i>{league}</i> • {time} Tbilisi (GMT+4)")
-
-            # Get extended match context (standings, odds, form)
-            league_codes = {
-                "La Liga": ("LA", 140),
-                "Premier League": ("PL", 39),
-                "Ligue 1": ("FL1", 61),
-            }
-            league_info = league_codes.get(league, ("", None))
-            league_code, league_id = league_info
-
-            if league_code:
-                try:
-                    context = await get_extended_match_analysis(
-                        home, away, league, league_code, league_id
-                    )
-                    if context:
-                        message_lines.append(f"📊 {context}")
-                except Exception as e:
-                    logger.debug(f"Failed to get extended analysis: {e}")
-
-            # Add AI commentary if available
-            if i in match_analysis:
-                commentary = match_analysis[i]
-                message_lines.append(f"💭 {commentary}")
-
+        formatted_matches = await get_formatted_matches(matches)
+        if formatted_matches:
+            message_lines.append(formatted_matches)
             message_lines.append("")
-
-        logger.info(f"Displayed {len(matches)} matches with AI commentary")
     else:
-        # No matches - show sports news + Product Hunt together
+        # No matches - show sports news from middle of list + Product Hunt
         logger.info("No football matches found, showing sports news + Product Hunt")
+        logger.debug(f"sports_news type: {type(sports_news)}, len: {len(sports_news) if sports_news else 0}")
 
-        # Show top sports news
         if sports_news and len(sports_news) > 0:
-            logger.info(f"Showing top sports news")
-            message_lines.append("📰 <b>Спортивные новости</b>:")
+            # Take news from middle (not first or last) to avoid top/bottom stories
+            mid_idx = len(sports_news) // 2
+            news = sports_news[mid_idx]
+            logger.debug(f"Selected sports news at index {mid_idx}: {news.get('title', '')[:50]}")
+
+            title = news.get("title", "")
+            url = news.get("url", "")
+            source = news.get("source", "")
+            description = news.get("description", "")
+
+            # Rewrite news via GPT
+            rewrite_prompt = f"""Переписать спортивную новость в формате дайджеста (одно предложение, максимум 20 слов). Должна быть информативной и интересной.
+
+Оригинальная новость:
+Заголовок: {title}
+Источник: {source}
+Описание: {description[:300]}
+
+Ответ - только одно переписанное предложение на русском:"""
+
+            logger.info(f"Rewriting sports news: {title[:50]}...")
+            try:
+                response = await get_client().chat.completions.create(
+                    model="gpt-5.4-mini",
+                    max_completion_tokens=50,
+                    messages=[
+                        {"role": "system", "content": "You are a sports news editor in Russian."},
+                        {"role": "user", "content": rewrite_prompt},
+                    ],
+                )
+
+                rewritten = response.choices[0].message.content.strip()
+                logger.info(f"✓ Sports news rewritten: {rewritten[:50]}...")
+            except Exception as e:
+                logger.warning(f"Failed to rewrite sports news: {e}")
+                rewritten = title
+
+            message_lines.append("📰 <b>Спортивные новости:</b>")
+            if url:
+                message_lines.append(f'<a href="{url}">{rewritten}</a>')
+            else:
+                message_lines.append(rewritten)
+            message_lines.append(f"<i>{source}</i>")
             message_lines.append("")
-
-            for i, news in enumerate(sports_news[:1]):  # Just 1 top story
-                title = news.get("title", "")
-                url = news.get("url", "")
-                source = news.get("source", "")
-
-                if url:
-                    message_lines.append(f'<a href="{url}">{title}</a>')
-                else:
-                    message_lines.append(title)
-
-                message_lines.append(f"<i>{source}</i>")
-                message_lines.append("")
+            logger.debug("✓ Sports news section added to digest")
         else:
-            logger.debug("No sports news available")
+            logger.debug("No sports news available for fallback")
 
-        # Always show Product Hunt as well
+        # Always show Product Hunt
         logger.info("Fetching Product Hunt")
         try:
             product = await get_top_product()
 
             if product:
-                message_lines.append("🚀 <b>Product Hunt</b> (новое на рынке):")
+                message_lines.append("🚀 Product Hunt (новое на рынке):")
                 message_lines.append(
                     f"<a href=\"{product['url']}\">{product['name']}</a>"
                 )
@@ -845,7 +827,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 
 
 def _format_weather(weather: dict) -> str:
-    """Format weather data by periods (morning/day/evening/night) with emojis and conditions."""
+    """Format weather data by periods (morning/day/evening/night) without emojis."""
     if not weather:
         return "неизвестная погода"
 
@@ -865,8 +847,8 @@ def _format_weather(weather: dict) -> str:
         condition_str = ", ".join(conditions) if conditions else "переменная облачность"
         return f"{condition_str}, {temp}°C"
 
-    # New format: by periods
-    lines = ["🌦️ Погода в Тбилиси:"]
+    # New format: by periods (no emojis)
+    lines = ["Погода в Тбилиси:"]
 
     periods = {
         "morning": "Утро",
@@ -878,10 +860,9 @@ def _format_weather(weather: dict) -> str:
     for period_key, period_label in periods.items():
         if period_key in weather:
             p = weather[period_key]
-            emoji = p.get("emoji", "🌥️")
             condition = p.get("condition", "переменная облачность")
             temp = p.get("temperature", "?")
-            lines.append(f"{emoji} {period_label}: {condition}, {temp}°C")
+            lines.append(f"{period_label}: {condition}, {temp}°C")
 
     return "\n".join(lines)
 
@@ -926,16 +907,6 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
         logger.warning(f"Precipitation alert failed: {e}")
 
 
-async def morning_digest_both_users(bot: Bot, user_id: int, chat_id: int = None):
-    """Send morning digest to both main user and secondary user."""
-    logger.info(f"Sending morning digest to both users")
-
-    # Send to main user with tasks
-    await morning_digest(bot, user_id, chat_id)
-
-    # Send to secondary user (498233237) without tasks
-    secondary_user_id = 498233237
-    await _morning_digest_impl(bot, user_id, chat_id=secondary_user_id, include_tasks=False)
 
 
 async def tbilisi_events_digest(bot: Bot, chat_id: int = None):
@@ -990,13 +961,13 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     tbilisi_tz = timezone("Asia/Tbilisi")
     scheduler = AsyncIOScheduler(timezone=tbilisi_tz)
 
-    # Morning digest at 08:00 Tbilisi time (to both users)
+    # Morning digest at 08:00 Tbilisi time
     scheduler.add_job(
-        morning_digest_both_users,
+        morning_digest,
         CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
         args=[bot, user_id, chat_id],
         id="morning_digest",
-        name="Morning digest (both users)",
+        name="Morning digest",
     )
 
     # Update historical forex rates every 1 hour (for digest)

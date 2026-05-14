@@ -68,13 +68,20 @@ async def get_todoist_tasks() -> List[Task]:
             data = response.json()
             todoist_tasks = data.get("results", [])
 
+            logger.info(f"📥 Todoist API returned {len(todoist_tasks)} tasks")
             today = datetime.now().date().isoformat()
+            logger.info(f"   Today's date: {today}")
+
+            skipped_completed = 0
+            skipped_future = 0
 
             for todoist_task in todoist_tasks:
                 # Skip completed tasks
                 if todoist_task.get("checked", False):
+                    skipped_completed += 1
                     continue
 
+                content = todoist_task.get("content", "")
                 # Extract due date
                 due = todoist_task.get("due")
                 when_date = None
@@ -88,6 +95,8 @@ async def get_todoist_tasks() -> List[Task]:
                         # Extract date part from ISO format (might include time)
                         due_date_only = due_date.split("T")[0]
                         if due_date_only > today:
+                            skipped_future += 1
+                            logger.debug(f"   ⏭️  Skipped future task: {content} (due: {due_date_only})")
                             continue  # Skip future tasks
                         when_date = due_date_only
 
@@ -100,6 +109,8 @@ async def get_todoist_tasks() -> List[Task]:
                             logger.debug(f"Failed to parse due date time: {e}")
 
                     is_recurring = due.get("is_recurring", False)
+                else:
+                    logger.debug(f"   📌 Task with NO due date: {content}")
 
                 # Check if urgent (priority 4)
                 is_urgent = todoist_task.get("priority") == 4
@@ -136,11 +147,12 @@ async def get_todoist_tasks() -> List[Task]:
                     status="planned",
                 )
                 tasks.append(task)
+                logger.debug(f"   ✓ Added task: {content} (date: {when_date}, time: {when_time})")
 
-            logger.info(f"Fetched {len(tasks)} tasks from Todoist")
+            logger.info(f"📊 Todoist fetch summary: {len(tasks)} included | {skipped_completed} completed | {skipped_future} future")
             return tasks
     except Exception as e:
-        logger.error(f"Failed to fetch Todoist tasks: {e}")
+        logger.error(f"Failed to fetch Todoist tasks: {e}", exc_info=True)
         return []
 
 
