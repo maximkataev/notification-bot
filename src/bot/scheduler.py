@@ -827,7 +827,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 
 
 def _format_weather(weather: dict) -> str:
-    """Format weather data by periods (morning/day/evening/night) without emojis."""
+    """Format weather data by periods (morning/day/evening/night) with emojis."""
     if not weather:
         return "неизвестная погода"
 
@@ -847,7 +847,7 @@ def _format_weather(weather: dict) -> str:
         condition_str = ", ".join(conditions) if conditions else "переменная облачность"
         return f"{condition_str}, {temp}°C"
 
-    # New format: by periods (no emojis)
+    # New format: by periods (with emojis)
     lines = ["Погода в Тбилиси:"]
 
     periods = {
@@ -860,9 +860,10 @@ def _format_weather(weather: dict) -> str:
     for period_key, period_label in periods.items():
         if period_key in weather:
             p = weather[period_key]
+            emoji = p.get("emoji", "🌤️")
             condition = p.get("condition", "переменная облачность")
             temp = p.get("temperature", "?")
-            lines.append(f"{period_label}: {condition}, {temp}°C")
+            lines.append(f"{emoji} {period_label}: {condition}, {temp}°C")
 
     return "\n".join(lines)
 
