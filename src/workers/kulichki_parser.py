@@ -9,6 +9,12 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Russian month names to numbers
+RUSSIAN_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
+    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+}
+
 # Priority teams in exact order (Russian names as they appear on kulichki.net)
 PRIORITY_TEAMS = ["Барселона", "Реал Мадрид", "Арсенал", "ПСЖ", "Атлетико", "Манчестер Сити", "Манчестер Юнайтед"]
 
@@ -59,6 +65,65 @@ def _get_league_urls() -> Dict[str, str]:
 
 # Initialize URLs on module load
 LEAGUE_URLS = _get_league_urls()
+
+
+def _is_today(date_cell: str) -> bool:
+    """
+    Check if date_cell contains today's date in various formats:
+    - "14 мая" (day month in Russian)
+    - "14.05" (DD.MM format)
+    - "30 мая" with teams/time mixed in
+
+    Returns True only if date matches today's date (day and month).
+    """
+    try:
+        today = dt.now()
+        today_day = today.day
+        today_month = today.month
+
+        date_text = date_cell.strip().lower()
+        logger.debug(f"[KULICHKI] Parsing date: '{date_text}' (today: {today_day}.{today_month:02d})")
+
+        # Format 1: "DD.MM" (e.g., "05.05" or "30.05")
+        dot_match = re.search(r"(\d{1,2})\.(\d{1,2})", date_text)
+        if dot_match:
+            day = int(dot_match.group(1))
+            month = int(dot_match.group(2))
+            is_match = day == today_day and month == today_month
+            logger.debug(f"[KULICHKI]   Format DD.MM: day={day}, month={month} → {is_match}")
+            return is_match
+
+        # Format 2: "DD месяц" (e.g., "14 мая", "30 мая")
+        parts = date_text.split()
+        if len(parts) >= 1:
+            try:
+                day = int(parts[0])
+
+                # Look for Russian month name in the entire text
+                month = None
+                for month_name, month_num in RUSSIAN_MONTHS.items():
+                    if month_name in date_text:
+                        month = month_num
+                        break
+
+                if month is not None:
+                    is_match = day == today_day and month == today_month
+                    logger.debug(f"[KULICHKI]   Format DD месяц: day={day}, month={month} → {is_match}")
+                    return is_match
+                else:
+                    # Only day found, no month - can't determine
+                    logger.debug(f"[KULICHKI]   No month found, only day={day}")
+                    return False
+
+            except ValueError:
+                pass
+
+        logger.debug(f"[KULICHKI]   Could not parse date from: '{date_text}'")
+        return False
+
+    except Exception as e:
+        logger.debug(f"[KULICHKI] Error parsing date '{date_cell}': {e}")
+        return False
 
 
 async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
@@ -120,7 +185,16 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
 
         for match in all_matches:
             if match["time"] == "TBD":
-                # Keep matches with unknown time
+                # Keep matches with unknown time, but check for hidden scores in team names
+                # (completed matches may have score embedded in away team name)
+                home = match.get("home", "")
+                away = match.get("away", "")
+
+                # Skip if team names contain score patterns (shouldn't happen, but be defensive)
+                if re.search(r"\d{1,2}:\d{1,2}$", away) or re.search(r"\d{1,2}:\d{1,2}$", home):
+                    logger.debug(f"[KULICHKI] Filtering out TBD match with embedded score: {home} vs {away}")
+                    continue
+
                 future_matches.append(match)
             else:
                 try:
@@ -267,8 +341,6 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
         tables = soup.find_all("table")
         logger.debug(f"[KULICHKI] {league_name}: {len(tables)} tables")
 
-        today = dt.now().strftime("%d")
-
         for table in tables:
             rows = table.find_all("tr")
 
@@ -290,9 +362,9 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                     teams_cell = cells[1].get_text().strip()
                     time_or_result = cells[2].get_text().strip() if len(cells) > 2 else ""
 
-                    # Filter by today's date (check for all tournaments, not just regular leagues)
-                    # Look for today's date in format "14 мая" or "14 апреля" etc
-                    if f"{today} мая" not in date_cell and f"{today}" not in date_cell:
+                    # Filter by today's date (strict check - must match day and month)
+                    if not _is_today(date_cell):
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-today date: {date_cell}")
                         continue
 
                     # Skip header/empty rows
@@ -317,8 +389,11 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                     if not home or not away or len(home) < 3 or len(away) < 3:
                         continue
 
-                    # Skip if team names contain score format (e.g., "Team - 1:2")
+                    # Skip if team names contain score format (e.g., "Team - 1:2" or "Team 4:3")
                     # This indicates a completed match incorrectly parsed
+                    if re.search(r"\d{1,2}:\d{1,2}$", away) or re.search(r"\d{1,2}:\d{1,2}$", home):
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping match with score in team name: {home} vs {away}")
+                        continue
                     if re.search(r"\s-\s\d{1,2}:\d{1,2}$", away) or re.search(r"\s-\s\d{1,2}:\d{1,2}$", home):
                         logger.debug(f"[KULICHKI] {league_name}: Skipping match with score in name: {home} vs {away}")
                         continue
@@ -343,6 +418,11 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                     # Skip completed matches
                     if is_result_format and not is_time_format:
                         logger.debug(f"[KULICHKI] {league_name}: Skipping completed: {home} vs {away} ({time_or_result})")
+                        continue
+
+                    # Also skip if time_or_result looks like ANY score format, even if we couldn't extract time
+                    if re.search(r"\d{1,2}:\d{1,2}", time_or_result) and not is_time_format:
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping match with score format: {home} vs {away} ({time_or_result})")
                         continue
 
                     # Extract time from time_or_result or other cells
