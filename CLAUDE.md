@@ -16,6 +16,7 @@ I'm using gpt-5.4-mini model. Don't ever fucking change it.
 5. **Exchange Rates** — BTC, ETH, USD→EUR, USD→RUB from multiple APIs
 6. **Infrastructure Alerts** — GWP (Georgian Water & Power) works on Vazha Iverievi street
 7. **Holiday/Event Tracking** — Georgia, Russia, Cyprus holidays + DST changes
+8. **Tbilisi Events** (`/events`) — aggregates concerts, meetups, sports from 4+ sources with ChatGPT descriptions
 
 **Architecture**: Single-user bot instance with FastAPI webhook server. Telegram sends updates via HTTP webhooks to the server, processed through aiogram dispatcher. Background tasks (scheduler, monitors) run on same asyncio event loop with SQLite database.
 
@@ -532,7 +533,7 @@ Checks OpenAI account balance and displays in digest with low-balance warning.
 
 ---
 
-### 9. **Quote of the Day** (`src/workers/quote_of_day.py`)
+### 10. **Quote of the Day** (`src/workers/quote_of_day.py`)
 
 Fetches inspirational wisdom/quotes to energize the user for the day.
 
@@ -554,7 +555,7 @@ Fetches inspirational wisdom/quotes to energize the user for the day.
 
 ---
 
-### 10. **Air Quality Monitor** (`src/workers/air_quality.py`)
+### 11. **Air Quality Monitor** (`src/workers/air_quality.py`)
 
 Monitors air quality in Tbilisi using World Air Quality Index (WAQI) API.
 
@@ -587,7 +588,7 @@ Monitors air quality in Tbilisi using World Air Quality Index (WAQI) API.
 
 ---
 
-### 10. **Product Hunt Aggregator** (`src/workers/product_hunt.py`)
+### 12. **Product Hunt Aggregator** (`src/workers/product_hunt.py`)
 
 Fetches today's top product from Product Hunt using free RSS feed.
 
@@ -606,7 +607,7 @@ Fetches today's top product from Product Hunt using free RSS feed.
 
 ---
 
-### 11. **Content Recommender** (`src/workers/content_recommender.py`)
+### 13. **Content Recommender** (`src/workers/content_recommender.py`)
 
 Recommends niche, high-quality content (video, podcast, music) curated for systems engineer + business analyst + AI enthusiast.
 
@@ -650,7 +651,7 @@ Recommends niche, high-quality content (video, podcast, music) curated for syste
 
 ---
 
-### 12. **Task Explainer** (`src/ai/task_explainer.py`)
+### 14. **Task Explainer** (`src/ai/task_explainer.py`)
 
 Generates brief AI explanations for tasks in the digest.
 
@@ -677,7 +678,58 @@ Generates brief AI explanations for tasks in the digest.
 
 ---
 
-### 13. **Database** (`src/db/`)
+### 15. **Tbilisi Events** (`src/workers/tbilisi_events.py` + `src/bot/handlers/events_handler.py`)
+
+Aggregates upcoming Tbilisi events from 4+ sources and generates personalized descriptions via ChatGPT.
+
+**Command**: `/events` — shows events for next 7 days
+
+**Event Sources**:
+1. **redevents.ge** — Russian cultural/music events (5+ per week)
+2. **meetup.com** — Tech meetups and community events (3+ per week)
+3. **eventbrite.com** — Concerts, parties, workshops (4+ per week, including time-only events)
+4. **biletebi.ge** — Georgian concerts, theater, sports (12+ per week)
+
+**Total**: ~20 events per week with proper dates/times
+
+**Feature**: ChatGPT Description Generation
+
+Each event gets a **280-character personalized description** that:
+- Fetches actual event content from the event URL
+- Uses user's profile preferences for context
+- Generates engaging description in Russian
+- Strictly limited to 280 characters
+
+**Function**: `async generate_event_descriptions(events: List[Dict], user_profile) → List[Dict]`
+
+**Workflow**:
+1. Fetch events from all sources in parallel
+2. Filter events to 7-day window
+3. For events without dates but with times: assign today's date
+4. For each event:
+   - Fetch page content via httpx + BeautifulSoup
+   - Combine with user profile preferences
+   - Send to ChatGPT with detailed prompt
+   - Get 280-char description
+5. Format and send to Telegram
+
+**ChatGPT Prompt Includes**:
+- Event title, date, time, location
+- Actual content from event website
+- User's preferences (from `/me` profile)
+- Request for 280-char Russian description
+
+**Handling**:
+- Graceful fallback: if OpenAI API unavailable, uses existing descriptions
+- No content fetching errors block the output
+- If URL fetch fails, continues with other event data
+- Time-only events assumed to be "today"
+
+**See also**: [EVENTS_FINAL_IMPLEMENTATION.md](docs/EVENTS_FINAL_IMPLEMENTATION.md)
+
+---
+
+### 16. **Database** (`src/db/`)
 
 SQLite with aiosqlite for async access.
 
@@ -730,7 +782,7 @@ async def delete_task(task_id: int) → None
 
 ---
 
-### 14. **Telegram Handlers** (`src/bot/handlers/`)
+### 17. **Telegram Handlers** (`src/bot/handlers/`)
 
 Command routing and user interaction.
 
