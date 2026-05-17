@@ -4,6 +4,8 @@ Comprehensive guide for Claude Code working with this project. This bot is a mul
 
 I'm using gpt-5.4-mini model. Don't ever fucking change it.
 
+DO NOT CALL GIT COMMIT. IT'S NOT YOUR JOB.
+
 ## Project Overview
 
 **Purpose**: Deliver a morning digest with weather, news, tasks, exchange rates, and alerts directly to Telegram.
