@@ -204,11 +204,12 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                 logger.debug(f"📄 HTML: {len(html)} bytes")
                 await browser.close()
 
-                # Remove HTML tags to make parsing easier
+                # Clean HTML and search for dates
                 import re
                 html_clean = re.sub(r'<[^>]+>', '', html)
 
-                # Parse HTML
+                # Parse HTML for detailed extraction
+                soup = BeautifulSoup(html, "html.parser")
                 events = []
 
                 months_ru = {
@@ -223,6 +224,16 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                 date_pattern = r'(\d{1,2})\s+(\w+)\s+[в]?\s*(\d{2}):(\d{2})'
                 matches = list(re.finditer(date_pattern, html_clean))
                 logger.debug(f"Found {len(matches)} date matches")
+
+                # Find actual event elements with links for URLs
+                event_links = {}
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href', '')
+                    if 'event' in href.lower() or 'ticket' in href.lower():
+                        text = link.get_text(strip=True)[:100]
+                        event_links[text] = href
+
+                logger.debug(f"Found {len(event_links)} event links")
 
                 for match in matches:
                     try:
@@ -242,23 +253,50 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                         date_str = date_obj.strftime("%Y-%m-%d")
                         time_str = f"{hour}:{minute}"
 
-                        # Simple title extraction - just use default
-                        title = f"Event in Tbilisi"
+                        # Try to find event title near this date
+                        # Look backwards from match position to find title
+                        context_start = max(0, match.start() - 300)
+                        context = html_clean[context_start:match.start()]
+
+                        # Split by common separators to find event name
+                        title = "Концерт в Тбилиси"  # Default title
+                        for sep in ['\n', '•', '|', ' - ']:
+                            parts = context.split(sep)
+                            if parts:
+                                potential_title = parts[-1].strip()
+                                if len(potential_title) > 5 and len(potential_title) < 200:
+                                    # Check if it looks like an event name (has letters)
+                                    if any(c.isalpha() for c in potential_title):
+                                        title = potential_title
+                                        break
+
+                        # Clean up title
+                        title = title.strip()
+                        if len(title) > 100:
+                            title = title[:100]
+
+                        # Try to find URL for this event
+                        url = "https://redevents.ge/ru"
+                        for event_text, event_url in event_links.items():
+                            if title.lower() in event_text.lower() or event_text.lower() in title.lower():
+                                url = event_url if event_url.startswith('http') else "https://redevents.ge" + event_url
+                                break
 
                         # Avoid duplicates
                         if not any(e['date'] == date_str and e['time'] == time_str for e in events):
+                            category = _categorize_event(title, "")
                             events.append({
                                 "title": title,
                                 "date": date_str,
                                 "time": time_str,
                                 "location": "Tbilisi",
                                 "description": "",
-                                "category": "concert",
+                                "category": category,
                                 "source": "redevents.ge",
-                                "url": "https://redevents.ge/ru",
+                                "url": url,
                                 "price": "По ссылке",
                             })
-                            logger.debug(f"✅ Added: {date_str} {time_str}")
+                            logger.debug(f"✅ Added: {title[:40]} on {date_str}")
 
                     except (ValueError, IndexError) as e:
                         logger.debug(f"Error: {e}")
@@ -1400,14 +1438,16 @@ def format_events_for_telegram(events: List[Dict]) -> str:
         url = event.get("url", "")
 
         footer_parts = []
-        if price:
-            footer_parts.append(f"Цена билета: {price}")
+        if price and price not in ["", "N/A", "По ссылке"]:
+            footer_parts.append(f"Цена: {price}")
         if url:
             footer_parts.append(f"[Ссылка]({url})")
 
         if footer_parts:
             footer = ". ".join(footer_parts)
             lines.append(f"\n{footer}\n")
+        elif url:
+            lines.append(f"\n[Ссылка]({url})\n")
         else:
             lines.append("")
 
