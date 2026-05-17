@@ -252,25 +252,38 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 
     # Compute clothing recommendation based on weather rules (not AI)
     morning_temp = None
+    day_temp = None
     morning_wind = None
     if weather and isinstance(weather.get("morning"), dict):
         morning_temp = weather["morning"].get("temperature")
         morning_wind = weather["morning"].get("wind_speed")
+    if weather and isinstance(weather.get("day"), dict):
+        day_temp = weather["day"].get("temperature")
 
-    # Jacket needed if: temp below threshold OR precipitation expected
+    # Jacket needed if: temp below 10°C OR precipitation expected
     needs_jacket = (
         morning_temp is not None and morning_temp < WEATHER_JACKET_THRESHOLD_C
     ) or is_raining
 
-    # If jacket is needed but wind is strong (>15 km/h), recommend hoodie instead
-    if needs_jacket and morning_wind is not None and morning_wind > 15:
-        outer_layer = "худи"
-    elif needs_jacket:
+    # Determine outer layer recommendation
+    if needs_jacket:
+        # Jacket is primary recommendation (wind doesn't override)
         outer_layer = "куртка"
-    else:
+    elif morning_wind is not None and morning_wind > 15:
+        # No jacket needed but strong wind → recommend hoodie
         outer_layer = "худи"
+    elif day_temp is not None and day_temp < 15:
+        # Day temperature < 15°C → recommend hoodie
+        outer_layer = "худи"
+    else:
+        # No outerwear recommendation needed
+        outer_layer = None
 
-    outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
+    # Build outfit advice (with or without outer layer)
+    if outer_layer:
+        outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
+    else:
+        outfit_advice = "Штаны, кофта, кроссовки"
 
     logger.info(
         f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice}"
