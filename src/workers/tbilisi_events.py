@@ -914,7 +914,7 @@ async def _scrape_meetup_tbilisi() -> Optional[List[Dict]]:
                             "category": category,
                             "source": "meetup.com",
                             "url": url if url else "https://www.meetup.com/find/?location=Tbilisi&keywords=events",
-                            "price": "Зависит от события",
+                            "price": "",  # Price unknown for Meetup events
                         })
                         logger.debug(f"✅ meetup: {title[:40]} on {date_str} at {time_str} | URL: {url[:60] if url else 'N/A'}")
 
@@ -1388,6 +1388,40 @@ def _categorize_event(title: str, description: str) -> str:
     return "other"
 
 
+def _is_tbilisi_event(event: Dict) -> bool:
+    """Check if event is in Tbilisi (not Stockholm, Europe, etc.)"""
+    title = (event.get("title", "") + " " + event.get("description", "")).lower()
+    location = event.get("location", "").lower()
+
+    # Exclude events explicitly in other cities
+    excluded_keywords = [
+        "stockholm", "sweden", "berlin", "amsterdam", "paris", "london",
+        "europe", "european", "overseas", "abroad",
+        "visa", "work abroad", "jobs in",  # Job/visa events (usually not Tbilisi-based)
+    ]
+
+    for keyword in excluded_keywords:
+        if keyword in title or keyword in location:
+            logger.debug(f"⏭️  Skipped non-Tbilisi event: {event.get('title', 'Unknown')[:40]} (keyword: {keyword})")
+            return False
+
+    # Include if explicitly Tbilisi or Georgia
+    if "tbilisi" in title or "tbilisi" in location or "georgia" in title or "georgia" in location:
+        return True
+
+    # For Meetup and redevents (known Tbilisi sources), include by default
+    source = event.get("source", "").lower()
+    if source in ["meetup.com", "redevents.ge"]:
+        return True
+
+    # For other sources, be cautious - check location
+    if "tbilisi" in location:
+        return True
+
+    logger.debug(f"⏭️  Skipped: unclear location for {event.get('title', 'Unknown')[:40]} from {source}")
+    return False
+
+
 def _deduplicate_events(events: List[Dict]) -> List[Dict]:
     """Remove duplicate events based on title, location, date, and time"""
 
@@ -1395,6 +1429,10 @@ def _deduplicate_events(events: List[Dict]) -> List[Dict]:
     unique = []
 
     for event in events:
+        # Filter out non-Tbilisi events
+        if not _is_tbilisi_event(event):
+            continue
+
         # Create key: (title, location, date, time)
         # Events with same name/location but different times are different events
         key = (
@@ -1499,18 +1537,25 @@ def format_events_for_telegram(events: List[Dict]) -> str:
         # Price and link
         price = event.get("price")
         url = event.get("url", "")
+        source = event.get("source", "link")
+
+        # Only show price if it's a real price (not generic/unknown)
+        show_price = (price and
+                     price not in ["", "N/A", "По ссылке", "Зависит от события",
+                                   "Бесплатно", "бесплатно", "Free"])
 
         footer_parts = []
-        if price and price not in ["", "N/A", "По ссылке"]:
+        if show_price:
             footer_parts.append(f"Цена: {price}")
         if url:
-            footer_parts.append(f"[Ссылка]({url})")
+            # Format link with source name (→ eventbrite.com, → meetup.com, etc)
+            footer_parts.append(f"[→ {source}]({url})")
 
         if footer_parts:
             footer = ". ".join(footer_parts)
             lines.append(f"\n{footer}\n")
         elif url:
-            lines.append(f"\n[Ссылка]({url})\n")
+            lines.append(f"\n[→ {source}]({url})\n")
         else:
             lines.append("")
 

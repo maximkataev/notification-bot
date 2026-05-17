@@ -38,8 +38,20 @@ async def events_command(message: types.Message, bot: Bot):
         future_events = []
         for event in events:
             event_date = event.get("date")
+            event_time = event.get("time")
+
+            # If no date but has time, assume it's today (will show as today's time-only event)
+            if not event_date and event_time:
+                logger.debug(f"   ⏰ {event.get('title', 'Unknown')[:30]} (time-only: {event_time})")
+                logger.debug(f"      Time: {event_time} — Assuming today")
+                event["date"] = today.strftime("%Y-%m-%d")  # Assign today's date
+                future_events.append(event)
+                logger.debug(f"      ✅ Included (time-only event)")
+                continue
+
+            # Skip events with neither date nor time
             if not event_date:
-                logger.debug(f"   ⏭️  Skipping event without date: {event.get('title', 'Unknown')}")
+                logger.debug(f"   ⏭️  Skipping event without date or time: {event.get('title', 'Unknown')}")
                 continue
 
             try:
