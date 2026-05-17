@@ -135,9 +135,8 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
         _scrape_eventbrite(),          # Eventbrite Georgia/Tbilisi
         _scrape_meetup_tbilisi(),      # Meetup.com Tbilisi events
         _scrape_cinemaqa(),            # Georgian cinema - movie showtimes
-        # TODO: biletebi.ge and georgia.travel need better selectors
-        # _scrape_biletebi(),            # Georgian tickets site (needs HTML structure fix)
-        # _scrape_georgia_travel(),      # Official tourism portal (needs HTML structure fix)
+        _scrape_biletebi(),            # Georgian tickets site (concerts, theater, sports)
+        # _scrape_georgia_travel(),      # Disabled: poor title extraction (calendar UI noise)
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
