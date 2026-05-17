@@ -53,7 +53,7 @@
 | `src/bot/scheduler.py` | Интеграция в конец дайджеста | ✓ Обновлен |
 | `CLAUDE.md` | Добавлен раздел про OpenAI Balance | ✓ Обновлен |
 | `OPENAI_BALANCE.md` | Полная документация | ✓ Создан |
-| `test_openai_balance.py` | Тестовый скрипт | ✓ Создан |
+| [`tests/test_openai_balance.py`](../tests/test_openai_balance.py) | Тестовый скрипт | ✓ Создан |
 
 ## Как использовать
 
@@ -67,7 +67,7 @@
 ### Для проверки
 ```bash
 # Проверить доступность баланса
-doppler run --project notifications-bot --config dev -- python3 test_openai_balance.py
+python3 -m pytest tests/test_openai_balance.py -v
 
 # Должен вывести:
 # ✓ Balance fetched successfully

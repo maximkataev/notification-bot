@@ -72,8 +72,26 @@ notification-bot/
 │       ├── tbc_bank.py             # Exchange rate APIs (fallback chain)
 │       └── telegram.py             # Message sending utility
 │
+├── tests/                          # Unit and integration tests
+│   ├── test_digest.py              # Morning digest orchestration
+│   ├── test_digest_format.py       # Message formatting
+│   ├── test_forex_rates.py         # Exchange rate fetching
+│   ├── test_rate_format.py         # Rate display formatting
+│   ├── test_gwp*.py                # GWP scraper validation
+│   ├── test_news_processor.py      # News selection logic
+│   ├── test_task_explanations.py   # Task explanation generation
+│   ├── test_openai_balance.py      # OpenAI balance monitor
+│   └── test_webhook_secret.py      # Webhook security
+│
+├── scripts/                        # Development utilities and debug scripts
+│   ├── test_*.py                   # Feature-specific test scripts
+│   └── ...
+│
 ├── data/
 │   └── tasks.db                    # SQLite database (auto-created)
+│
+├── docs/                           # Documentation and changelogs
+│   └── ...
 │
 ├── requirements.txt                # Dependencies
 ├── CLAUDE.md                        # This file
@@ -106,14 +124,19 @@ The heart of the morning digest. Orchestrates all digest components in sequence.
     - 1 culture/society/good news story
     - 1 IT/AI/technology story (for analyst & tech specialist)
 13. **Format news** as: `[Source](url): description` (markdown links)
-14. **Score and sort tasks** by importance (urgent +100, outdoor +30, timed +20, dated +10)
-15. **Generate AI explanations** for top 5 tasks
-16. **Fetch exchange rates** (BTC, ETH, USD→EUR, USD→RUB) with 24h/30d changes
-17. **Fetch top Product Hunt product** (today's top product with description)
-18. **Get content recommendation** (random video, podcast, or music for analyst/tech specialist)
-19. **Check OpenAI account balance** (shows balance, warns if <$0.50)
-20. **Build final message** with all sections
-21. **Send to Telegram** via `bot.send_message()` (split if >4000 chars)
+14. **Generate AI explanations and priority ranking** for all tasks via GPT-4o:
+    - Each task gets: explanation, time estimate, difficulty, urgency flag, **priority_rank** (1 = highest)
+    - GPT decides the order considering: urgency, time constraints, dependencies, energy required, optimal day flow
+15. **Sort and separate tasks** by priority rank from GPT:
+    - **СРОЧНЫЕ** — all urgent tasks (marked as urgent or containing urgency keywords), sorted by GPT rank
+    - **НЕСРОЧНЫЕ** — all non-urgent tasks, sorted by GPT rank (highest priority first)
+16. **Display all tasks** in digest with AI-generated explanations
+17. **Fetch exchange rates** (BTC, ETH, USD→EUR, USD→RUB) with 24h/30d changes
+18. **Fetch top Product Hunt product** (today's top product with description)
+19. **Get content recommendation** (random video, podcast, or music for analyst/tech specialist)
+20. **Check OpenAI account balance** (shows balance, warns if <$0.50)
+21. **Build final message** with all sections
+22. **Send to Telegram** via `bot.send_message()` (split if >4000 chars)
 
 **Critical Bug Fixes**:
 - News items from `news_fetcher.py` have `description` field, NOT `summary`
@@ -719,6 +742,7 @@ Command routing and user interaction.
 | `/start` | Welcome message |
 | `/plan <text>` | Add task (free text) |
 | `/tasks` | List today's tasks |
+| `/move <сегодня\|завтра>` | Move overdue tasks to today or tomorrow |
 | `/me` | Show user profile |
 | `/me <text>` | Update preferences |
 | `/ai-rules` | View custom rules |
@@ -735,6 +759,13 @@ Command routing and user interaction.
 - Rules injected into task parsing system prompt
 - Examples: "спорт только утром", "не планировать в понедельник"
 - Stored in database, applied to all future task parsing
+
+**Move Overdue Tasks** (`/move`):
+- Reschedules all tasks with due dates in the past
+- Arguments: `сегодня` (today) or `завтра` (tomorrow)
+- Usage: `/move сегодня` or `/move завтра`
+- Returns count of successfully moved tasks
+- Useful when you have tasks from previous days that need rescheduling
 
 ---
 
@@ -897,6 +928,48 @@ docker-compose logs -f bot
 
 ## Testing & Validation
 
+### Unit Tests
+
+All unit tests are located in [`tests/`](tests/) directory:
+
+| Test File | Coverage |
+|-----------|----------|
+| [`test_digest.py`](tests/test_digest.py) | Morning digest orchestration, end-to-end flow |
+| [`test_digest_format.py`](tests/test_digest_format.py) | Message formatting, section assembly |
+| [`test_forex_rates.py`](tests/test_forex_rates.py) | Exchange rate fetching (BTC, ETH, EUR, RUB) |
+| [`test_rate_format.py`](tests/test_rate_format.py) | Rate display formatting, decimal handling |
+| [`test_gwp.py`](tests/test_gwp.py) | GWP scraper basic validation |
+| [`test_gwp_detailed.py`](tests/test_gwp_detailed.py) | GWP detailed parsing, street name variants |
+| [`test_gwp_all_streets.py`](tests/test_gwp_all_streets.py) | GWP comprehensive street matching |
+| [`test_news_processor.py`](tests/test_news_processor.py) | News selection logic, keyword filtering |
+| [`test_task_explanations.py`](tests/test_task_explanations.py) | Task explanation generation via GPT |
+| [`test_openai_balance.py`](tests/test_openai_balance.py) | OpenAI balance monitor |
+| [`test_webhook_secret.py`](tests/test_webhook_secret.py) | Webhook security validation |
+
+Run all tests:
+```bash
+python3 -m pytest tests/ -v
+```
+
+Run specific test:
+```bash
+python3 -m pytest tests/test_digest.py -v
+```
+
+### Development Scripts
+
+Debug and feature-specific scripts are in [`scripts/`](scripts/):
+```bash
+# Test currency fetch
+python3 scripts/test_currency_rate.py
+
+# Test events command integration
+python3 scripts/test_events_command_integration.py
+
+# Test event sources
+python3 scripts/test_all_event_sources.py
+```
+
 ### Type Checking
 ```bash
 mypy src/ --strict
@@ -910,18 +983,6 @@ pylint src/
 
 ### Manual Testing
 ```bash
-# Test currency fetch
-python3 scripts/test_currency_rate.py
-
-# Test GWP scraper
-python3 scripts/test_gwp.py
-
-# Test news fetch
-python3 scripts/test_news.py
-
-# Test weather
-python3 scripts/test_weather.py
-
 # Trigger digest manually
 # Send /digest command to bot
 ```
@@ -1045,6 +1106,20 @@ When working on this project:
     - Applies to: `send_message()`, `reply()`, `answer()`, `edit_text()`
     - Prevents Telegram from generating link previews in chat
     - Cleaner, faster message display
+
+---
+
+## Additional Documentation
+
+All implementation details, changelogs, deployment guides, and technical notes are organized in the [`docs/`](docs/) directory:
+- `ARCHITECTURE.md` — System architecture overview
+- `DEPLOY_*.md` — Deployment guides for various platforms
+- `CHANGELOG_*.md` — Feature change logs and updates
+- `TASK_*.md` — Task lifecycle and sorting implementation
+- `FOREX_*.md` — Exchange rate fetching details
+- And more...
+
+See [`docs/`](docs/) for the complete documentation index.
 
 ---
 

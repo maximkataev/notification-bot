@@ -32,10 +32,10 @@ change_30d = (current - 30d_ago) / 30d_ago * 100
 ✓ Обновлен раздел Exchange Rates в `CLAUDE.md`
 
 ### 4. Тестирование
-✓ Создан скрипт `test_forex_rates.py` для проверки функциональности
+✓ Создан тест [`tests/test_forex_rates.py`](../tests/test_forex_rates.py) для проверки функциональности
 
 ```bash
-PYTHONPATH=. python3 test_forex_rates.py
+python3 -m pytest tests/test_forex_rates.py -v
 ```
 
 ## Текущие результаты
@@ -80,7 +80,7 @@ USD: 74.59 RUB (↑ 0.0% for 24h, ↑ 5.8 % for 30d)
 | `src/workers/rates_fetcher.py` | Улучшено `get_historical_forex_rates()` | ✓ |
 | `FOREX_DYNAMIC.md` | Новая документация | ✓ Создан |
 | `CLAUDE.md` | Обновлен раздел Exchange Rates | ✓ |
-| `test_forex_rates.py` | Тестовый скрипт | ✓ Создан |
+| [`tests/test_forex_rates.py`](../tests/test_forex_rates.py) | Тестовый скрипт | ✓ Создан |
 
 ## Как использовать
 
@@ -92,7 +92,7 @@ USD: 74.59 RUB (↑ 0.0% for 24h, ↑ 5.8 % for 30d)
 
 ### Для отладки
 ```bash
-PYTHONPATH=. python3 test_forex_rates.py
+python3 -m pytest tests/test_forex_rates.py -v
 ```
 
 ### Для просмотра сохраненной истории в БД

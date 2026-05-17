@@ -26,6 +26,8 @@ from src.bot.handlers import (
     news_handler,
     digest_handler,
     health_handler,
+    move_handler,
+    events_handler,
 )
 from src.bot.scheduler import init_scheduler
 from src.workers.currency_monitor import CurrencyMonitor
@@ -83,7 +85,8 @@ async def info_command(message: types.Message):
         "КОМАНДЫ:\n\n"
         "ЗАДАЧИ:\n"
         "/plan <текст> - добавить задачу\n"
-        "/tasks - показать все задачи\n\n"
+        "/tasks - показать все задачи\n"
+        "/move <сегодня|завтра> - перенести просроченные\n\n"
         "ПРОФИЛЬ:\n"
         "/me - показать профиль\n"
         "/me <текст> - обновить предпочтения\n\n"
@@ -99,6 +102,8 @@ async def info_command(message: types.Message):
         "ДАЙДЖЕСТ:\n"
         "/digest - отправить дайджест сейчас\n"
         "(обычно в 08:00)\n\n"
+        "СОБЫТИЯ:\n"
+        "/events - мероприятия в Тбилиси на неделю\n\n"
         "СИСТЕМА:\n"
         "/health - проверить статус всех сервисов\n\n"
         "ПРИМЕРЫ:\n"
@@ -106,6 +111,7 @@ async def info_command(message: types.Message):
         "/me просыпаюсь в 11:00\n"
         "/aiadd встречи только в четверг\n"
         "/newsset только политика и экономика\n"
+        "/move завтра\n"
     )
 
 
@@ -124,6 +130,8 @@ async def setup_dispatcher(bot: Bot) -> Dispatcher:
     logger.info("  ✓ digest_handler router registered")
     dp.include_router(tasks_handler.router)
     logger.info("  ✓ tasks_handler router registered")
+    dp.include_router(move_handler.router)
+    logger.info("  ✓ move_handler router registered")
     dp.include_router(profile_handler.router)
     logger.info("  ✓ profile_handler router registered")
     dp.include_router(ai_handler.router)
@@ -132,6 +140,8 @@ async def setup_dispatcher(bot: Bot) -> Dispatcher:
     logger.info("  ✓ news_handler router registered")
     dp.include_router(health_handler.router)
     logger.info("  ✓ health_handler router registered")
+    dp.include_router(events_handler.router)
+    logger.info("  ✓ events_handler router registered")
     dp.include_router(plan_handler.router)
     logger.info("  ✓ plan_handler router registered (last due to catch-all handler)")
 

@@ -156,6 +156,103 @@ async def get_todoist_tasks() -> List[Task]:
         return []
 
 
+async def get_overdue_tasks() -> List[dict]:
+    """Fetch tasks with due dates in the past (today or earlier) from Todoist.
+
+    Returns:
+        List of task dicts with id, content, due date info
+    """
+    token = await get_todoist_token()
+    if not token:
+        logger.error("Cannot fetch tasks: TODOIST_API_KEY is missing")
+        return []
+
+    project_id = await get_project_id(token)
+    if not project_id:
+        logger.error("Cannot fetch tasks: 'Личное' project not found")
+        return []
+
+    overdue_tasks = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"{TODOIST_API_URL}/tasks",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"project_id": project_id},
+            )
+            response.raise_for_status()
+            data = response.json()
+            todoist_tasks = data.get("results", [])
+
+            today = datetime.now().date().isoformat()
+            logger.info(f"📥 Fetching overdue tasks (today: {today})")
+
+            for todoist_task in todoist_tasks:
+                # Skip completed tasks
+                if todoist_task.get("checked", False):
+                    continue
+
+                content = todoist_task.get("content", "")
+                due = todoist_task.get("due")
+
+                if not due:
+                    continue
+
+                due_date = due.get("date")
+                if not due_date:
+                    continue
+
+                # Extract date part (YYYY-MM-DD)
+                due_date_only = due_date.split("T")[0]
+
+                # Only include tasks with due date in the past (< today)
+                if due_date_only < today:
+                    overdue_tasks.append({
+                        "id": todoist_task.get("id"),
+                        "content": content,
+                        "due_date": due_date_only,
+                        "priority": todoist_task.get("priority"),
+                        "labels": todoist_task.get("labels", []),
+                    })
+                    logger.debug(f"   ⏰ Overdue task: {content} (was due {due_date_only})")
+
+            logger.info(f"📊 Found {len(overdue_tasks)} overdue tasks")
+            return overdue_tasks
+    except Exception as e:
+        logger.error(f"Failed to fetch overdue Todoist tasks: {e}", exc_info=True)
+        return []
+
+
+async def update_todoist_task_due_date(task_id: str, new_due_date: str) -> bool:
+    """Update the due date of a Todoist task.
+
+    Args:
+        task_id: Todoist task ID
+        new_due_date: New due date in YYYY-MM-DD format
+
+    Returns:
+        True if successful, False otherwise
+    """
+    token = await get_todoist_token()
+    if not token:
+        logger.error("Cannot update task: TODOIST_API_KEY is missing")
+        return False
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{TODOIST_API_URL}/tasks/{task_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"due_date": new_due_date},
+            )
+            response.raise_for_status()
+            logger.info(f"✓ Updated task {task_id} due date to {new_due_date}")
+            return True
+    except Exception as e:
+        logger.error(f"Failed to update Todoist task {task_id}: {e}")
+        return False
+
+
 async def create_todoist_task(
     content: str,
     due_date: Optional[str] = None,

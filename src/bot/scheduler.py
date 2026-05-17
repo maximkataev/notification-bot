@@ -192,30 +192,32 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                 " (ожидаются осадки)" if weather_details else "Ожидаются осадки"
             )
 
-    intro_prompt = f"""Напиши мне утренний привет и совет про погоду в два этапа:
+    intro_prompt = f"""Напиши мне теплое утреннее приветствие (2-3 предложения):
 
-1️⃣ ПРОСТОЙ ПРИВЕТ (одна строка):
-Простое, ясное приветствие. БЕЗ клише и странных метафор.
-НЕ используй: "пусть день принесет", "улучшит настроение", "зарядит энергией", странные фразы про кофе
-ИСПОЛЬЗУЙ: обычный язык, может быть с лёгким юмором или наблюдением
+📌 СУТЬ приветствия:
+- Дружелюбное и поддерживающее
+- Как будто знакомый человек, который рад тебя видеть
+- Плавно подведи меня от "хорошего утра" к "давай начнем день"
+- Это переход от сна к активности - спокойный, но мотивирующий
 
-Примеры:
-- "Доброе утро! Кофе в руках, можно работать"
-- "Утро, солнце на улице, давай начнём"
-- "Доброе утро! День начинается"
+🚫 НЕ ИСПОЛЬЗУЙ:
+- Клише: "начни день с улыбки", "ты можешь всё", "зарядит энергией"
+- Странные фразы про кофе/чай
+- Метафоры про "свеженность" и "воскрешение"
+- Официозный тон
+- Пустые мотивационные фразы
 
-2️⃣ СОВЕТ ПРО ПОГОДУ (1-2 предложения):
-От первого лица (я вижу, я советую) - практичный совет связанный с погодой.
+✅ СТИЛЬ:
+- Просто и честно: "вот и утро пришло"
+- Личный контакт: можно "ты", теплая интонация
+- Практичность: учти погоду, подготовься к дню
+- Лёгкий юмор или наблюдение, если уместно
+
+🌡️ КОНТЕКСТ:
 Погода в Тбилиси: {weather_desc}
-
-⚠️ ВАЖНО: НЕ упоминай зонтик, зонт или что-либо связанное с зонтиком при любых условиях погоды.
-Стиль: просто, понятно, практично.
-
 {weather_details}
 
-Формат ответа - ДВЕ СТРОКИ:
-[простой привет]
-[совет про погоду]"""
+Напиши приветствие естественно, как письмо другу, которое начинается с "Привет" и заканчивается готовностью начать день."""
 
     logger.info("🔄 Calling AI to generate morning greeting and weather advice")
 
@@ -240,15 +242,12 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
     response_text = response.choices[0].message.content
     logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
 
-    # Parse response - should be two lines
-    lines = response_text.strip().split("\n") if response_text else []
-    simple_greeting = lines[0] if len(lines) > 0 else "Доброе утро!"
-    weather_advice = lines[1] if len(lines) > 1 else "Подготовьтесь к предстоящему дню."
+    # Use the entire response as the greeting
+    simple_greeting = response_text.strip() if response_text else "Доброе утро! Вот и началось новое утро - давай начнём день."
 
-    if not simple_greeting or not weather_advice:
+    if not simple_greeting or len(simple_greeting) < 10:
         logger.error("❌ AI returned incomplete response, using fallback")
-        simple_greeting = "Доброе утро!"
-        weather_advice = "Подготовьтесь к переменчивой погоде."
+        simple_greeting = "Доброе утро! Вот и началось новое утро. Кофе, завтрак, планы — и можно начинать день."
 
     # Compute clothing recommendation based on weather rules (not AI)
     morning_temp = None
@@ -286,7 +285,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         outfit_advice = "Штаны, кофта, кроссовки"
 
     logger.info(
-        f"✓ Generated - greeting: {simple_greeting[:50]}... | advice: {weather_advice[:50]}... | outfit: {outfit_advice}"
+        f"✓ Generated - greeting: {simple_greeting[:70]}... | outfit: {outfit_advice}"
     )
 
     # Build full message: greeting + quote + weather advice + weather + news + gwp + task list
@@ -305,8 +304,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
     else:
         logger.warning("Quote fetch failed")
 
-    # Add AI weather advice and outfit recommendation
-    message_lines.append(weather_advice)
+    # Add outfit recommendation
     message_lines.append(f"👕 {outfit_advice}")
     message_lines.append("")
 
@@ -546,39 +544,49 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                 key=_get_gpt_rank,
             )
 
+            def _format_task_with_analysis(task, task_data, is_urgent=False):
+                """Format task with AI-generated digest description (up to 280 chars)."""
+                name = task.what or task.raw_text[:50]
+                time_minutes = task_data.get("time_minutes", 30)
+                importance = task_data.get("importance", 2)
+                digest_description = task_data.get("digest_description", "")
+
+                # Importance label
+                importance_map = {1: "низко", 2: "средне", 3: "важно", 4: "очень важно", 5: "критично"}
+                importance_label = importance_map.get(importance, "средне")
+
+                # Title with metrics
+                title = f"• {name} ({time_minutes} мин"
+                if is_urgent:
+                    title += ", срочно"
+                else:
+                    title += f", {importance_label}"
+                title += ")"
+
+                lines = [title]
+                if digest_description:
+                    lines.append(digest_description)
+
+                return "\n".join(lines)
+
             # Show urgent tasks
             if urgent_tasks:
-                message_lines.append(f"СРОЧНЫЕ ({len(urgent_tasks)} задач):")
+                message_lines.append("СРОЧНЫЕ:")
                 for task in urgent_tasks:
-                    name = task.what or task.raw_text[:50]
                     task_data = task_explanations.get(task.id, {})
-                    explanation = task_data.get("explanation", "")
-                    time_minutes = task_data.get("time_minutes", 30)
-
-                    message_lines.append(f"• {name} ({time_minutes} мин)")
-                    if explanation:
-                        message_lines.append(f"  └ {explanation}")
-
-                    logger.info(f"  Urgent task: {name} | {time_minutes}min")
-
+                    formatted = _format_task_with_analysis(task, task_data, is_urgent=True)
+                    message_lines.append(formatted)
+                    logger.info(f"  Urgent: {task.what or task.raw_text[:30]}")
                 message_lines.append("")
 
             # Show all non-urgent tasks if available
             if non_urgent_tasks:
-                message_lines.append(f"НЕСРОЧНЫЕ ({len(non_urgent_tasks)} задач):")
-
+                message_lines.append("НЕСРОЧНЫЕ:")
                 for task in non_urgent_tasks:
-                    name = task.what or task.raw_text[:50]
                     task_data = task_explanations.get(task.id, {})
-                    explanation = task_data.get("explanation", "")
-                    time_minutes = task_data.get("time_minutes", 30)
-
-                    message_lines.append(f"• {name} ({time_minutes} мин)")
-                    if explanation:
-                        message_lines.append(f"  └ {explanation}")
-
-                    logger.info(f"  Non-urgent task: {name} | {time_minutes}min")
-
+                    formatted = _format_task_with_analysis(task, task_data, is_urgent=False)
+                    message_lines.append(formatted)
+                    logger.info(f"  Non-urgent: {task.what or task.raw_text[:30]}")
                 message_lines.append("")
         else:
             message_lines.append("Дел на сегодня нет.")
