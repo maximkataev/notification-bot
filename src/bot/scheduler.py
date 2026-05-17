@@ -26,13 +26,13 @@ from src.workers.rates_fetcher import (
     get_crypto_and_forex_rates,
     _update_historical_forex_cache,
 )
-from src.ai.task_explainer import get_task_explanations, score_task_importance
+from src.ai.task_explainer import get_task_explanations
 from src.workers.holidays import get_today_holidays, get_today_events
 from src.workers.air_quality import get_air_quality_tbilisi
 from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.quote_of_day import get_quote_of_day
-from src.workers.football_matches import get_today_matches, get_formatted_matches
+from src.workers.football_matches import get_today_matches, get_formatted_matches, get_yesterday_results, get_formatted_results
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
@@ -252,14 +252,24 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 
     # Compute clothing recommendation based on weather rules (not AI)
     morning_temp = None
+    morning_wind = None
     if weather and isinstance(weather.get("morning"), dict):
         morning_temp = weather["morning"].get("temperature")
+        morning_wind = weather["morning"].get("wind_speed")
 
     # Jacket needed if: temp below threshold OR precipitation expected
     needs_jacket = (
         morning_temp is not None and morning_temp < WEATHER_JACKET_THRESHOLD_C
     ) or is_raining
-    outer_layer = "куртку" if needs_jacket else "худи"
+
+    # If jacket is needed but wind is strong (>15 km/h), recommend hoodie instead
+    if needs_jacket and morning_wind is not None and morning_wind > 15:
+        outer_layer = "худи"
+    elif needs_jacket:
+        outer_layer = "куртка"
+    else:
+        outer_layer = "худи"
+
     outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
 
     logger.info(
@@ -472,13 +482,9 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         today_tasks = tasks
         logger.info(f"Tasks loaded: {len(today_tasks)} tasks ready for today")
 
-        # Sort tasks by importance
-        today_tasks_sorted = sorted(today_tasks, key=score_task_importance, reverse=True)
-        logger.info(f"Sorted {len(today_tasks_sorted)} tasks by importance")
-
-        # Get AI explanations for tasks with weather and profile context
+        # Get AI explanations and priority ranking for tasks
         task_explanations = {}
-        if today_tasks_sorted:
+        if today_tasks:
             # Convert profile to dict for AI context
             profile_dict = None
             if user_profile:
@@ -490,7 +496,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                 }
 
             explanations_result = await get_task_explanations(
-                today_tasks_sorted, weather=weather, profile=profile_dict
+                today_tasks, weather=weather, profile=profile_dict
             )
             if not isinstance(explanations_result, Exception):
                 task_explanations = explanations_result
@@ -500,19 +506,32 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                     f"Failed to generate task explanations: {explanations_result}"
                 )
 
+        # Sort tasks by GPT priority rank
+        def _get_gpt_rank(task) -> int:
+            return task_explanations.get(task.id, {}).get("priority_rank", 999)
+
+        today_tasks_sorted = sorted(today_tasks, key=_get_gpt_rank)
+        logger.info(f"Sorted {len(today_tasks_sorted)} tasks by GPT priority rank")
+
         # Process and organize tasks
         if today_tasks_sorted:
             # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
-            urgent_tasks = [
-                t
-                for t in today_tasks_sorted
-                if t.is_urgent or _is_task_urgent_by_keywords(t)
-            ]
-            non_urgent_tasks = [
-                t
-                for t in today_tasks_sorted
-                if not t.is_urgent and not _is_task_urgent_by_keywords(t)
-            ]
+            urgent_tasks = sorted(
+                [
+                    t
+                    for t in today_tasks_sorted
+                    if t.is_urgent or _is_task_urgent_by_keywords(t)
+                ],
+                key=_get_gpt_rank,
+            )
+            non_urgent_tasks = sorted(
+                [
+                    t
+                    for t in today_tasks_sorted
+                    if not t.is_urgent and not _is_task_urgent_by_keywords(t)
+                ],
+                key=_get_gpt_rank,
+            )
 
             # Show urgent tasks
             if urgent_tasks:
@@ -531,17 +550,11 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
 
                 message_lines.append("")
 
-            # Show non-urgent tasks if available
+            # Show all non-urgent tasks if available
             if non_urgent_tasks:
-                message_lines.append(f"НЕСРОЧНЫЕ (если захочешь взяться):")
-                display_non_urgent = non_urgent_tasks[:3]  # Show top 3 non-urgent
+                message_lines.append(f"НЕСРОЧНЫЕ ({len(non_urgent_tasks)} задач):")
 
-                if len(non_urgent_tasks) > 3:
-                    message_lines.append(
-                        f"(показаны 3 из {len(non_urgent_tasks)} несрочных)\n"
-                    )
-
-                for task in display_non_urgent:
+                for task in non_urgent_tasks:
                     name = task.what or task.raw_text[:50]
                     task_data = task_explanations.get(task.id, {})
                     explanation = task_data.get("explanation", "")
@@ -646,6 +659,20 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         message_lines.append("Отключений воды на Важа Ивериели не запланировано")
         logger.info("No water cuts found on Vazha Ivereli street")
     message_lines.append("")
+
+    # Check yesterday's football results (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
+    logger.info("Checking yesterday's football results")
+    yesterday_results = await get_yesterday_results()
+
+    if yesterday_results:
+        # Show yesterday's results
+        logger.info(f"✓ Found {len(yesterday_results)} yesterday result(s)")
+        formatted_results = await get_formatted_results(yesterday_results)
+        if formatted_results:
+            message_lines.append(formatted_results)
+            message_lines.append("")
+    else:
+        logger.info("No yesterday results found")
 
     # Check for football matches (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
     logger.info("Checking for football matches today")
