@@ -193,51 +193,58 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     # Time is already converted to Tbilisi in kulichki_parser (Moscow UTC+3 → Tbilisi UTC+4)
     tbilisi_time = time_str
 
-    # Format standings context from league table
+    # Format standings context from league table or group info (for World Cup)
     standings_str = ""
     standings_info = ""
-    standings = match.get("standings")
+    group = match.get("group")
 
-    if standings and isinstance(standings, list) and len(standings) > 0:
-        # Find full information for home and away teams in standings
-        home_standing = None
-        away_standing = None
-
-        for standing in standings:
-            team_name = standing.get("team", "").lower()
-            if team_name and team_name in home.lower():
-                home_standing = standing
-            if team_name and team_name in away.lower():
-                away_standing = standing
-
-        # Build comprehensive standings context
-        if home_standing and away_standing:
-            home_pos = home_standing.get("position")
-            away_pos = away_standing.get("position")
-
-            # Get additional stats if available
-            home_played = home_standing.get("played")
-            away_played = away_standing.get("played")
-            home_points = home_standing.get("points")
-            away_points = away_standing.get("points")
-
-            standings_str = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
-
-            # Build detailed context for GPT
-            standings_parts = []
-            if home_pos and away_pos:
-                standings_parts.append(f"{home}: {home_pos} место")
-                if home_points:
-                    standings_parts.append(f"{away}: {away_pos} место с {away_points} очками")
-                else:
-                    standings_parts.append(f"{away}: {away_pos} место")
-
-            standings_info = " | ".join(standings_parts) if standings_parts else standings_str
+    # For World Cup matches: show group information
+    if "World Cup" in league and group:
+        standings_str = f"🏆 {group}"
+        standings_info = f"Матч чемпионата мира в {group}"
     else:
-        # For playoff matches or tournaments without standings, show tournament name
-        if league and any(keyword in league.lower() for keyword in ["cup", "playoff", "champions", "europa", "final", "league"]):
-            standings_str = f"🏆 {league}"
-            standings_info = f"Матч турнира: {league}"
+        standings = match.get("standings")
+
+        if standings and isinstance(standings, list) and len(standings) > 0:
+            # Find full information for home and away teams in standings
+            home_standing = None
+            away_standing = None
+
+            for standing in standings:
+                team_name = standing.get("team", "").lower()
+                if team_name and team_name in home.lower():
+                    home_standing = standing
+                if team_name and team_name in away.lower():
+                    away_standing = standing
+
+            # Build comprehensive standings context
+            if home_standing and away_standing:
+                home_pos = home_standing.get("position")
+                away_pos = away_standing.get("position")
+
+                # Get additional stats if available
+                home_played = home_standing.get("played")
+                away_played = away_standing.get("played")
+                home_points = home_standing.get("points")
+                away_points = away_standing.get("points")
+
+                standings_str = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
+
+                # Build detailed context for GPT
+                standings_parts = []
+                if home_pos and away_pos:
+                    standings_parts.append(f"{home}: {home_pos} место")
+                    if home_points:
+                        standings_parts.append(f"{away}: {away_pos} место с {away_points} очками")
+                    else:
+                        standings_parts.append(f"{away}: {away_pos} место")
+
+                standings_info = " | ".join(standings_parts) if standings_parts else standings_str
+        else:
+            # For playoff matches or tournaments without standings, show tournament name
+            if league and any(keyword in league.lower() for keyword in ["cup", "playoff", "champions", "europa", "final", "league"]):
+                standings_str = f"🏆 {league}"
+                standings_info = f"Матч турнира: {league}"
 
     # Generate AI commentary (1-2 sentences with maximum context)
     prompt = f"""Напиши комментарий к предстоящему матчу футбола (1-2 предложения). Используй ВСЕ доступные данные для создания наиболее информативного описания.

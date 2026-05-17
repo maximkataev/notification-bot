@@ -732,6 +732,16 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                         except (ValueError, AttributeError):
                             pass  # Keep original if conversion fails
 
+                    # For World Cup matches: extract group information (e.g., "Группа A")
+                    group = None
+                    if "World Cup" in league_name:
+                        # Try to find group info in the row (usually in cell 3 or in the entire row text)
+                        row_text = " ".join(cell.get_text().strip() for cell in cells)
+                        group_match = re.search(r"[Гг]руппа\s+([A-L])", row_text)
+                        if group_match:
+                            group = f"Группа {group_match.group(1)}"
+                            logger.debug(f"[KULICHKI] Extracted group: {group}")
+
                     match = {
                         "home": home,
                         "away": away,
@@ -741,8 +751,12 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                         "away_flag": "⚽",
                     }
 
+                    # Add group info for World Cup matches
+                    if group:
+                        match["group"] = group
+
                     matches.append(match)
-                    logger.debug(f"[KULICHKI] {league_name}: {home} vs {away} at {time_str}")
+                    logger.debug(f"[KULICHKI] {league_name}: {home} vs {away} at {time_str}" + (f" ({group})" if group else ""))
 
                 except Exception as e:
                     logger.debug(f"[KULICHKI] Parse error: {e}")
