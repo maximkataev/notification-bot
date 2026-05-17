@@ -226,12 +226,33 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                 logger.debug(f"Found {len(matches)} date matches")
 
                 # Find actual event elements with links for URLs
+                # Look for event cards/items that likely contain both title and URL
                 event_links = {}
-                for link in soup.find_all('a', href=True):
-                    href = link.get('href', '')
-                    if 'event' in href.lower() or 'ticket' in href.lower():
-                        text = link.get_text(strip=True)[:100]
-                        event_links[text] = href
+                for card in soup.find_all(['div', 'article']):
+                    # Look for link inside card
+                    link = card.find('a', href=True)
+                    if link:
+                        href = link.get('href', '')
+                        # Be more flexible with event detection
+                        if (href and
+                            ('redevents.ge' in href or  # Any link on redevents domain
+                             'event' in href.lower() or
+                             'ticket' in href.lower() or
+                             href.startswith('/') or
+                             href.startswith('http'))):
+
+                            # Try to get event name from card
+                            card_text = card.get_text(strip=True)
+                            # Find the part before the date (likely the title)
+                            parts = card_text.split('\n')
+                            for part in parts:
+                                if len(part) > 5 and len(part) < 200 and any(c.isalpha() for c in part):
+                                    event_name = part.strip()
+                                    # Don't store dates/times as event names
+                                    if not any(month in event_name.lower() for month in months_ru.keys()):
+                                        full_url = href if href.startswith('http') else 'https://redevents.ge' + href if href.startswith('/') else 'https://redevents.ge/' + href
+                                        event_links[event_name[:100].lower()] = full_url
+                                        break
 
                 logger.debug(f"Found {len(event_links)} event links")
 
@@ -277,10 +298,22 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
 
                         # Try to find URL for this event
                         url = "https://redevents.ge/ru"
-                        for event_text, event_url in event_links.items():
-                            if title.lower() in event_text.lower() or event_text.lower() in title.lower():
-                                url = event_url if event_url.startswith('http') else "https://redevents.ge" + event_url
-                                break
+                        title_lower = title.lower()
+
+                        # Try exact match first
+                        if title_lower in event_links:
+                            url = event_links[title_lower]
+                        else:
+                            # Try partial match (event name might have more words)
+                            for event_text, event_url in event_links.items():
+                                # Check if any significant words match
+                                title_words = set(title_lower.split())
+                                event_words = set(event_text.split())
+                                common_words = title_words & event_words
+                                # If at least 2 words match, consider it the same event
+                                if len(common_words) >= 2:
+                                    url = event_url
+                                    break
 
                         # Avoid duplicates
                         if not any(e['date'] == date_str and e['time'] == time_str for e in events):
@@ -296,7 +329,7 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                                 "url": url,
                                 "price": "По ссылке",
                             })
-                            logger.debug(f"✅ Added: {title[:40]} on {date_str}")
+                            logger.debug(f"✅ Added: {title[:40]} on {date_str} | URL: {url[:60]}")
 
                     except (ValueError, IndexError) as e:
                         logger.debug(f"Error: {e}")
@@ -800,6 +833,16 @@ async def _scrape_meetup_tbilisi() -> Optional[List[Dict]]:
                 time_elements = soup.select("time")
                 logger.debug(f"Found {len(time_elements)} time elements")
 
+                # Pre-build event URL map from all event links on the page
+                event_url_map = {}
+                for link in soup.find_all('a', href=True):
+                    href = link.get('href', '')
+                    if '/events/' in href:
+                        link_text = link.get_text(strip=True)[:100]
+                        event_url_map[link_text.lower()] = "https://www.meetup.com" + href if not href.startswith('http') else href
+
+                logger.debug(f"Found {len(event_url_map)} event URLs in map")
+
                 # Parse dates from time elements
                 for time_elem in time_elements[:30]:
                     try:
@@ -815,18 +858,37 @@ async def _scrape_meetup_tbilisi() -> Optional[List[Dict]]:
                         time_str = date_obj["time"]
 
                         # Find associated title for this date
-                        # Search backwards from time element to find event title
+                        # Search upwards from time element to find event title and URL
                         parent = time_elem.parent
                         title = None
-                        description = ""
+                        url = ""
 
                         # Search up the tree for title
-                        for _ in range(10):  # Search up to 10 levels up
+                        for _ in range(15):  # Search up to 15 levels up
                             if parent:
-                                title_elem = parent.select_one("h2, h3, a[href*='/events/']")
+                                # Try to find title in heading or link text
+                                title_elem = parent.select_one("h2, h3, h4, a[href*='/events/']")
                                 if title_elem:
                                     title = title_elem.get_text(strip=True)
-                                    break
+
+                                    # Try to find corresponding URL
+                                    # First try direct link
+                                    link_elem = parent.select_one("a[href*='/events/']")
+                                    if link_elem:
+                                        url = link_elem.get("href", "")
+                                        if url and not url.startswith("http"):
+                                            url = "https://www.meetup.com" + url
+
+                                    # If no URL found, try to match in pre-built map
+                                    if not url and title:
+                                        for mapped_title, mapped_url in event_url_map.items():
+                                            if title.lower() in mapped_title or mapped_title in title.lower():
+                                                url = mapped_url
+                                                break
+
+                                    if title:
+                                        break
+
                                 parent = parent.parent
                             else:
                                 break
@@ -834,11 +896,12 @@ async def _scrape_meetup_tbilisi() -> Optional[List[Dict]]:
                         if not title or len(title) < 3:
                             continue
 
-                        # Get URL
-                        url_elem = parent.select_one("a[href*='/events/']") if parent else None
-                        url = url_elem.get("href", "") if url_elem else ""
-                        if url and not url.startswith("http"):
-                            url = "https://www.meetup.com" + url
+                        # Fallback to search link in event_url_map if still no URL
+                        if not url and title:
+                            for mapped_title, mapped_url in event_url_map.items():
+                                if title.lower() in mapped_title or mapped_title in title.lower():
+                                    url = mapped_url
+                                    break
 
                         category = _categorize_event(title, "")
 
@@ -850,10 +913,10 @@ async def _scrape_meetup_tbilisi() -> Optional[List[Dict]]:
                             "description": "Встреча на Meetup.com",
                             "category": category,
                             "source": "meetup.com",
-                            "url": url,
+                            "url": url if url else "https://www.meetup.com/find/?location=Tbilisi&keywords=events",
                             "price": "Зависит от события",
                         })
-                        logger.debug(f"✅ meetup: {title[:40]} on {date_str} at {time_str}")
+                        logger.debug(f"✅ meetup: {title[:40]} on {date_str} at {time_str} | URL: {url[:60] if url else 'N/A'}")
 
                     except Exception as e:
                         logger.debug(f"Error parsing meetup time element: {e}")
