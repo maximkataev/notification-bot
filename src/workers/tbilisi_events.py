@@ -135,7 +135,7 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
         _scrape_eventbrite(),          # Eventbrite Georgia/Tbilisi
         _scrape_meetup_tbilisi(),      # Meetup.com Tbilisi events
         _scrape_cinemaqa(),            # Georgian cinema - movie showtimes
-        _scrape_biletebi(),            # Georgian tickets site (concerts, theater, sports)
+        # _scrape_biletebi(),            # Disabled: poor title extraction (concatenated fields)
         # _scrape_georgia_travel(),      # Disabled: poor title extraction (calendar UI noise)
     ]
 
@@ -314,6 +314,9 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                                     url = event_url
                                     break
 
+                        # Clean URL: remove query parameters (e.g., ?date=...)
+                        clean_url = url.split('?')[0] if '?' in url else url
+
                         # Avoid duplicates
                         if not any(e['date'] == date_str and e['time'] == time_str for e in events):
                             category = _categorize_event(title, "")
@@ -325,7 +328,7 @@ async def _scrape_redevents() -> Optional[List[Dict]]:
                                 "description": "",
                                 "category": category,
                                 "source": "redevents.ge",
-                                "url": url,
+                                "url": clean_url,
                                 "price": "По ссылке",
                             })
                             logger.debug(f"✅ Added: {title[:40]} on {date_str} | URL: {url[:60]}")
