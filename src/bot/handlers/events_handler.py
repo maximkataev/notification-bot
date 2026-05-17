@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from src.bot.auth import AuthorizedOnly
 from src.workers.tbilisi_events import get_tbilisi_events, format_events_for_telegram
 from src.ai.event_describer import generate_event_descriptions
+from src.db.database import get_user_profile
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -23,6 +24,13 @@ async def events_command(message: types.Message, bot: Bot):
     )
 
     try:
+        # Get user profile for personalized descriptions
+        user_id = message.from_user.id
+        logger.debug(f"👤 Getting user profile for user {user_id}")
+        user_profile = await get_user_profile(user_id)
+        if user_profile:
+            logger.debug(f"   Preferences: {user_profile.get('preferences', 'None')}")
+
         logger.debug("📅 Fetching events for 7 days ahead")
         today = datetime.now().date()
         next_week_end = today + timedelta(days=7)
@@ -84,9 +92,9 @@ async def events_command(message: types.Message, bot: Bot):
         else:
             logger.warning("⚠️  No events found in next 7 days")
 
-        # Generate descriptions for events (280 chars via ChatGPT)
-        logger.debug("🤖 Generating event descriptions via ChatGPT")
-        future_events = await generate_event_descriptions(future_events)
+        # Generate descriptions for events (280 chars via ChatGPT with user profile)
+        logger.debug("🤖 Generating event descriptions via ChatGPT (with user profile)")
+        future_events = await generate_event_descriptions(future_events, user_profile)
 
         # Format for Telegram
         logger.debug("🎨 Formatting events for Telegram")
