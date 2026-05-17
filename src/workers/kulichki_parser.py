@@ -2,7 +2,7 @@
 
 import logging
 from typing import Optional, List, Dict, Any
-from datetime import datetime as dt
+from datetime import datetime as dt, timedelta
 import httpx
 from bs4 import BeautifulSoup
 import re
@@ -126,6 +126,60 @@ def _is_today(date_cell: str) -> bool:
         return False
 
 
+def _is_yesterday(date_cell: str) -> bool:
+    """
+    Check if date_cell contains yesterday's date in various formats.
+    Returns True only if date matches yesterday's date (day and month).
+    """
+    try:
+        yesterday = dt.now() - timedelta(days=1)
+        yesterday_day = yesterday.day
+        yesterday_month = yesterday.month
+
+        date_text = date_cell.strip().lower()
+        logger.debug(f"[KULICHKI] Parsing yesterday date: '{date_text}' (yesterday: {yesterday_day}.{yesterday_month:02d})")
+
+        # Format 1: "DD.MM" (e.g., "05.05" or "30.05")
+        dot_match = re.search(r"(\d{1,2})\.(\d{1,2})", date_text)
+        if dot_match:
+            day = int(dot_match.group(1))
+            month = int(dot_match.group(2))
+            is_match = day == yesterday_day and month == yesterday_month
+            logger.debug(f"[KULICHKI]   Format DD.MM: day={day}, month={month} → {is_match}")
+            return is_match
+
+        # Format 2: "DD месяц" (e.g., "14 мая", "30 мая")
+        parts = date_text.split()
+        if len(parts) >= 1:
+            try:
+                day = int(parts[0])
+
+                # Look for Russian month name in the entire text
+                month = None
+                for month_name, month_num in RUSSIAN_MONTHS.items():
+                    if month_name in date_text:
+                        month = month_num
+                        break
+
+                if month is not None:
+                    is_match = day == yesterday_day and month == yesterday_month
+                    logger.debug(f"[KULICHKI]   Format DD месяц: day={day}, month={month} → {is_match}")
+                    return is_match
+                else:
+                    logger.debug(f"[KULICHKI]   No month found, only day={day}")
+                    return False
+
+            except ValueError:
+                pass
+
+        logger.debug(f"[KULICHKI]   Could not parse yesterday date from: '{date_text}'")
+        return False
+
+    except Exception as e:
+        logger.debug(f"[KULICHKI] Error parsing yesterday date '{date_cell}': {e}")
+        return False
+
+
 async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
     """
     Parse today's football matches from football.kulichki.net.
@@ -212,9 +266,22 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
             logger.info(f"[KULICHKI] Filtered past matches: {len(all_matches)} → {len(future_matches)}")
             all_matches = future_matches
 
-        # Filter to priority teams (fuzzy matching)
+        # Separate World Cup matches from regular league matches
+        world_cup_matches = [m for m in all_matches if "World Cup" in m.get("league", "")]
+        league_matches = [m for m in all_matches if "World Cup" not in m.get("league", "")]
+
+        logger.info(f"[KULICHKI] World Cup matches: {len(world_cup_matches)}, League matches: {len(league_matches)}")
+
+        # For World Cup: return all matches (no priority filter)
+        if world_cup_matches:
+            logger.info(f"[KULICHKI] ✓ Returning all {len(world_cup_matches)} World Cup match(es)")
+            for m in world_cup_matches:
+                logger.debug(f"[KULICHKI]   - {m['home']} vs {m['away']}")
+            return world_cup_matches
+
+        # For regular leagues: filter to priority teams (fuzzy matching)
         priority_matches = []
-        for match in all_matches:
+        for match in league_matches:
             home = match["home"]
             away = match["away"]
 
@@ -230,15 +297,112 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
                     logger.debug(f"[KULICHKI] Priority: {home} vs {away}")
                     break
 
-        logger.info(f"[KULICHKI] Priority matches: {len(priority_matches)}")
+        logger.info(f"[KULICHKI] League priority matches: {len(priority_matches)}")
 
-        # Sort by priority
+        # Sort by priority and take top 3
         priority_matches.sort(key=lambda m: m.get("priority_idx", 999))
 
         return priority_matches[:3] if priority_matches else None
 
     except Exception as e:
         logger.warning(f"[KULICHKI] Failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def get_yesterday_results_from_kulichki() -> Optional[List[Dict[str, Any]]]:
+    """
+    Parse yesterday's completed football matches from football.kulichki.net.
+    Returns up to 3 matches for priority teams.
+    """
+    try:
+        yesterday = (dt.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        logger.info(f"[KULICHKI] Fetching yesterday's results for {yesterday}")
+        logger.debug(f"[KULICHKI] Priority teams: {PRIORITY_TEAMS}")
+
+        all_matches = []
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for league_name, url in LEAGUE_URLS.items():
+                logger.info(f"[KULICHKI] Fetching results {league_name} from {url}")
+
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+
+                    matches = _parse_league_page_for_results(response.text, league_name)
+                    standings = _parse_standings_table(response.text, league_name)
+
+                    logger.info(f"[KULICHKI] {league_name}: found {len(matches)} results, standings: {len(standings) if standings else 0} teams")
+
+                    # Attach standings to matches from this league
+                    for match in matches:
+                        match["standings"] = standings
+
+                    all_matches.extend(matches)
+
+                except Exception as e:
+                    logger.warning(f"[KULICHKI] Failed to fetch {league_name} results: {e}")
+                    continue
+
+        if not all_matches:
+            logger.info(f"[KULICHKI] No results found for yesterday")
+            return None
+
+        logger.info(f"[KULICHKI] Total results: {len(all_matches)}")
+
+        # Deduplicate matches (same home/away/league/score)
+        seen = set()
+        unique_matches = []
+        for match in all_matches:
+            key = (match["home"], match["away"], match["league"], match["score"])
+            if key not in seen:
+                seen.add(key)
+                unique_matches.append(match)
+
+        if len(unique_matches) < len(all_matches):
+            logger.info(f"[KULICHKI] Deduplicated results: {len(all_matches)} → {len(unique_matches)}")
+            all_matches = unique_matches
+
+        # Separate World Cup matches from regular league matches
+        world_cup_matches = [m for m in all_matches if "World Cup" in m.get("league", "")]
+        league_matches = [m for m in all_matches if "World Cup" not in m.get("league", "")]
+
+        logger.info(f"[KULICHKI] World Cup results: {len(world_cup_matches)}, League results: {len(league_matches)}")
+
+        # For World Cup: return all matches (no priority filter)
+        if world_cup_matches:
+            logger.info(f"[KULICHKI] ✓ Returning all {len(world_cup_matches)} World Cup result(s)")
+            for m in world_cup_matches:
+                logger.debug(f"[KULICHKI]   - {m['home']} vs {m['away']} ({m['score']})")
+            return world_cup_matches
+
+        # For regular leagues: filter to priority teams (fuzzy matching)
+        priority_matches = []
+        for match in league_matches:
+            home = match["home"]
+            away = match["away"]
+
+            for priority_team in PRIORITY_TEAMS:
+                if priority_team.lower() in home.lower():
+                    match["priority_idx"] = PRIORITY_TEAMS.index(priority_team)
+                    priority_matches.append(match)
+                    logger.debug(f"[KULICHKI] Priority result: {home} vs {away} ({match['score']})")
+                    break
+                elif priority_team.lower() in away.lower():
+                    match["priority_idx"] = PRIORITY_TEAMS.index(priority_team)
+                    priority_matches.append(match)
+                    logger.debug(f"[KULICHKI] Priority result: {home} vs {away} ({match['score']})")
+                    break
+
+        logger.info(f"[KULICHKI] League priority results: {len(priority_matches)}")
+
+        # Sort by priority and take top 3
+        priority_matches.sort(key=lambda m: m.get("priority_idx", 999))
+
+        return priority_matches[:3] if priority_matches else None
+
+    except Exception as e:
+        logger.warning(f"[KULICHKI] Failed to get yesterday results: {type(e).__name__}: {e}")
         return None
 
 
@@ -326,6 +490,122 @@ def _parse_standings_table(html: str, league_name: str) -> Optional[List[Dict[st
         logger.warning(f"[KULICHKI] Error parsing standings for {league_name}: {e}")
 
     return None
+
+
+def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str, Any]]:
+    """
+    Parse completed matches from yesterday from kulichki.net league page HTML.
+    Structure: [Date] [Home - Away] [Score] [Status]
+    Returns only completed matches from yesterday (score in X:Y format)
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    matches = []
+
+    try:
+        tables = soup.find_all("table")
+        logger.debug(f"[KULICHKI] {league_name}: {len(tables)} tables for results parsing")
+
+        for table in tables:
+            rows = table.find_all("tr")
+
+            for row in rows:
+                cells = row.find_all("td")
+
+                # Skip rows with too few cells (headers, spacers)
+                if len(cells) < 3:
+                    continue
+
+                try:
+                    # Structure: [Date] [Teams] [Score] [Status]
+                    date_cell = cells[0].get_text().strip()
+                    teams_cell = cells[1].get_text().strip()
+                    score_or_time = cells[2].get_text().strip() if len(cells) > 2 else ""
+
+                    # Filter by yesterday's date
+                    if not _is_yesterday(date_cell):
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-yesterday date: {date_cell}")
+                        continue
+
+                    # Skip header/empty rows
+                    if not teams_cell or " - " not in teams_cell:
+                        continue
+                    if "тур" in teams_cell.lower() or "клуб" in teams_cell.lower():
+                        continue
+
+                    # Parse teams from "Home - Away" format
+                    parts = teams_cell.split(" - ")
+                    if len(parts) < 2:
+                        continue
+
+                    home = parts[0].strip()
+                    away = " - ".join(parts[1:]).strip()
+
+                    # Clean up team names
+                    home = " ".join(home.split())
+                    away = " ".join(away.split())
+
+                    # Skip garbage
+                    if not home or not away or len(home) < 3 or len(away) < 3:
+                        continue
+
+                    # Check if this is a completed match (score format) or future match (time format)
+                    is_time_format = re.match(r"^\d{1,2}:\d{2}$", score_or_time) and ":" in score_or_time
+
+                    # Skip future matches (time format like "14:30")
+                    if is_time_format:
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping future match: {home} vs {away} at {score_or_time}")
+                        continue
+
+                    # Check if it looks like a score (digits:digits format with optional halftime score)
+                    # Score formats: "1:0", "2:1", "1:0 (1:0)", "2:1(1:0)"
+                    is_result_format = (
+                        re.search(r"^\d{1,2}:\d{1,2}\s", score_or_time) or  # "1:0 " format
+                        re.search(r"^\d{1,2}:\d{1,2}$", score_or_time) or   # "1:0" format
+                        re.search(r"\(\d+:\d+\)", score_or_time)             # "X:Y (A:B)" format
+                    )
+
+                    # Skip if doesn't look like a result
+                    if not is_result_format:
+                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-result format: {home} vs {away} ({score_or_time})")
+                        continue
+
+                    # Extract score and halftime score
+                    score = None
+                    halftime_score = None
+
+                    score_match = re.match(r"^(\d+):(\d+)", score_or_time)
+                    if score_match:
+                        score = f"{score_match.group(1)}:{score_match.group(2)}"
+
+                    halftime_match = re.search(r"\((\d+):(\d+)\)", score_or_time)
+                    if halftime_match:
+                        halftime_score = f"{halftime_match.group(1)}:{halftime_match.group(2)}"
+
+                    if not score:
+                        logger.debug(f"[KULICHKI] {league_name}: Could not extract score from: {score_or_time}")
+                        continue
+
+                    match = {
+                        "home": home,
+                        "away": away,
+                        "score": score,
+                        "halftime_score": halftime_score,
+                        "league": league_name,
+                        "home_flag": "⚽",
+                        "away_flag": "⚽",
+                    }
+
+                    matches.append(match)
+                    logger.debug(f"[KULICHKI] {league_name}: {home} vs {away} ({score})")
+
+                except Exception as e:
+                    logger.debug(f"[KULICHKI] Parse error: {e}")
+                    continue
+
+    except Exception as e:
+        logger.warning(f"[KULICHKI] Error parsing {league_name} results: {e}")
+
+    return matches
 
 
 def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
