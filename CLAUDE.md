@@ -30,7 +30,7 @@ DO NOT CALL GIT COMMIT. IT'S NOT YOUR JOB.
 | Webhook Server | FastAPI + uvicorn | HTTP webhook endpoint for Telegram updates |
 | Async Runtime | asyncio | All I/O operations (HTTP, database, Telegram) |
 | Database | SQLite (aiosqlite) | Task persistence, user profiles, custom rules |
-| AI Models | OpenAI GPT-4o | Task parsing, morning intro, task explanations |
+| AI Models | OpenAI gpt-5.4-mini | Task parsing, morning intro, task explanations |
 | HTTP Client | httpx (async) | All external API calls |
 | News Parsing | feedparser | RSS feed parsing |
 | HTML Parsing | BeautifulSoup | GWP website scraping |
@@ -54,7 +54,7 @@ notification-bot/
 │   │   │   └── digest_handler.py   # /digest (send now)
 │   │
 │   ├── ai/
-│   │   ├── planner_agent.py        # GPT-4o task parsing + system prompt
+│   │   ├── planner_agent.py        # gpt-5.4-mini task parsing + system prompt
 │   │   ├── task_explainer.py       # Generate brief task explanations
 │   │   ├── news_selector.py        # Keyword-based news filtering (NO AI)
 │   │   └── weather_aggregator.py   # Multi-source weather with fallback
@@ -113,7 +113,7 @@ The heart of the morning digest. Orchestrates all digest components in sequence.
 1. Load user tasks for today (filter by `when_date == today`)
 2. Load user profile (wake/sleep times, preferences)
 3. Fetch aggregated weather (Open-Meteo + wttr.in)
-4. **Generate weather context intro** via GPT-4o (1-2 sentences in Russian)
+4. **Generate weather context intro** via gpt-5.4-mini (1-2 sentences in Russian)
 5. **Fetch quote of the day** (inspirational wisdom from quotable.io API, fallback to hardcoded quotes)
 6. **Format weather** by periods (morning/day/evening/night) with emoji + condition + temp
 7. **Fetch air quality** in Tbilisi (Open-Meteo air quality API) with AQI and PM2.5
@@ -121,13 +121,13 @@ The heart of the morning digest. Orchestrates all digest components in sequence.
 9. **Check for today's DST events** (calculated from last Sunday March/October)
 10. **Check GWP works** on Vazha Iverievi street
 11. **Fetch recent news** from 11 RSS feeds (12-hour window)
-12. **Filter and select news** using GPT-4o with user preferences:
+12. **Filter and select news** using gpt-5.4-mini with user preferences:
     - 2 stories (politics, economics, finance)
     - 1 sports story (football, hockey, etc.)
     - 1 culture/society/good news story
     - 1 IT/AI/technology story (for analyst & tech specialist)
 13. **Format news** as: `[Source](url): description` (markdown links)
-14. **Generate AI explanations and priority ranking** for all tasks via GPT-4o:
+14. **Generate AI explanations and priority ranking** for all tasks via gpt-5.4-mini:
     - Each task gets: explanation, time estimate, difficulty, urgency flag, **priority_rank** (1 = highest)
     - GPT decides the order considering: urgency, time constraints, dependencies, energy required, optimal day flow
 15. **Sort and separate tasks** by priority rank from GPT:
@@ -146,7 +146,7 @@ The heart of the morning digest. Orchestrates all digest components in sequence.
 - Scheduler line 162 now correctly uses: `summary = news.get("description", "")`
 - All trailing zeros in exchange rates removed: `f"{value:,.5f}".rstrip('0').rstrip('.')`
 
-**Model Used**: `gpt-4o` (generates 1–2 sentence intro with weather + practical context)
+**Model Used**: `gpt-5.4-mini` (generates 1–2 sentence intro with weather + practical context)
 
 **Key Formatting**:
 ```python
@@ -210,7 +210,7 @@ Converts free-text task input into structured JSON with AI reasoning.
 - **Recurring Tasks**: "каждый понедельник", "по вторникам и пятницам" → sets recurrence_pattern
 - **Weekend Awareness**: Tasks on Sat/Sun → flexible timing, not work hours
 
-**Model Used**: `gpt-4o` (parses complex, context-rich tasks)
+**Model Used**: `gpt-5.4-mini` (parses complex, context-rich tasks)
 
 **JSON Extraction**: Handles markdown code blocks (`\`\`\`json ... \`\`\``)
 
@@ -218,15 +218,15 @@ Converts free-text task input into structured JSON with AI reasoning.
 
 ---
 
-### 3. **News Processor** (`src/ai/news_processor.py`) — GPT-4o SELECTION WITH EXCLUSION FILTERING
+### 3. **News Processor** (`src/ai/news_processor.py`) — gpt-5.4-mini SELECTION WITH EXCLUSION FILTERING
 
-**Design**: GPT-4o selects news from real RSS data with user preference enforcement.
+**Design**: gpt-5.4-mini selects news from real RSS data with user preference enforcement.
 
 **Selection Process**:
 1. Fetch raw news from RSS feeds
 2. Build indexed list for GPT
 3. Inject user profile (interests + exclusions)
-4. GPT-4o selects exactly 5 news items across categories
+4. gpt-5.4-mini selects exactly 5 news items across categories
 5. Post-filter: reject any items containing excluded keywords
 6. Return selected news with summaries
 
@@ -674,7 +674,7 @@ Generates brief AI explanations for tasks in the digest.
 Задача 2: [explanation text]
 ```
 
-**Model Used**: `gpt-4o`
+**Model Used**: `gpt-5.4-mini`
 
 **Fallback**: If generation fails, returns empty dict (no explanations shown)
 
@@ -834,7 +834,7 @@ Load tasks (filter where when_date == today)
   ↓
 Fetch user profile + weather (parallel)
   ↓
-GPT-4o generates intro (1–2 sentences)
+gpt-5.4-mini generates intro (1–2 sentences)
   ↓
 Format weather by periods
   ↓
@@ -848,7 +848,7 @@ Fetch news (9 RSS feeds) + filter by keywords
   ↓
 Score + sort tasks by importance
   ↓
-GPT-4o generates task explanations
+gpt-5.4-mini generates task explanations
   ↓
 Fetch exchange rates
   ↓
@@ -868,7 +868,7 @@ Fetch custom user rules
   ↓
 Build system prompt with all context
   ↓
-GPT-4o parses task → JSON
+gpt-5.4-mini parses task → JSON
   ↓
 Save to database
   ↓
@@ -899,7 +899,7 @@ Confirm to user
 ### 4. **Custom User Rules in System Prompt**
 - User can add rules like "спорт только утром"
 - **Decision**: Inject rules as-is into every task parsing prompt
-- GPT-4o follows them naturally without special parsing
+- gpt-5.4-mini follows them naturally without special parsing
 
 ### 5. **APScheduler for Morning Digest**
 - Runs on same asyncio event loop as Telegram bot
@@ -1098,30 +1098,30 @@ pylint src/
 
 ## OpenAI Models Used
 
-All AI calls use **GPT-4o** (upgraded from gpt-5.4-mini for better quality):
+All AI calls use **gpt-5.4-mini** (upgraded from gpt-5.4-mini for better quality):
 
 1. **Task Parsing** (`planner_agent.py:310`)
    - Complex free-text task interpretation
    - Requires understanding context, weather, user preferences
-   - Model: `gpt-4o`
+   - Model: `gpt-5.4-mini`
 
 2. **Morning Digest Intro** (`scheduler.py:63`)
    - Generate 1–2 sentence weather context intro
-   - Model: `gpt-4o`
+   - Model: `gpt-5.4-mini`
 
 3. **Task Explanations** (`task_explainer.py:51`)
    - Brief 10–15 word explanations per task
-   - Model: `gpt-4o`
+   - Model: `gpt-5.4-mini`
 
 4. **Morning Digest Generation** (`planner_agent.py:454`)
    - Natural-language summary of tasks
-   - Model: `gpt-4o`
+   - Model: `gpt-5.4-mini`
 
 5. **Evening Digest Generation** (`planner_agent.py:514`)
    - Evening review and encouragement
-   - Model: `gpt-4o`
+   - Model: `gpt-5.4-mini`
 
-**Why GPT-4o**: More capable than mini at understanding context, parsing complex free-text, and generating natural language. Better for user-facing features.
+**Why gpt-5.4-mini**: More capable than mini at understanding context, parsing complex free-text, and generating natural language. Better for user-facing features.
 
 ---
 
@@ -1154,7 +1154,7 @@ When working on this project:
 
 10. **Test End-to-End**: Verify digest actually sends to Telegram
 
-11. **Model Choice**: Use `gpt-5.4-mini` for all AI tasks (not gpt-4o)
+11. **Model Choice**: Use `gpt-5.4-mini` for all AI tasks (not gpt-5.4-mini)
 
 12. **Disable Link Previews**: All message sending methods must include `disable_web_page_preview=True`
     - Applies to: `send_message()`, `reply()`, `answer()`, `edit_text()`

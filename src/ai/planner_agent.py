@@ -1,4 +1,4 @@
-"""AI-powered task planning agent using OpenAI GPT-4o."""
+"""AI-powered task planning agent using OpenAI gpt-5.4-mini."""
 
 import json
 import logging
@@ -322,7 +322,7 @@ async def parse_task(
     custom_rules: list = None,
 ) -> Dict[str, Any]:
     """
-    Parse raw task text using GPT-4o with context (weather, working hours, user profile, custom rules).
+    Parse raw task text using gpt-5.4-mini with context (weather, working hours, user profile, custom rules).
 
     Args:
         raw_text: User's free-text task description
@@ -356,7 +356,7 @@ Already planned:
         logger.info(f"System prompt length: {len(system_prompt)} chars")
         logger.info(f"User message length: {len(raw_text + tasks_context)} chars")
 
-        logger.info("🔄 Calling GPT-4o API")
+        logger.info("🔄 Calling gpt-5.4-mini API")
         response = await get_client().chat.completions.create(
             model="gpt-5.4-mini",
             max_completion_tokens=1024,

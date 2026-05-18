@@ -45,7 +45,7 @@
 ### Python Dependencies
 ```
 aiogram==3.4.1              # Telegram bot framework
-openai==1.36.0              # GPT-4o для parsing и digests
+openai==1.36.0              # gpt-5.4-mini для parsing и digests
 aiosqlite==0.20.0           # Async SQLite
 apscheduler==3.10.4         # Morning digest scheduling
 httpx==0.27.0               # Async HTTP requests

@@ -59,7 +59,7 @@
 ### Key Features
 - ✅ Event content fetching from URLs (with timeout)
 - ✅ User profile integration for personalization
-- ✅ ChatGPT descriptions via gpt-4o model
+- ✅ ChatGPT descriptions via gpt-5.4-mini model
 - ✅ Graceful fallback if OpenAI unavailable
 - ✅ 280-character strict limit on descriptions
 - ✅ Time-only event handling (assumed today)

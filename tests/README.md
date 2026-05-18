@@ -60,7 +60,7 @@ This directory contains all unit and integration tests for the notification bot.
 ### Task Tests
 
 **[`test_task_explanations.py`](test_task_explanations.py)** — Task explanation generation
-- Tests GPT-4o explanation generation
+- Tests gpt-5.4-mini explanation generation
 - Tests Russian language output
 - Tests 10-15 word format per task
 - Tests fallback behavior if generation fails

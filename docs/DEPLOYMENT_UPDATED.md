@@ -52,7 +52,7 @@
   - 1x Scheduler (APScheduler) - Morning Digest
   - 3x Background Monitors (Currency, Water, Football)
   - 11x Workers (News, Weather, Rates, etc)
-  - 1x AI Engine (GPT-4o)
+  - 1x AI Engine (gpt-5.4-mini)
   - 1x Database (SQLite)
   - 1x Logger (JSON + File)
 
@@ -62,7 +62,7 @@
   - API-Football, Todoist, Yahoo Finance, RSS feeds
 
 📊 Data:
-  - Tasks: parsed from free-text with GPT-4o
+  - Tasks: parsed from free-text with gpt-5.4-mini
   - Weather: aggregated from 2 sources with fallback
   - News: 11 RSS feeds with keyword-based filtering
   - Exchange rates: crypto + forex with 24h/30d changes

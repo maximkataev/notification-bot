@@ -28,7 +28,7 @@
          │                      │
     ┌────▼──────┐       ┌──────▼─────┐
     │ OpenAI    │       │  Spotify   │
-    │ GPT-4o    │       │   API      │
+    │ gpt-5.4-mini    │       │   API      │
     │           │       │            │
     │ Recommend │       │ Search &   │
     │ album     │       │ Validate   │
@@ -52,7 +52,7 @@
 ```
 Input: (nothing — automated)
   │
-  ├─► GPT-4o Prompt:
+  ├─► gpt-5.4-mini Prompt:
   │   "Recommend 1 album for morning focus (analyst/engineer)"
   │   "Must be real and known"
   │

@@ -47,7 +47,7 @@
 │  │  └──────────────────────────────────────────────────┘ │ │
 │  │                                                        │ │
 │  │  ┌──────────────────────────────────────────────────┐ │ │
-│  │  │  AI/ML (GPT-4o)                                  │ │ │
+│  │  │  AI/ML (gpt-5.4-mini)                                  │ │ │
 │  │  │  - Task parsing (free-text → JSON)              │ │ │
 │  │  │  - Intro generation (weather context)           │ │ │
 │  │  │  - News selection (keyword-based filtering)     │ │ │
@@ -89,7 +89,7 @@
          ↑                                              ↑
          │                                              │
     Telegram API                          External APIs:
-    (polling)                             - OpenAI (GPT-4o)
+    (polling)                             - OpenAI (gpt-5.4-mini)
                                          - exchangerate-api
                                          - CoinGecko
                                          - Open-Meteo
@@ -119,7 +119,7 @@ notification-bot/
 │   │       └── digest_handler.py       # /digest (manual trigger)
 │   │
 │   ├── ai/
-│   │   ├── planner_agent.py            # GPT-4o task parsing
+│   │   ├── planner_agent.py            # gpt-5.4-mini task parsing
 │   │   ├── task_explainer.py           # Generate task explanations
 │   │   ├── weather_aggregator.py       # Multi-source weather
 │   │   └── news_processor.py           # News selection with AI
@@ -186,7 +186,7 @@ Load user profile + preferences from SQLite
   ↓
 Fetch weather (Open-Meteo + wttr.in fallback)
   ↓
-Generate weather intro (GPT-4o)
+Generate weather intro (gpt-5.4-mini)
   ↓
 Fetch quote of the day (quotable.io + fallback)
   ↓
@@ -198,13 +198,13 @@ Check GWP works (Playwright scraping)
   ↓
 Fetch news (11 RSS feeds, 12h window)
   ↓
-Select news with GPT-4o (keyword-based + exclusions)
+Select news with gpt-5.4-mini (keyword-based + exclusions)
   ↓
 Load today's tasks from SQLite
   ↓
 Score + sort tasks (urgency, outdoor, timed, dated)
   ↓
-Generate task explanations (GPT-4o)
+Generate task explanations (gpt-5.4-mini)
   ↓
 Fetch exchange rates (crypto + forex with changes)
   ↓
@@ -236,7 +236,7 @@ Fetch current weather (for outdoor tasks)
   ↓
 Build system prompt (with all context)
   ↓
-Call GPT-4o with system prompt + task text
+Call gpt-5.4-mini with system prompt + task text
   ↓
 Extract JSON from response (handles markdown blocks)
   ↓
@@ -302,7 +302,7 @@ Send confirmation to user
 - `TELEGRAM_BOT_TOKEN` — Telegram Bot API token
 - `TELEGRAM_CHAT_ID` — Chat to send digest to
 - `TELEGRAM_USER_ID` — User ID (optional, fallback to chat_id)
-- `OPENAI_API_KEY` — GPT-4o API key
+- `OPENAI_API_KEY` — gpt-5.4-mini API key
 - `NOTIFICATION_BOT_DOPPLER_TOKEN` — Doppler token for this app
 
 ## 🗄️ Database Schema

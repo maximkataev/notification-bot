@@ -1477,7 +1477,7 @@ Details: {existing_desc}
 Description should be interesting, informative, and enticing. Write ONLY the description, nothing else."""
 
         response = await client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5.4-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=150,
             temperature=0.7

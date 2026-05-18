@@ -67,7 +67,7 @@ Examples of rules:
 - ✓ Free-text task input
 - ✓ SQLite persistence
 - ✓ User profile/preferences
-- ⏳ AI parsing (GPT-4o) — Stage 2
+- ⏳ AI parsing (gpt-5.4-mini) — Stage 2
 - ⏳ Smart time suggestions — Stage 3
 - ⏳ Morning digest cron — Stage 4
 

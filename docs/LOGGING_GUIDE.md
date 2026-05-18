@@ -27,7 +27,7 @@
 ### 2. **AI Parsing** (planner_agent.py)
 ```
   Parsing task: 'в пн вечером концерт...'
-  Calling GPT-4o with cached system prompt
+  Calling gpt-5.4-mini with cached system prompt
   AI response: 150→45 tokens
 ✓ Tasks parsed (with reminder): 'Концерт' + reminder
 ```

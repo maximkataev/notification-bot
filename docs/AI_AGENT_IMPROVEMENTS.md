@@ -149,7 +149,7 @@ get_weather_tbilisi()
   ↓
 Build system prompt with weather context
   ↓
-Call GPT-4o with user's task + context
+Call gpt-5.4-mini with user's task + context
   ↓
 Return: {what, when_date, proposed_time, is_urgent, is_outdoor, explanation, ...}
   ↓

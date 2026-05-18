@@ -163,7 +163,7 @@ YOUR TASK:
 Description:"""
 
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.4-mini",
         messages=[{"role": "user", "content": prompt}],
         max_tokens=100,
         temperature=0.7

@@ -122,8 +122,8 @@ Rules:
 
 ## API Integration Points
 
-### GPT-4o (OpenAI)
-- **Model**: gpt-4o
+### gpt-5.4-mini (OpenAI)
+- **Model**: gpt-5.4-mini
 - **Input**: raw task text + user profile context
 - **Output**: structured JSON + explanation
 - **Tools**: Future: web search, business hours lookup

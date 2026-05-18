@@ -71,14 +71,14 @@ PYTHONPATH=. doppler run --project notifications-bot --config dev -- python3 scr
 
 **`get_album_of_day() → Optional[Dict]`**
 - Main function for album-of-day recommendation
-- Uses GPT-4o to recommend a real album
+- Uses gpt-5.4-mini to recommend a real album
 - Searches Spotify for the recommended album
 - Returns structured dict with title, creator, URL, description
 
 #### Implementation
 
 1. **Spotify Auth**: Client Credentials flow (no redirect needed)
-2. **AI Integration**: GPT-4o recommends interesting albums for morning focus
+2. **AI Integration**: gpt-5.4-mini recommends interesting albums for morning focus
 3. **Fallback**: If Spotify unavailable, returns None (graceful degradation)
 4. **Error Handling**: Detailed logging with emoji status indicators
 
