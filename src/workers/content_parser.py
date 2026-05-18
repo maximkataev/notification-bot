@@ -1019,86 +1019,161 @@ async def _select_and_describe(items: List[Dict[str, Any]]) -> Optional[Dict[str
     return None
 
 
-async def _spotify_search_album(album: str, artist: str) -> Optional[str]:
-    """Search Spotify for album URL. Returns spotify.com link or None."""
+async def _spotify_get_access_token() -> Optional[str]:
+    """Get Spotify API access token. Returns token or None if failed."""
     try:
         client_id = get_secret("SPOTIFY_CLIENT_ID")
         client_secret = get_secret("SPOTIFY_CLIENT_SECRET")
 
         if not client_id or not client_secret:
-            logger.warning("Spotify credentials not configured")
+            logger.warning("⚠️  Spotify credentials missing (SPOTIFY_CLIENT_ID or SPOTIFY_CLIENT_SECRET)")
             return None
 
         # Get access token
         auth_str = f"{client_id}:{client_secret}"
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            token_response = await client.post(
-                "https://accounts.spotify.com/api/token",
-                headers={"Authorization": f"Basic {auth_b64}"},
-                data={"grant_type": "client_credentials"},
-            )
-            token_response.raise_for_status()
-            token_data = token_response.json()
-            access_token = token_data.get("access_token")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                token_response = await client.post(
+                    "https://accounts.spotify.com/api/token",
+                    headers={"Authorization": f"Basic {auth_b64}"},
+                    data={"grant_type": "client_credentials"},
+                )
+                token_response.raise_for_status()
+        except httpx.TimeoutException:
+            logger.error("🔐 Spotify auth: timeout (5s)")
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.error(f"🔐 Spotify auth: HTTP {e.response.status_code}")
+            return None
 
-            if not access_token:
-                logger.warning("Failed to get Spotify access token")
-                return None
+        token_data = token_response.json()
+        access_token = token_data.get("access_token")
 
-            # Search for album
-            search_query = f"album:{album} artist:{artist}"
-            search_response = await client.get(
-                "https://api.spotify.com/v1/search",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={"q": search_query, "type": "album", "limit": 1},
-            )
-            search_response.raise_for_status()
-            search_data = search_response.json()
+        if not access_token:
+            logger.error("🔐 Spotify auth: no access token in response")
+            return None
 
-            albums = search_data.get("albums", {}).get("items", [])
-            if albums:
-                album_url = albums[0].get("external_urls", {}).get("spotify", "")
-                if album_url:
-                    logger.info(f"✓ Found Spotify album: {album}")
-                    return album_url
+        logger.debug(f"✓ Spotify token obtained ({len(access_token)} chars)")
+        return access_token
 
     except Exception as e:
-        logger.warning(f"Spotify search failed: {type(e).__name__}: {e}")
-    return None
+        logger.error(f"💥 Spotify auth error: {type(e).__name__}: {str(e)[:150]}")
+        return None
 
 
-async def _recommend_music_album() -> Optional[Dict[str, Any]]:
-    """Fallback: GPT recommends morning album, search Spotify for it."""
+async def _spotify_search_album(album: str, artist: str, access_token: str) -> Optional[str]:
+    """Search Spotify for album URL. Returns spotify.com link or None."""
+    try:
+        if not access_token:
+            return None
+
+        search_query = f"album:{album} artist:{artist}"
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                search_response = await client.get(
+                    "https://api.spotify.com/v1/search",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"q": search_query, "type": "album", "limit": 1},
+                )
+                search_response.raise_for_status()
+        except httpx.TimeoutException:
+            logger.warning(f"🎵 Spotify search: timeout for '{album}'")
+            return None
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"🎵 Spotify search: HTTP {e.response.status_code}")
+            return None
+
+        search_data = search_response.json()
+        albums = search_data.get("albums", {}).get("items", [])
+
+        if albums:
+            album_url = albums[0].get("external_urls", {}).get("spotify", "")
+            if album_url:
+                logger.info(f"✓ Found Spotify album: '{album}' by {artist}")
+                return album_url
+            else:
+                logger.debug(f"Album found but no Spotify URL: {album}")
+                return None
+        else:
+            logger.debug(f"⊘ Album not found on Spotify: '{album}' by {artist}")
+            return None
+
+    except Exception as e:
+        logger.error(f"💥 Spotify search error: {type(e).__name__}: {str(e)[:150]}")
+        return None
+
+
+async def _spotify_validate_credentials() -> bool:
+    """Test if Spotify credentials are valid. Returns True if OK."""
+    try:
+        token = await _spotify_get_access_token()
+        if token:
+            logger.info("✓ Spotify credentials validated successfully")
+            return True
+        else:
+            logger.warning("⚠️  Spotify credentials invalid or missing")
+            return False
+    except Exception as e:
+        logger.error(f"💥 Spotify validation error: {type(e).__name__}")
+        return False
+
+
+async def _recommend_music_album(access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Recommend a morning album via GPT, search on Spotify. Returns album dict or None."""
     try:
         client = get_client()
-        prompt = """Посоветуй один хороший музыкальный альбом для утренней работы аналитика/программиста.
+        prompt = """Посоветуй один интересный музыкальный альбом для утренней концентрации (аналитик/программист).
+Альбом должен быть реальным и известным.
 
 Ответь только JSON без markdown:
 {
   "album": "<название альбома>",
   "artist": "<имя исполнителя>",
-  "description": "<описание альбома, 1-2 предложения>"
+  "description": "<краткое описание, 1-2 предложения, макс 150 символов>"
 }"""
 
-        response = await client.chat.completions.create(
-            model="gpt-5.4-mini",
-            max_completion_tokens=150,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response = await client.chat.completions.create(
+                model="gpt-5.4-mini",
+                max_completion_tokens=150,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as e:
+            logger.error(f"💥 GPT album recommendation error: {type(e).__name__}: {str(e)[:100]}")
+            return None
 
-        response_text = response.choices[0].message.content.strip()
-        recommendation = json.loads(response_text)
+        try:
+            response_text = response.choices[0].message.content.strip()
+            recommendation = json.loads(response_text)
+        except json.JSONDecodeError as e:
+            logger.error(f"💥 Invalid JSON from GPT: {str(e)[:100]}")
+            logger.debug(f"Response was: {response_text[:200]}")
+            return None
 
-        album = recommendation.get("album", "")
-        artist = recommendation.get("artist", "")
-        description = recommendation.get("description", "")
+        album = recommendation.get("album", "").strip()
+        artist = recommendation.get("artist", "").strip()
+        description = recommendation.get("description", "").strip()
+
+        if not album or not artist:
+            logger.warning(f"⚠️  Incomplete album recommendation: album='{album}', artist='{artist}'")
+            return None
+
+        logger.info(f"🎶 GPT recommended: '{album}' by {artist}")
+
+        # Get Spotify token if not provided
+        if not access_token:
+            access_token = await _spotify_get_access_token()
 
         # Search on Spotify
-        spotify_url = await _spotify_search_album(album, artist)
+        spotify_url = None
+        if access_token:
+            spotify_url = await _spotify_search_album(album, artist, access_token)
+
         if not spotify_url:
-            logger.warning(f"Could not find '{album}' by '{artist}' on Spotify")
+            logger.warning(f"⊘ Album not found on Spotify: '{album}' by {artist}")
             return None
 
         result = {
@@ -1110,12 +1185,12 @@ async def _recommend_music_album() -> Optional[Dict[str, Any]]:
             "language": "ru",
             "platform": "spotify",
         }
-        logger.info(f"✓ Recommended album: {album} by {artist}")
+        logger.info(f"✓ Album of day: {album} by {artist}")
         return result
 
     except Exception as e:
-        logger.warning(f"Music recommendation failed: {type(e).__name__}: {e}")
-    return None
+        logger.error(f"💥 Music recommendation error: {type(e).__name__}: {str(e)[:150]}")
+        return None
 
 
 async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
@@ -1140,16 +1215,54 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
         fresh_items = await fetch_fresh_content(hours=24)
 
         if fresh_items:
-            logger.info(f"Found {len(fresh_items)} fresh items, selecting best...")
+            logger.info(f"✓ Found {len(fresh_items)} fresh items, selecting best...")
             result = await _select_and_describe(fresh_items)
             if result:
                 return result
+            else:
+                logger.debug("No item selected by GPT")
 
         # Fallback: recommend music album
-        logger.info("No fresh content found, recommending music album...")
+        logger.info("⚠️  No fresh content found, recommending music album...")
         result = await _recommend_music_album()
         return result
 
     except Exception as e:
-        logger.error(f"Failed to get content recommendation: {type(e).__name__}: {e}")
+        logger.error(f"💥 Content recommendation error: {type(e).__name__}: {str(e)[:150]}")
+        return None
+
+
+async def get_album_of_day() -> Optional[Dict[str, Any]]:
+    """
+    Get today's music album recommendation via GPT + Spotify.
+
+    Returns:
+        {
+            "type": "music",
+            "title": str (album name),
+            "creator": str (artist),
+            "url": str (Spotify link),
+            "review": str (Russian description),
+            "platform": "spotify",
+        }
+        or None if unavailable
+    """
+    try:
+        logger.info("🎵 Getting album of the day...")
+
+        # Get Spotify token once
+        access_token = await _spotify_get_access_token()
+
+        # Get album recommendation
+        result = await _recommend_music_album(access_token=access_token)
+
+        if result and result.get('title') and result.get('creator'):
+            logger.info(f"✓ Album of day: {result.get('title')} by {result.get('creator')}")
+            return result
+        else:
+            logger.warning("⊘ Could not get album of the day")
+            return None
+
+    except Exception as e:
+        logger.error(f"💥 Album of day error: {type(e).__name__}: {str(e)[:150]}")
         return None

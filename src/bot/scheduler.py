@@ -31,6 +31,7 @@ from src.workers.holidays import get_today_holidays, get_today_events
 from src.workers.air_quality import get_air_quality_tbilisi
 from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
+from src.workers.content_parser import get_album_of_day
 from src.workers.quote_of_day import get_quote_of_day
 from src.workers.football_matches import get_today_matches, get_formatted_matches, get_yesterday_results, get_formatted_results
 from src.workers.forex_multi_source import get_eur_usd_multi_source
@@ -81,58 +82,115 @@ def _is_task_urgent_by_keywords(task) -> bool:
 def _handle_gather_exception(result, name: str):
     """Log and handle exception from asyncio.gather, return None if exception."""
     if isinstance(result, Exception):
-        logger.error(f"Failed to load {name}", exc_info=result)
+        exc_type = type(result).__name__
+        exc_msg = str(result)[:150] if str(result) else "unknown error"
+
+        if isinstance(result, TimeoutError):
+            logger.warning(f"⏱️  {name}: timeout")
+        elif isinstance(result, ConnectionError):
+            logger.warning(f"🔗 {name}: connection error - {exc_msg}")
+        elif isinstance(result, ValueError):
+            logger.warning(f"⚠️  {name}: validation error - {exc_msg}")
+        else:
+            logger.error(f"💥 {name}: {exc_type} - {exc_msg}")
+
         return None
     return result
 
 
-async def morning_digest(bot: Bot, user_id: int, chat_id: int = None):
-    """Send morning digest: intro + news + task list with timeout and error handling."""
-    logger.info(f"🌅 Starting morning digest for user {user_id}")
+async def morning_digest(
+    bot: Bot,
+    user_id: int,
+    chat_id: int = None,
+    skip_sports: bool = False,
+    skip_tasks: bool = False,
+):
+    """Send morning digest: intro + news + task list with timeout and error handling.
+
+    Args:
+        bot: Telegram Bot instance
+        user_id: User ID to send digest to
+        chat_id: Chat ID (optional, uses user_id if not provided)
+        skip_sports: Skip football/sports section
+        skip_tasks: Skip tasks section
+    """
+    skip_str = ""
+    if skip_sports or skip_tasks:
+        parts = []
+        if skip_sports:
+            parts.append("спорт")
+        if skip_tasks:
+            parts.append("дела")
+        skip_str = f" (without {', '.join(parts)})"
+    logger.info(f"🌅 Starting morning digest for user {user_id}{skip_str}")
 
     try:
         # Set global timeout for entire digest (120 seconds = 2 minutes for all API calls)
         try:
             if hasattr(asyncio, "timeout"):  # Python 3.11+
                 async with asyncio.timeout(120):
-                    await _morning_digest_impl(bot, user_id, chat_id)
+                    await _morning_digest_impl(
+                        bot, user_id, chat_id,
+                        skip_sports=skip_sports,
+                        skip_tasks=skip_tasks,
+                    )
             else:  # Python 3.10 and earlier
                 await asyncio.wait_for(
-                    _morning_digest_impl(bot, user_id, chat_id),
+                    _morning_digest_impl(
+                        bot, user_id, chat_id,
+                        skip_sports=skip_sports,
+                        skip_tasks=skip_tasks,
+                    ),
                     timeout=MORNING_DIGEST_TIMEOUT_SECONDS,
                 )
         except asyncio.TimeoutError:
-            logger.error(f"❌ Morning digest exceeded 120s timeout for user {user_id}")
+            logger.error(f"⏱️  Morning digest exceeded {MORNING_DIGEST_TIMEOUT_SECONDS}s timeout for user {user_id}")
             try:
                 if chat_id is None:
                     chat_id = get_secret("TELEGRAM_CHAT_ID")
                 await bot.send_message(
                     chat_id=chat_id,
-                    text="🌅 Доброе утро! (дайджест не готов - превышен timeout)",
+                    text="🌅 Доброе утро! (дайджест не готов - превышен timeout 120с)",
                     disable_web_page_preview=True,
                 )
             except Exception as fallback_err:
-                logger.error(f"Failed to send timeout fallback message: {fallback_err}")
+                logger.error(f"Failed to send timeout fallback message: {type(fallback_err).__name__}: {str(fallback_err)[:100]}")
 
     except Exception as e:
-        logger.error(f"❌ Morning digest failed for user {user_id}")
-        logger.error(f"  Exception type: {type(e).__name__}")
-        logger.error(f"  Exception message: {e}")
-        logger.error(f"  Full details:", exc_info=True)
+        exc_type = type(e).__name__
+        exc_msg = str(e)[:200] if str(e) else "unknown error"
+        logger.error(f"💥 Morning digest failed for user {user_id}: {exc_type}")
+        logger.error(f"  Details: {exc_msg}")
+
         try:
             if chat_id is None:
                 chat_id = get_secret("TELEGRAM_CHAT_ID")
             await bot.send_message(
                 chat_id=chat_id,
-                text=f"❌ Дайджест не отправлен: {type(e).__name__}",
+                text=f"❌ Дайджест не отправлен: {exc_type}",
                 disable_web_page_preview=True,
             )
         except Exception as fallback_err:
-            logger.error(f"Failed to send error fallback message: {fallback_err}")
+            logger.error(f"Failed to send error fallback message: {type(fallback_err).__name__}")
 
 
-async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, include_tasks: bool = True):
-    """Implementation of morning digest (called with timeout)."""
+async def _morning_digest_impl(
+    bot: Bot,
+    user_id: int,
+    chat_id: int = None,
+    include_tasks: bool = True,
+    skip_sports: bool = False,
+    skip_tasks: bool = False,
+):
+    """Implementation of morning digest (called with timeout).
+
+    Args:
+        skip_sports: Skip football/sports section
+        skip_tasks: Skip tasks section (overrides include_tasks)
+    """
+    if skip_tasks:
+        include_tasks = False
+
     logger.info(f"Loading tasks, profile, weather for user {user_id} (include_tasks={include_tasks})")
 
     # Parallel API calls - much faster than sequential
@@ -576,6 +634,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                     task_data = task_explanations.get(task.id, {})
                     formatted = _format_task_with_analysis(task, task_data, is_urgent=True)
                     message_lines.append(formatted)
+                    message_lines.append("")
                     logger.info(f"  Urgent: {task.what or task.raw_text[:30]}")
                 message_lines.append("")
 
@@ -586,6 +645,7 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
                     task_data = task_explanations.get(task.id, {})
                     formatted = _format_task_with_analysis(task, task_data, is_urgent=False)
                     message_lines.append(formatted)
+                    message_lines.append("")
                     logger.info(f"  Non-urgent: {task.what or task.raw_text[:30]}")
                 message_lines.append("")
         else:
@@ -682,10 +742,14 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
     message_lines.append("")
 
     # Check yesterday's football results (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
-    logger.info("Checking yesterday's football results")
-    yesterday_results = await get_yesterday_results()
+    if not skip_sports:
+        logger.info("Checking yesterday's football results")
+        yesterday_results = await get_yesterday_results()
+    else:
+        logger.info("⏭️  Skipping sports section")
+        yesterday_results = None
 
-    if yesterday_results:
+    if yesterday_results and not skip_sports:
         # Show yesterday's results
         logger.info(f"✓ Found {len(yesterday_results)} yesterday result(s)")
         formatted_results = await get_formatted_results(yesterday_results)
@@ -696,17 +760,20 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         logger.info("No yesterday results found")
 
     # Check for football matches (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
-    logger.info("Checking for football matches today")
-    matches = await get_today_matches()
+    if not skip_sports:
+        logger.info("Checking for football matches today")
+        matches = await get_today_matches()
+    else:
+        matches = None
 
-    if matches:
+    if matches and not skip_sports:
         # Show football matches
         logger.info(f"✓ Found {len(matches)} football match(es)")
         formatted_matches = await get_formatted_matches(matches)
         if formatted_matches:
             message_lines.append(formatted_matches)
             message_lines.append("")
-    else:
+    elif not skip_sports:
         # No matches - show sports news from middle of list + Product Hunt
         logger.info("No football matches found, showing sports news + Product Hunt")
         logger.debug(f"sports_news type: {type(sports_news)}, len: {len(sports_news) if sports_news else 0}")
@@ -806,6 +873,34 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         message_lines.append(review)
         message_lines.append("")
 
+    # Add Album of the day (Spotify with AI recommendations)
+    logger.info("Fetching album of the day")
+    album = None
+    try:
+        if hasattr(asyncio, "timeout"):  # Python 3.11+
+            async with asyncio.timeout(15):
+                album = await get_album_of_day()
+        else:  # Python 3.10 and earlier
+            album = await asyncio.wait_for(get_album_of_day(), timeout=15.0)
+    except asyncio.TimeoutError:
+        logger.warning("Album of the day timed out (15s), skipping")
+    except Exception as e:
+        logger.warning(f"Failed to get album of the day: {type(e).__name__}")
+
+    if album and not isinstance(album, Exception):
+        title = album.get("title", "")
+        creator = album.get("creator", "")
+        review = album.get("review", "")
+        url = album.get("url", "")
+        message_lines.append(f"<b>🎵 Альбом дня</b>:")
+        message_lines.append(
+            f'<a href="{url}"><b>{title}</b></a>' if url else f"<b>{title}</b>"
+        )
+        message_lines.append(f"<i>{creator}</i>")
+        if review:
+            message_lines.append(f"<i>{review}</i>")
+        message_lines.append("")
+
     # Add fresh memes (1 per day, no AI summaries)
     logger.info("Fetching fresh memes")
     memes = await get_fresh_memes_for_digest(max_results=1)
@@ -835,26 +930,49 @@ async def _morning_digest_impl(bot: Bot, user_id: int, chat_id: int = None, incl
         logger.warning(
             f"⚠️  Digest message exceeds limit ({len(final_message)}/{TELEGRAM_MESSAGE_CHAR_LIMIT}), splitting..."
         )
-        # Split by major sections
+        # Split by major sections - ensure each part <= 4000 chars
         parts = []
         current_part = []
         current_length = 0
 
         for line in message_lines:
-            line_len = len(line) + 1  # +1 for newline
-            if current_length + line_len > TELEGRAM_MESSAGE_CHAR_LIMIT and current_part:
-                parts.append("\n".join(current_part))
+            # Actual length when joined: line + newline (except for last line in part)
+            # Conservative estimate: add newline for each line
+            line_with_newline = len(line) + 1
+
+            # If adding this line would exceed limit and we have content, save current part
+            if current_length + line_with_newline > TELEGRAM_MESSAGE_CHAR_LIMIT and current_part:
+                joined = "\n".join(current_part)
+                actual_len = len(joined)
+
+                # Safety check: ensure part doesn't exceed limit
+                if actual_len > TELEGRAM_MESSAGE_CHAR_LIMIT:
+                    logger.error(f"⚠️  Part exceeds limit: {actual_len}/{TELEGRAM_MESSAGE_CHAR_LIMIT}")
+
+                parts.append(joined)
                 current_part = [line]
-                current_length = line_len
+                # Recalculate for new part
+                current_length = line_with_newline
             else:
                 current_part.append(line)
-                current_length += line_len
+                current_length += line_with_newline
 
+        # Save final part
         if current_part:
-            parts.append("\n".join(current_part))
+            joined = "\n".join(current_part)
+            actual_len = len(joined)
+
+            # Safety check
+            if actual_len > TELEGRAM_MESSAGE_CHAR_LIMIT:
+                logger.error(f"⚠️  Final part exceeds limit: {actual_len}/{TELEGRAM_MESSAGE_CHAR_LIMIT}")
+
+            parts.append(joined)
 
         logger.info(f"Split into {len(parts)} messages")
         for i, part in enumerate(parts, 1):
+            actual_len = len(part)
+            logger.info(f"Sending part {i}/{len(parts)} ({actual_len}/{TELEGRAM_MESSAGE_CHAR_LIMIT} chars)")
+
             await bot.send_message(
                 chat_id=chat_id,
                 text=part,

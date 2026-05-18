@@ -50,11 +50,18 @@ async def get_weather_openmeteo() -> Optional[Dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             url = f"https://api.open-meteo.com/v1/forecast?latitude={TBILISI_LAT}&longitude={TBILISI_LON}&hourly=temperature_2m,weather_code,wind_speed_10m,precipitation&temperature_unit=celsius&timezone=Asia/Tbilisi"
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                logger.warning("⏱️  Open-Meteo: timeout (5s)")
+                return None
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"❌ Open-Meteo: HTTP {e.response.status_code}")
+                return None
     except Exception as e:
-        logger.warning(f"Open-Meteo failed: {e}")
+        logger.warning(f"💥 Open-Meteo error: {type(e).__name__}")
         return None
 
 
@@ -63,11 +70,18 @@ async def get_weather_wttr() -> Optional[Dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             url = "https://wttr.in/Tbilisi?format=j1"
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                logger.warning("⏱️  wttr.in: timeout (5s)")
+                return None
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"❌ wttr.in: HTTP {e.response.status_code}")
+                return None
     except Exception as e:
-        logger.warning(f"wttr.in failed: {e}")
+        logger.warning(f"💥 wttr.in error: {type(e).__name__}")
         return None
 
 
@@ -79,11 +93,18 @@ async def get_weather_yrno() -> Optional[Dict[str, Any]]:
             headers = {
                 "User-Agent": "notification-bot/1.0 github.com/user/notification-bot"
             }
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+            except httpx.TimeoutException:
+                logger.warning("⏱️  yr.no: timeout (5s)")
+                return None
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"❌ yr.no: HTTP {e.response.status_code}")
+                return None
     except Exception as e:
-        logger.warning(f"yr.no failed: {e}")
+        logger.warning(f"💥 yr.no error: {type(e).__name__}")
         return None
 
 
