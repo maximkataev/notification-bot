@@ -301,6 +301,20 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
         elif "thunder" in desc:
             weather_code = 95
 
+        # Estimate precipitation from description
+        # If rain/snow/drizzle/hail in description, estimate 2mm; otherwise 0mm
+        has_precipitation = (
+            "rain" in desc or "дождь" in desc or
+            "snow" in desc or "снег" in desc or
+            "drizzle" in desc or "морось" in desc or
+            "shower" in desc or "ливень" in desc or
+            "sleet" in desc or "мокрый снег" in desc or
+            "hail" in desc or "град" in desc or
+            "thunder" in desc or "гроза" in desc or
+            "storm" in desc or "шторм" in desc
+        )
+        precipitation_mm = 2.0 if has_precipitation else 0.0
+
         # Simple approach: use current conditions for all periods
         weather_by_period = {
             "night": {
@@ -308,7 +322,7 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
                 "wind_speed": round(wind * 0.8, 1),
                 "condition": condition,
                 "emoji": emoji,
-                "precipitation_mm": 0.0,
+                "precipitation_mm": precipitation_mm,
                 "weather_code": weather_code,
             },
             "morning": {
@@ -316,7 +330,7 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
                 "wind_speed": round(wind * 0.9, 1),
                 "condition": condition,
                 "emoji": emoji,
-                "precipitation_mm": 0.0,
+                "precipitation_mm": precipitation_mm,
                 "weather_code": weather_code,
             },
             "day": {
@@ -324,7 +338,7 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
                 "wind_speed": round(wind * 1.1, 1),
                 "condition": condition,
                 "emoji": emoji,
-                "precipitation_mm": 0.0,
+                "precipitation_mm": precipitation_mm,
                 "weather_code": weather_code,
             },
             "evening": {
@@ -332,7 +346,7 @@ def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
                 "wind_speed": round(wind, 1),
                 "condition": condition,
                 "emoji": emoji,
-                "precipitation_mm": 0.0,
+                "precipitation_mm": precipitation_mm,
                 "weather_code": weather_code,
             },
         }

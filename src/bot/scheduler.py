@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -317,17 +318,15 @@ async def _morning_digest_impl(
     if weather and isinstance(weather.get("day"), dict):
         day_temp = weather["day"].get("temperature")
 
-    # Jacket needed if: temp below 10°C OR precipitation expected
-    needs_jacket = (
-        morning_temp is not None and morning_temp < WEATHER_JACKET_THRESHOLD_C
-    ) or is_raining
+    # Jacket needed ONLY if: precipitation expected (rain, snow, etc.)
+    needs_jacket = is_raining
 
     # Determine outer layer recommendation
     if needs_jacket:
-        # Jacket is primary recommendation (wind doesn't override)
+        # Jacket is primary recommendation (only for rain/precipitation)
         outer_layer = "куртка"
     elif morning_wind is not None and morning_wind > 15:
-        # No jacket needed but strong wind → recommend hoodie
+        # Strong wind → recommend hoodie
         outer_layer = "худи"
     elif day_temp is not None and day_temp < 15:
         # Day temperature < 15°C → recommend hoodie
@@ -640,7 +639,7 @@ async def _morning_digest_impl(
 
             # Show all non-urgent tasks if available
             if non_urgent_tasks:
-                message_lines.append("НЕСРОЧНЫЕ:")
+                message_lines.append("НЕСРОЧНЫЕ ЗАДАЧИ:")
                 for task in non_urgent_tasks:
                     task_data = task_explanations.get(task.id, {})
                     formatted = _format_task_with_analysis(task, task_data, is_urgent=False)
@@ -859,7 +858,9 @@ async def _morning_digest_impl(
     except Exception as e:
         logger.warning(f"Failed to get content recommendation: {e}")
 
+    content_type = None
     if not isinstance(content, Exception) and content:
+        content_type = content.get("type")
         emoji = content.get("emoji", "📺")
         title = content.get("title", "")
         creator = content.get("creator", "")
@@ -874,18 +875,22 @@ async def _morning_digest_impl(
         message_lines.append("")
 
     # Add Album of the day (Spotify with AI recommendations)
-    logger.info("Fetching album of the day")
+    # Skip if content is already music (avoid duplicate music sections)
     album = None
-    try:
-        if hasattr(asyncio, "timeout"):  # Python 3.11+
-            async with asyncio.timeout(15):
-                album = await get_album_of_day()
-        else:  # Python 3.10 and earlier
-            album = await asyncio.wait_for(get_album_of_day(), timeout=15.0)
-    except asyncio.TimeoutError:
-        logger.warning("Album of the day timed out (15s), skipping")
-    except Exception as e:
-        logger.warning(f"Failed to get album of the day: {type(e).__name__}")
+    if content_type != "music":
+        logger.info("Fetching album of the day")
+        try:
+            if hasattr(asyncio, "timeout"):  # Python 3.11+
+                async with asyncio.timeout(15):
+                    album = await get_album_of_day()
+            else:  # Python 3.10 and earlier
+                album = await asyncio.wait_for(get_album_of_day(), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning("Album of the day timed out (15s), skipping")
+        except Exception as e:
+            logger.warning(f"Failed to get album of the day: {type(e).__name__}")
+    else:
+        logger.info("Skipping album of the day (content is already music)")
 
     if album and not isinstance(album, Exception):
         title = album.get("title", "")
@@ -1116,8 +1121,47 @@ async def tbilisi_events_digest(bot: Bot, chat_id: int = None):
             logger.error(f"Failed to send error message: {inner_e}")
 
 
+def _get_secondary_users() -> list:
+    """
+    Get list of secondary users from TELEGRAM_SECONDARY_USERS env var (JSON format).
+
+    Format: TELEGRAM_SECONDARY_USERS=[user_id1, user_id2, ...]
+    Example: [184010236, 498233237]
+
+    Default: [184010236, 498233237] (hardcoded digest recipients without tasks)
+    """
+    # Hardcoded default secondary users
+    DEFAULT_SECONDARY_USERS = [184010236, 498233237]
+
+    try:
+        users_json = get_secret("TELEGRAM_SECONDARY_USERS")
+
+        # Default: if not configured, return hardcoded list
+        if not users_json or users_json.strip() in ("", "[]", "null", "None"):
+            logger.info(f"TELEGRAM_SECONDARY_USERS not configured, using hardcoded default: {DEFAULT_SECONDARY_USERS}")
+            return DEFAULT_SECONDARY_USERS
+
+        # Parse JSON
+        users = json.loads(users_json)
+
+        # Ensure it's a list
+        if not isinstance(users, list):
+            logger.warning(f"TELEGRAM_SECONDARY_USERS is not a list, got {type(users).__name__}, using default: {DEFAULT_SECONDARY_USERS}")
+            return DEFAULT_SECONDARY_USERS
+
+        logger.info(f"✓ Loaded {len(users)} secondary users for digest: {users}")
+        return users
+
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse TELEGRAM_SECONDARY_USERS as JSON: {e}, using default: {DEFAULT_SECONDARY_USERS}")
+        return DEFAULT_SECONDARY_USERS
+    except Exception as e:
+        logger.debug(f"Failed to load secondary users: {type(e).__name__}: {e}, using default: {DEFAULT_SECONDARY_USERS}")
+        return DEFAULT_SECONDARY_USERS
+
+
 def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
-    """Initialize APScheduler with morning digest."""
+    """Initialize APScheduler with morning digest for primary and secondary users."""
     global scheduler
 
     if scheduler is not None:
@@ -1128,14 +1172,27 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
     tbilisi_tz = timezone("Asia/Tbilisi")
     scheduler = AsyncIOScheduler(timezone=tbilisi_tz)
 
-    # Morning digest at 08:00 Tbilisi time
+    # Morning digest at 08:00 Tbilisi time for primary user (with tasks)
     scheduler.add_job(
         morning_digest,
         CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
-        args=[bot, user_id, chat_id],
+        args=[bot, user_id, chat_id, False, False],  # skip_sports=False, skip_tasks=False
         id="morning_digest",
-        name="Morning digest",
+        name="Morning digest (primary user)",
     )
+
+    # Morning digest for secondary users (without tasks)
+    secondary_users = _get_secondary_users()
+    for i, secondary_user_id in enumerate(secondary_users):
+        secondary_chat_id = secondary_user_id  # Use user_id as chat_id for secondary users
+        scheduler.add_job(
+            morning_digest,
+            CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
+            args=[bot, secondary_user_id, secondary_chat_id, False, True],  # skip_sports=False, skip_tasks=True
+            id=f"morning_digest_secondary_{secondary_user_id}",
+            name=f"Morning digest (secondary user {secondary_user_id})",
+        )
+        logger.info(f"  ✓ Secondary digest scheduled for user {secondary_user_id} (without tasks)")
 
     # Update historical forex rates every 1 hour (for digest)
     from apscheduler.triggers.interval import IntervalTrigger
@@ -1165,7 +1222,10 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Tbilisi events digest",
     )
 
+    primary_digest = "primary user (with tasks)"
+    secondary_count = len(secondary_users)
+    secondary_str = f", {secondary_count} secondary user(s) (without tasks)" if secondary_count > 0 else ""
     logger.info(
-        "Scheduler initialized with: morning digest (08:00), forex cache update (hourly), precipitation alerts (hourly), Tbilisi events (Sat 18:00)"
+        f"Scheduler initialized with: morning digest (08:00 - {primary_digest}{secondary_str}), forex cache update (hourly), precipitation alerts (hourly), Tbilisi events (Sat 18:00)"
     )
     return scheduler
