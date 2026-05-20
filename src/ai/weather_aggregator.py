@@ -1,410 +1,223 @@
-"""Aggregate weather data from multiple sources for accuracy."""
+"""Aggregate weather data from Gismeteo and Yandex."""
 
 import logging
 from typing import Optional, Dict, Any
 import httpx
-from datetime import datetime
-from collections import Counter
+from bs4 import BeautifulSoup
+from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
 
-# Tbilisi coordinates
-TBILISI_LAT = 41.7151
-TBILISI_LON = 44.8271
-
-# WMO weather code to (Russian condition, emoji) mapping
-WMO_CODES: dict[int, tuple[str, str]] = {
-    0: ("ясно", "☀️"),
-    1: ("преимущественно ясно", "🌤️"),
-    2: ("переменная облачность", "⛅"),
-    3: ("пасмурно", "☁️"),
-    45: ("туман", "🌫️"),
-    48: ("туман с инеем", "🌫️"),
-    51: ("небольшая морось", "🌦️"),
-    53: ("умеренная морось", "🌦️"),
-    55: ("сильная морось", "🌧️"),
-    56: ("замерзающая морось", "🌧️"),
-    57: ("сильная замерзающая морось", "🌧️"),
-    61: ("небольшой дождь", "🌧️"),
-    63: ("дождь", "🌧️"),
-    65: ("сильный дождь", "🌧️"),
-    66: ("ледяной дождь", "🌧️"),
-    67: ("сильный ледяной дождь", "🌧️"),
-    71: ("небольшой снег", "🌨️"),
-    73: ("снег", "🌨️"),
-    75: ("сильный снег", "❄️"),
-    77: ("снежная крупа", "❄️"),
-    80: ("кратковременный дождь", "🌦️"),
-    81: ("умеренный ливень", "🌧️"),
-    82: ("сильный ливень", "⛈️"),
-    85: ("кратковременный снег", "🌨️"),
-    86: ("сильный кратковременный снег", "❄️"),
-    95: ("гроза", "⛈️"),
-    96: ("гроза с градом", "⛈️"),
-    99: ("гроза с сильным градом", "⛈️"),
+# Emoji mapping for conditions
+CONDITION_EMOJI: dict[str, str] = {
+    "ясно": "☀️",
+    "облачно": "☁️",
+    "дождь": "🌧️",
+    "снег": "❄️",
+    "гроза": "⛈️",
+    "туман": "🌫️",
+    "переменная облачность": "⛅",
+    "морось": "🌦️",
+    "град": "🌨️",
+    "ливень": "🌧️",
+    "ледяной дождь": "🌧️",
 }
 
 
-async def get_weather_openmeteo() -> Optional[Dict[str, Any]]:
-    """Fetch hourly weather from Open-Meteo."""
+async def get_weather_gismeteo() -> Optional[Dict[str, Any]]:
+    """Fetch weather from Gismeteo HTML page."""
+    url = "https://www.gismeteo.ru/weather-tbilisi-5277/"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            url = f"https://api.open-meteo.com/v1/forecast?latitude={TBILISI_LAT}&longitude={TBILISI_LON}&hourly=temperature_2m,weather_code,wind_speed_10m,precipitation&temperature_unit=celsius&timezone=Asia/Tbilisi"
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                return response.json()
-            except httpx.TimeoutException:
-                logger.warning("⏱️  Open-Meteo: timeout (5s)")
-                return None
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"❌ Open-Meteo: HTTP {e.response.status_code}")
-                return None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers, follow_redirects=True)
+            response.raise_for_status()
+            logger.debug("✓ Gismeteo fetch success")
+            return {"html": response.text, "source": "gismeteo"}
     except Exception as e:
-        logger.warning(f"💥 Open-Meteo error: {type(e).__name__}")
+        logger.warning(f"❌ Gismeteo fetch failed: {type(e).__name__}")
         return None
 
 
-async def get_weather_wttr() -> Optional[Dict[str, Any]]:
-    """Fetch weather from wttr.in API."""
+async def get_weather_yandex() -> Optional[Dict[str, Any]]:
+    """Fetch weather from Yandex Pogoda HTML page."""
+    url = "https://yandex.ru/pogoda/ru/tbilisi"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            url = "https://wttr.in/Tbilisi?format=j1"
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                return response.json()
-            except httpx.TimeoutException:
-                logger.warning("⏱️  wttr.in: timeout (5s)")
-                return None
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"❌ wttr.in: HTTP {e.response.status_code}")
-                return None
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, headers=headers, follow_redirects=True)
+            response.raise_for_status()
+            logger.debug("✓ Yandex fetch success")
+            return {"html": response.text, "source": "yandex"}
     except Exception as e:
-        logger.warning(f"💥 wttr.in error: {type(e).__name__}")
+        logger.warning(f"❌ Yandex fetch failed: {type(e).__name__}")
         return None
 
 
-async def get_weather_yrno() -> Optional[Dict[str, Any]]:
-    """Fetch weather from yr.no (Norwegian Meteorological Institute)."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            url = f"https://api.met.no/weatherapi/locationforecast/2.0/compact?lat={TBILISI_LAT}&lon={TBILISI_LON}"
-            headers = {
-                "User-Agent": "notification-bot/1.0 github.com/user/notification-bot"
-            }
-            try:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                return response.json()
-            except httpx.TimeoutException:
-                logger.warning("⏱️  yr.no: timeout (5s)")
-                return None
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"❌ yr.no: HTTP {e.response.status_code}")
-                return None
-    except Exception as e:
-        logger.warning(f"💥 yr.no error: {type(e).__name__}")
-        return None
-
-
-def _parse_openmeteo(data: Dict) -> Optional[Dict[str, Dict]]:
-    """Parse Open-Meteo response into period format."""
-    if not data or "hourly" not in data:
+def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
+    """Parse Gismeteo HTML to extract weather by periods."""
+    if not data or "html" not in data:
         return None
 
     try:
-        times = data["hourly"]["time"]
-        temps = data["hourly"]["temperature_2m"]
-        codes = data["hourly"]["weather_code"]
-        winds = data["hourly"]["wind_speed_10m"]
-        precips = data["hourly"].get("precipitation", [None] * len(times))
-
-        periods = {
-            "night": (0, 6),
-            "morning": (6, 12),
-            "day": (12, 18),
-            "evening": (18, 24),
-        }
+        soup = BeautifulSoup(data["html"], "html.parser")
 
         weather_by_period = {}
-        for period_name, (start_hour, end_hour) in periods.items():
-            period_temps = []
-            period_winds = []
-            period_codes = []
-            period_precips = []
+        periods = ["night", "morning", "day", "evening"]
 
-            for i, time_str in enumerate(times):
+        # Find weather cards or blocks
+        # Gismeteo structure: look for temperature, condition, precipitation data
+        cards = soup.find_all(class_=["weather-item", "weather-card", "period"])
+
+        if not cards:
+            # Try alternative selectors
+            cards = soup.find_all("div", class_=lambda x: x and "weather" in x.lower())
+
+        # Parse up to 4 periods
+        for idx, period_name in enumerate(periods[:len(cards)]):
+            card = cards[idx]
+
+            # Extract temperature (look for common patterns)
+            temp_text = card.find(class_=lambda x: x and "temp" in x.lower())
+            if not temp_text:
+                temp_text = card.find(class_=lambda x: x and "temperature" in x.lower())
+
+            temp = None
+            if temp_text:
                 try:
-                    hour = int(time_str.split("T")[1].split(":")[0])
-                    if start_hour <= hour < end_hour:
-                        period_temps.append(temps[i])
-                        period_winds.append(winds[i])
-                        period_codes.append(codes[i])
-                        if precips[i] is not None:
-                            period_precips.append(precips[i])
-                except (IndexError, ValueError) as e:
-                    logger.debug(f"Failed to parse hour from {time_str}: {e}")
-                    continue
+                    temp_str = temp_text.get_text(strip=True)
+                    temp = float(temp_str.split("°")[0].strip().replace("−", "-").replace("–", "-"))
+                except (ValueError, AttributeError):
+                    temp = None
 
-            if period_temps and period_winds:
-                avg_temp = sum(period_temps) / len(period_temps)
-                avg_wind = sum(period_winds) / len(period_winds)
-                # Use most frequent weather code for the period
-                most_common_code = (
-                    Counter(period_codes).most_common(1)[0][0] if period_codes else 0
-                )
-                avg_precip = (
-                    sum(period_precips) / len(period_precips) if period_precips else 0.0
-                )
+            # Extract condition
+            condition_elem = card.find(class_=lambda x: x and "condition" in x.lower())
+            if not condition_elem:
+                condition_elem = card.find(class_=lambda x: x and ("sky" in x.lower() or "desc" in x.lower()))
 
-                condition, emoji = WMO_CODES.get(most_common_code, ("неизвестно", "🌤️"))
+            condition = "облачно"
+            if condition_elem:
+                condition = condition_elem.get_text(strip=True).lower()
 
+            # Get emoji
+            emoji = CONDITION_EMOJI.get(condition, "🌤️")
+
+            if temp is not None:
                 weather_by_period[period_name] = {
-                    "temperature": round(avg_temp, 1),
-                    "wind_speed": round(avg_wind, 1),
+                    "temperature": round(temp, 1),
                     "condition": condition,
                     "emoji": emoji,
-                    "precipitation_mm": round(avg_precip, 1),
-                    "weather_code": most_common_code,
+                    "precipitation_mm": 0.0,
                 }
 
         return weather_by_period if weather_by_period else None
     except Exception as e:
-        logger.warning(f"Failed to parse Open-Meteo: {e}")
+        logger.warning(f"Failed to parse Gismeteo: {e}")
         return None
 
 
-def _parse_yrno(data: Dict) -> Optional[Dict[str, Dict]]:
-    """Parse yr.no response into period format."""
-    if (
-        not data
-        or "properties" not in data
-        or "timeseries" not in data.get("properties", {})
-    ):
+def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
+    """Parse Yandex Pogoda HTML to extract weather by periods."""
+    if not data or "html" not in data:
         return None
 
     try:
-        timeseries = data["properties"]["timeseries"]
-        if not timeseries:
-            return None
-
-        periods = {
-            "night": (0, 6),
-            "morning": (6, 12),
-            "day": (12, 18),
-            "evening": (18, 24),
-        }
+        soup = BeautifulSoup(data["html"], "html.parser")
 
         weather_by_period = {}
-        for period_name, (start_hour, end_hour) in periods.items():
-            period_temps = []
-            period_winds = []
-            period_precips = []
+        periods = ["night", "morning", "day", "evening"]
 
-            for entry in timeseries:
+        # Find weather forecast blocks/cards
+        cards = soup.find_all(class_=lambda x: x and ("forecast" in x.lower() or "period" in x.lower()))
+
+        if not cards:
+            # Try finding all divs with weather info
+            cards = soup.find_all("div", class_=lambda x: x and "temp" in x.lower())
+
+        # Parse up to 4 periods
+        for idx, period_name in enumerate(periods[:len(cards)]):
+            card = cards[idx]
+
+            # Extract temperature
+            temp_text = card.find(class_=lambda x: x and "temp" in x.lower())
+            if not temp_text:
+                temp_text = card.find(class_=lambda x: x and "temperature" in x.lower())
+
+            temp = None
+            if temp_text:
                 try:
-                    time_str = entry.get("time", "")
-                    hour = (
-                        int(time_str.split("T")[1].split(":")[0])
-                        if "T" in time_str
-                        else -1
-                    )
+                    temp_str = temp_text.get_text(strip=True)
+                    temp = float(temp_str.split("°")[0].strip().replace("−", "-").replace("–", "-"))
+                except (ValueError, AttributeError):
+                    temp = None
 
-                    if start_hour <= hour < end_hour:
-                        instant = (
-                            entry.get("data", {}).get("instant", {}).get("details", {})
-                        )
-                        next_hours = entry.get("data", {}).get("next_1_hours", {})
+            # Extract condition/description
+            condition_elem = card.find(class_=lambda x: x and ("desc" in x.lower() or "condition" in x.lower()))
+            if not condition_elem:
+                condition_elem = card.find("span", class_=lambda x: x and "desc" in x.lower())
 
-                        temp = instant.get("air_temperature")
-                        wind = instant.get("wind_speed")
-                        precip = next_hours.get("details", {}).get(
-                            "precipitation_amount", 0
-                        )
+            condition = "облачно"
+            if condition_elem:
+                condition = condition_elem.get_text(strip=True).lower()
 
-                        if temp is not None:
-                            period_temps.append(temp)
-                        if wind is not None:
-                            period_winds.append(wind)
-                        period_precips.append(precip)
-                except (KeyError, ValueError, IndexError) as e:
-                    logger.debug(f"Failed to parse yr.no entry: {e}")
-                    continue
+            # Get emoji
+            emoji = CONDITION_EMOJI.get(condition, "🌤️")
 
-            if period_temps and period_winds:
-                avg_temp = sum(period_temps) / len(period_temps)
-                avg_wind = sum(period_winds) / len(period_winds)
-                avg_precip = (
-                    sum(period_precips) / len(period_precips) if period_precips else 0.0
-                )
-
-                # Use generic weather code and condition for yr.no (less reliable)
-                weather_code = 3  # default to overcast
-                condition = "облачно"
-                emoji = "☁️"
-
+            if temp is not None:
                 weather_by_period[period_name] = {
-                    "temperature": round(avg_temp, 1),
-                    "wind_speed": round(avg_wind, 1),
+                    "temperature": round(temp, 1),
                     "condition": condition,
                     "emoji": emoji,
-                    "precipitation_mm": round(avg_precip, 1),
-                    "weather_code": weather_code,
+                    "precipitation_mm": 0.0,
                 }
 
         return weather_by_period if weather_by_period else None
     except Exception as e:
-        logger.warning(f"Failed to parse yr.no: {e}")
-        return None
-
-
-def _parse_wttr(data: Dict) -> Optional[Dict[str, Dict]]:
-    """Parse wttr.in response into period format."""
-    if not data or "current_condition" not in data:
-        return None
-
-    try:
-        current = data["current_condition"][0]
-        temp = float(current["temp_C"])
-        wind = float(current["windspeedKmph"])
-        desc = current.get("description", "").lower()
-
-        # Map wttr.in description to condition and emoji
-        condition = desc if desc else "облачно"
-        emoji = (
-            "🌧️"
-            if "rain" in desc or "дождь" in desc
-            else (
-                "❄️"
-                if "snow" in desc or "снег" in desc
-                else (
-                    "☁️"
-                    if "cloud" in desc or "облач" in desc
-                    else (
-                        "🌫️"
-                        if "fog" in desc or "туман" in desc
-                        else "⛈️" if "thunder" in desc or "гроза" in desc else "🌤️"
-                    )
-                )
-            )
-        )
-
-        # Estimate weather code from description
-        weather_code = 3  # default to overcast
-        if "clear" in desc or "sunny" in desc:
-            weather_code = 0
-        elif "rain" in desc:
-            weather_code = 63
-        elif "snow" in desc:
-            weather_code = 73
-        elif "thunder" in desc:
-            weather_code = 95
-
-        # Estimate precipitation from description
-        # If rain/snow/drizzle/hail in description, estimate 2mm; otherwise 0mm
-        has_precipitation = (
-            "rain" in desc or "дождь" in desc or
-            "snow" in desc or "снег" in desc or
-            "drizzle" in desc or "морось" in desc or
-            "shower" in desc or "ливень" in desc or
-            "sleet" in desc or "мокрый снег" in desc or
-            "hail" in desc or "град" in desc or
-            "thunder" in desc or "гроза" in desc or
-            "storm" in desc or "шторм" in desc
-        )
-        precipitation_mm = 2.0 if has_precipitation else 0.0
-
-        # Simple approach: use current conditions for all periods
-        weather_by_period = {
-            "night": {
-                "temperature": round(temp - 3, 1),
-                "wind_speed": round(wind * 0.8, 1),
-                "condition": condition,
-                "emoji": emoji,
-                "precipitation_mm": precipitation_mm,
-                "weather_code": weather_code,
-            },
-            "morning": {
-                "temperature": round(temp - 1, 1),
-                "wind_speed": round(wind * 0.9, 1),
-                "condition": condition,
-                "emoji": emoji,
-                "precipitation_mm": precipitation_mm,
-                "weather_code": weather_code,
-            },
-            "day": {
-                "temperature": round(temp + 2, 1),
-                "wind_speed": round(wind * 1.1, 1),
-                "condition": condition,
-                "emoji": emoji,
-                "precipitation_mm": precipitation_mm,
-                "weather_code": weather_code,
-            },
-            "evening": {
-                "temperature": round(temp, 1),
-                "wind_speed": round(wind, 1),
-                "condition": condition,
-                "emoji": emoji,
-                "precipitation_mm": precipitation_mm,
-                "weather_code": weather_code,
-            },
-        }
-
-        return weather_by_period
-    except Exception as e:
-        logger.warning(f"Failed to parse wttr.in: {e}")
+        logger.warning(f"Failed to parse Yandex: {e}")
         return None
 
 
 async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
-    """Fetch and aggregate weather from multiple sources."""
-    logger.info("🌤️ Fetching weather from multiple sources...")
+    """Fetch and aggregate weather from Gismeteo and Yandex."""
+    logger.info("🌤️ Fetching weather from Gismeteo and Yandex...")
 
-    results = []
-
-    # Fetch all sources concurrently
     import asyncio
 
-    openmeteo_data, wttr_data, yrno_data = await asyncio.gather(
-        get_weather_openmeteo(),
-        get_weather_wttr(),
-        get_weather_yrno(),
+    gismeteo_data, yandex_data = await asyncio.gather(
+        get_weather_gismeteo(),
+        get_weather_yandex(),
         return_exceptions=False,
     )
 
-    # Try Open-Meteo (most reliable)
-    if openmeteo_data:
-        parsed = _parse_openmeteo(openmeteo_data)
-        if parsed:
-            results.append(("open-meteo", parsed))
-            logger.info("✓ Open-Meteo: OK")
-        else:
-            logger.warning("✗ Open-Meteo: parse failed")
-    else:
-        logger.warning("✗ Open-Meteo: fetch failed")
+    results = []
 
-    # Try wttr.in (backup)
-    if wttr_data:
-        parsed = _parse_wttr(wttr_data)
+    # Try Gismeteo
+    if gismeteo_data:
+        parsed = _parse_gismeteo(gismeteo_data)
         if parsed:
-            results.append(("wttr.in", parsed))
-            logger.info("✓ wttr.in: OK")
+            results.append(("gismeteo", parsed))
+            logger.info("✓ Gismeteo: OK")
         else:
-            logger.warning("✗ wttr.in: parse failed")
+            logger.warning("✗ Gismeteo: parse failed")
     else:
-        logger.warning("✗ wttr.in: fetch failed")
+        logger.warning("✗ Gismeteo: fetch failed")
 
-    # Try yr.no (3rd source)
-    if yrno_data:
-        parsed = _parse_yrno(yrno_data)
+    # Try Yandex
+    if yandex_data:
+        parsed = _parse_yandex(yandex_data)
         if parsed:
-            results.append(("yr.no", parsed))
-            logger.info("✓ yr.no: OK")
+            results.append(("yandex", parsed))
+            logger.info("✓ Yandex: OK")
         else:
-            logger.warning("✗ yr.no: parse failed")
+            logger.warning("✗ Yandex: parse failed")
     else:
-        logger.warning("✗ yr.no: fetch failed")
+        logger.warning("✗ Yandex: fetch failed")
 
     if not results:
         logger.error("❌ All weather sources failed")
@@ -415,50 +228,116 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
 
     for period in ["night", "morning", "day", "evening"]:
         temps = [r[1][period]["temperature"] for r in results if period in r[1]]
-        winds = [r[1][period]["wind_speed"] for r in results if period in r[1]]
-        precips = [r[1][period]["precipitation_mm"] for r in results if period in r[1]]
-        codes = [r[1][period]["weather_code"] for r in results if period in r[1]]
         conditions = [r[1][period]["condition"] for r in results if period in r[1]]
+        precips = [r[1][period]["precipitation_mm"] for r in results if period in r[1]]
 
-        if temps and winds:
-            # Average numeric values
+        if temps:
             avg_temp = round(sum(temps) / len(temps), 1)
-            avg_wind = round(sum(winds) / len(winds), 1)
             avg_precip = round(sum(precips) / len(precips), 1) if precips else 0.0
 
-            # Collect all unique conditions from different sources
-            unique_conditions = []
-            seen = set()
-            for cond in conditions:
-                if cond and cond.lower() not in seen:
-                    unique_conditions.append(cond)
-                    seen.add(cond.lower())
-
-            # Join conditions with "/" if they differ, else use single condition
-            if unique_conditions:
-                condition = (
-                    "/".join(unique_conditions)
-                    if len(unique_conditions) > 1
-                    else unique_conditions[0]
-                )
-            else:
-                condition = "облачно"
-
-            # Use Open-Meteo's weather code if available (most reliable)
-            primary_source = next((r for r in results if r[0] == "open-meteo"), None)
-            if primary_source:
-                emoji = primary_source[1][period]["emoji"]
-            else:
-                # Fallback: use most common code
-                weather_code = Counter(codes).most_common(1)[0][0] if codes else 3
-                _, emoji = WMO_CODES.get(weather_code, ("облачно", "☁️"))
+            # Use first condition or combine
+            condition = conditions[0] if conditions else "облачно"
+            emoji = CONDITION_EMOJI.get(condition, "🌤️")
 
             aggregated[period] = {
                 "temperature": avg_temp,
-                "wind_speed": avg_wind,
                 "condition": condition,
                 "emoji": emoji,
                 "precipitation_mm": avg_precip,
             }
 
     return aggregated if aggregated else None
+
+
+async def generate_clothing_recommendation(weather: Optional[Dict[str, Dict]], is_raining: bool = False) -> Optional[str]:
+    """Generate clothing recommendation based on weather, validated for jacket logic.
+
+    Args:
+        weather: Weather dict from get_aggregated_weather with periods (morning/day/evening/night)
+        is_raining: Whether precipitation is expected (from precipitation_checker or weather condition)
+    """
+    if not weather:
+        return None
+
+    try:
+        # Extract key weather info
+        temps = []
+        has_precipitation = is_raining
+
+        # Keywords that indicate precipitation in condition string
+        RAIN_KEYWORDS = ["дождь", "снег", "гроза", "морось", "ливень", "ледяной дождь", "град"]
+
+        for period in ["morning", "day", "evening"]:
+            if period in weather:
+                temps.append(weather[period]["temperature"])
+                # Check both precipitation_mm and condition keywords
+                if not has_precipitation:
+                    if weather[period].get("precipitation_mm", 0) > 0:
+                        has_precipitation = True
+                    elif any(kw in weather[period]["condition"].lower() for kw in RAIN_KEYWORDS):
+                        has_precipitation = True
+
+        if not temps:
+            return None
+
+        avg_temp = sum(temps) / len(temps)
+        min_temp = min(temps)
+        temp_range = f"{min_temp:.1f}°C - {max(temps):.1f}°C"
+
+        conditions_list = [weather[p]["condition"] for p in ["morning", "day", "evening"] if p in weather]
+        conditions = ", ".join(conditions_list)
+
+        prompt = f"""Рекомендуй, во что одеться на день в Тбилиси.
+
+Погода:
+- Температура: {temp_range} (минимум {min_temp:.1f}°C)
+- Условия: {conditions}
+- {'Ожидаются осадки' if has_precipitation else 'Без осадков'}
+
+ПРАВИЛО ДЛЯ КУРТКИ:
+Куртка/пальто нужна ТОЛЬКО если:
+  • Температура ниже 10°C, ИЛИ
+  • Ожидаются осадки (дождь, снег, гроза)
+В других случаях БЕЗ куртки!
+
+Дай практичную рекомендацию (2-3 вещи) на русском. Будь конкретен:
+- Укажи конкретные вещи (рубашка, джинсы, кроссовки и т.д.)
+- Если {'ЕСТЬ осадки ИЛИ' if has_precipitation else ''} температура ниже 10°C - укажи конкретную куртку/пальто
+- Если выше 10°C и нет осадков - НИКАКОЙ куртки!
+- Учитывай сезон (май 2026)
+
+Ответ - только список одежды, без объяснений."""
+
+        response = await get_client().chat.completions.create(
+            model="gpt-5.4-mini",
+            max_completion_tokens=100,
+            messages=[
+                {"role": "system", "content": "You are a fashion advisor in Russian. Follow the jacket rule strictly."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+
+        recommendation = response.choices[0].message.content.strip()
+
+        # Validate jacket logic: add/remove jacket if AI got it wrong
+        needs_jacket = avg_temp < 10 or has_precipitation
+        jacket_keywords = ["куртка", "пальто", "ветровка", "жакет", "кардиган", "анорак"]
+        has_jacket_mention = any(word in recommendation.lower() for word in jacket_keywords)
+
+        # Fix if logic is wrong
+        if needs_jacket and not has_jacket_mention:
+            recommendation = f"Куртка (от {avg_temp:.1f}°C)\n{recommendation}"
+        elif not needs_jacket and has_jacket_mention and avg_temp >= 10 and not has_precipitation:
+            # Remove jacket mention if conditions don't warrant it
+            lines = recommendation.split("\n")
+            lines = [l for l in lines if not any(word in l.lower() for word in jacket_keywords)]
+            recommendation = "\n".join(lines).strip()
+            if not recommendation:
+                recommendation = "Рубашка, джинсы, кроссовки"
+
+        logger.info(f"✓ Clothing recommendation (temp:{avg_temp:.1f}°C, rain:{has_precipitation}, jacket_needed:{needs_jacket})")
+        return recommendation
+
+    except Exception as e:
+        logger.warning(f"Failed to generate clothing recommendation: {e}")
+        return None

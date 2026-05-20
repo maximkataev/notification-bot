@@ -5,7 +5,6 @@ import httpx
 import re
 from typing import Optional, List
 from bs4 import BeautifulSoup
-from datetime import datetime
 from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)

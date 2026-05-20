@@ -56,11 +56,6 @@ async def _fetch_from_ecb_api() -> Optional[float]:
 
             root = ET.fromstring(response.content)
 
-            # ECB uses namespace in XML
-            namespace = {
-                "default": "http://www.ecb.int/vocabulary/2002-08-01/eurofxref"
-            }
-
             for cube in root.iter(
                 "{http://www.ecb.int/vocabulary/2002-08-01/eurofxref}Cube"
             ):

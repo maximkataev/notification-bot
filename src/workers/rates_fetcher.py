@@ -1,23 +1,11 @@
 """Fetch cryptocurrency and forex rates with historical data."""
 
-import asyncio
 import logging
 from typing import Optional, Dict
 from datetime import datetime, timedelta
 import httpx
 
 logger = logging.getLogger(__name__)
-
-# yfinance is no longer used - Yahoo Finance deprecated EURUSD=X and USDRUB=X symbols
-# Historical forex data is not available; graceful degradation in digest
-try:
-    import yfinance as yf
-
-    YFINANCE_AVAILABLE = False  # Force disable due to deprecated symbols
-    logger.info("yfinance available but disabled (Yahoo Finance symbols deprecated)")
-except ImportError:
-    YFINANCE_AVAILABLE = False
-    logger.debug("yfinance not installed")
 
 # Cache for historical forex rates (updated by background worker every 1 hour)
 _historical_forex_cache = {
@@ -113,16 +101,6 @@ async def _get_historical_from_open_exchange_rates(
     except Exception as e:
         logger.debug(f"Open Exchange Rates failed: {e}")
         return {}
-
-
-def _get_historical_from_yahoo_finance() -> Dict[str, Optional[float]]:
-    """Get historical forex rates from Yahoo Finance (free, no API key needed).
-
-    DEPRECATED: Yahoo Finance no longer supports EURUSD=X and USDRUB=X symbols.
-    Returns empty dict (graceful degradation).
-    """
-    logger.debug("Yahoo Finance historical data unavailable (deprecated symbols)")
-    return {}
 
 
 async def _update_historical_forex_cache():

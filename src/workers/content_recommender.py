@@ -16,7 +16,7 @@ from src.workers.content_parser import get_content_recommendation_with_review
 logger = logging.getLogger(__name__)
 
 
-async def get_content_recommendation() -> Optional[Dict[str, Any]]:
+async def get_content_recommendation(user_id: int = 71488343) -> Optional[Dict[str, Any]]:
     """
     Recommend fresh content with AI review in Russian.
 
@@ -37,7 +37,7 @@ async def get_content_recommendation() -> Optional[Dict[str, Any]]:
         logger.info("Getting content recommendation with AI review...")
 
         # Fetch all content + AI selection + Russian review
-        recommendation = await get_content_recommendation_with_review()
+        recommendation = await get_content_recommendation_with_review(user_id=user_id)
 
         if not recommendation:
             logger.warning("No content available for recommendation")

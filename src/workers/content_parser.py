@@ -11,8 +11,6 @@ import asyncio
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 import feedparser
-import re
-import json
 import base64
 from src.utils.openai_client import get_client
 from src.utils.doppler import get_secret
@@ -700,44 +698,49 @@ async def _fetch_single_russian_youtube_channel(
         channel_name = channel["name"]
         rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
-        async with httpx.AsyncClient(
-            timeout=5.0,
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
-        ) as client:
-            response = await client.get(rss_url)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(
+                timeout=6.0,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            ) as client:
+                response = await client.get(rss_url)
+                response.raise_for_status()
 
-        feed = feedparser.parse(response.content)
+            feed = feedparser.parse(response.content)
 
-        # Find first video published within time window
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        for entry in feed.entries[:5]:  # Check first 5 entries
-            try:
-                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                if pub_time < cutoff:
-                    continue  # Too old
+            # Find first video published within time window
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            for entry in feed.entries[:5]:  # Check first 5 entries
+                try:
+                    pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    if pub_time < cutoff:
+                        continue  # Too old
 
-                video_url = entry.get("link", "")
-                if not video_url:
+                    video_url = entry.get("link", "")
+                    if not video_url:
+                        continue
+
+                    # Get video title from entry
+                    video_title = entry.get("title", channel_name)
+
+                    video = {
+                        "title": video_title,
+                        "creator": channel_name,
+                        "url": video_url,
+                        "description": entry.get("summary", "")[:150],
+                        "type": "video",
+                        "platform": "youtube",
+                        "language": "ru",
+                        "published": entry.get("published", ""),
+                    }
+                    return video
+                except (TypeError, AttributeError):
                     continue
-
-                # Get video title from entry
-                video_title = entry.get("title", channel_name)
-
-                video = {
-                    "title": video_title,
-                    "creator": channel_name,
-                    "url": video_url,
-                    "description": entry.get("summary", "")[:150],
-                    "type": "video",
-                    "platform": "youtube",
-                    "language": "ru",
-                    "published": entry.get("published", ""),
-                }
-                return video
-            except (TypeError, AttributeError):
-                continue
-
+        except asyncio.CancelledError:
+            logger.debug(f"Russian YouTube fetch cancelled: {channel_name}")
+            raise
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.debug(
             f"Failed to fetch Russian YouTube {channel.get('name', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
@@ -768,14 +771,14 @@ async def get_russian_youtube_videos(
         ]
         try:
             if hasattr(asyncio, "timeout"):
-                async with asyncio.timeout(8.0):
+                async with asyncio.timeout(15.0):
                     results = await asyncio.gather(*tasks, return_exceptions=True)
             else:
                 results = await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=15.0
                 )
         except (asyncio.TimeoutError, TimeoutError):
-            logger.debug(f"Russian YouTube videos fetch timed out after 8s")
+            logger.debug(f"Russian YouTube videos fetch timed out after 15s")
             results = []
 
         # Filter out None and Exception results
@@ -807,44 +810,49 @@ async def _fetch_single_russian_podcast(
         rss_url = source.get("rss_url") or source.get("url")
         source_title = source.get("title", "Podcast")
 
-        async with httpx.AsyncClient(
-            timeout=5.0,
-            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
-        ) as client:
-            response = await client.get(rss_url)
-            response.raise_for_status()
+        try:
+            async with httpx.AsyncClient(
+                timeout=6.0,
+                headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+            ) as client:
+                response = await client.get(rss_url)
+                response.raise_for_status()
 
-        feed = feedparser.parse(response.content)
+            feed = feedparser.parse(response.content)
 
-        # Find first episode published within time window
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        for entry in feed.entries[:5]:  # Check first 5 entries
-            try:
-                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                if pub_time < cutoff:
-                    continue  # Too old
+            # Find first episode published within time window
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            for entry in feed.entries[:5]:  # Check first 5 entries
+                try:
+                    pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                    if pub_time < cutoff:
+                        continue  # Too old
 
-                episode_url = entry.get("link", "")
-                if not episode_url:
+                    episode_url = entry.get("link", "")
+                    if not episode_url:
+                        continue
+
+                    # Get episode title
+                    episode_title = entry.get("title", source_title)
+
+                    podcast = {
+                        "title": episode_title,
+                        "creator": source_title,
+                        "url": episode_url,
+                        "description": entry.get("summary", "")[:150],
+                        "type": "podcast",
+                        "platform": "podcast",
+                        "language": "ru",
+                        "published": entry.get("published", ""),
+                    }
+                    return podcast
+                except (TypeError, AttributeError):
                     continue
-
-                # Get episode title
-                episode_title = entry.get("title", source_title)
-
-                podcast = {
-                    "title": episode_title,
-                    "creator": source_title,
-                    "url": episode_url,
-                    "description": entry.get("summary", "")[:150],
-                    "type": "podcast",
-                    "platform": "podcast",
-                    "language": "ru",
-                    "published": entry.get("published", ""),
-                }
-                return podcast
-            except (TypeError, AttributeError):
-                continue
-
+        except asyncio.CancelledError:
+            logger.debug(f"Russian podcast fetch cancelled: {source_title}")
+            raise
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         logger.debug(
             f"Failed to fetch Russian podcast {source.get('title', 'unknown')}: {type(e).__name__}: {str(e)[:100]}"
@@ -865,14 +873,14 @@ async def get_russian_podcasts(
         tasks = [_fetch_single_russian_podcast(s, hours=hours) for s in ru_sources]
         try:
             if hasattr(asyncio, "timeout"):
-                async with asyncio.timeout(8.0):
+                async with asyncio.timeout(15.0):
                     results = await asyncio.gather(*tasks, return_exceptions=True)
             else:
                 results = await asyncio.wait_for(
-                    asyncio.gather(*tasks, return_exceptions=True), timeout=8.0
+                    asyncio.gather(*tasks, return_exceptions=True), timeout=15.0
                 )
         except (asyncio.TimeoutError, TimeoutError):
-            logger.debug(f"Russian podcasts fetch timed out after 8s")
+            logger.debug(f"Russian podcasts fetch timed out after 15s")
             results = []
 
         # Filter out None and Exception results
@@ -903,7 +911,7 @@ async def fetch_fresh_content(hours: int = 24) -> List[Dict[str, Any]]:
         # Fetch all sources in parallel with timeout
         try:
             if hasattr(asyncio, "timeout"):
-                async with asyncio.timeout(12.0):
+                async with asyncio.timeout(25.0):
                     en_videos, en_podcasts, ru_videos, ru_podcasts = (
                         await asyncio.gather(
                             get_youtube_videos(max_results=10, hours=hours),
@@ -922,10 +930,10 @@ async def fetch_fresh_content(hours: int = 24) -> List[Dict[str, Any]]:
                         get_russian_podcasts(max_results=10, hours=hours),
                         return_exceptions=True,
                     ),
-                    timeout=12.0,
+                    timeout=25.0,
                 )
         except (asyncio.TimeoutError, TimeoutError):
-            logger.warning(f"Content fetch timed out after 12s")
+            logger.warning(f"Content fetch timed out after 25s")
             en_videos = en_podcasts = ru_videos = ru_podcasts = []
 
         # Handle exceptions
@@ -1121,19 +1129,38 @@ async def _spotify_validate_credentials() -> bool:
         return False
 
 
-async def _recommend_music_album(access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Recommend a morning album via GPT, search on Spotify. Returns album dict or None."""
+async def _recommend_music_album(user_id: int = 71488343, access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Recommend a morning album via GPT with randomized genre + period."""
+    import random
+
     try:
         client = get_client()
-        prompt = """Посоветуй один интересный музыкальный альбом для утренней концентрации (аналитик/программист).
-Альбом должен быть реальным и известным.
+
+        # Рандомизация: жанр + период
+        genres = [
+            "ambient", "lo-fi", "jazz", "post-rock", "classical",
+            "synthwave", "drone", "deep house", "neo-classical",
+            "folk", "indie", "progressive rock"
+        ]
+        periods = [
+            "70х годов", "80х годов", "90х годов",
+            "2000х годов", "2010х годов", "современные"
+        ]
+
+        random_genre = random.choice(genres)
+        random_period = random.choice(periods)
+
+        logger.debug(f"🎲 Random selection: {random_genre} из {random_period}")
+
+        prompt = f"""Посоветуй один реальный и известный музыкальный альбом жанра {random_genre} из {random_period} для утренней концентрации.
+Не генерируй новые альбомы, рекомендуй только существующие произведения.
 
 Ответь только JSON без markdown:
-{
+{{
   "album": "<название альбома>",
   "artist": "<имя исполнителя>",
   "description": "<краткое описание, 1-2 предложения, макс 150 символов>"
-}"""
+}}"""
 
         try:
             response = await client.chat.completions.create(
@@ -1185,7 +1212,7 @@ async def _recommend_music_album(access_token: Optional[str] = None) -> Optional
             "language": "ru",
             "platform": "spotify",
         }
-        logger.info(f"✓ Album of day: {album} by {artist}")
+        logger.info(f"✓ Album of day: {album} by {artist} ({random_genre} из {random_period})")
         return result
 
     except Exception as e:
@@ -1193,7 +1220,7 @@ async def _recommend_music_album(access_token: Optional[str] = None) -> Optional
         return None
 
 
-async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
+async def get_content_recommendation_with_review(user_id: int = 71488343) -> Optional[Dict[str, Any]]:
     """
     Main function: fetch fresh content (last 24h), have GPT select it.
     Fallback to music album recommendation if no fresh content found.
@@ -1224,7 +1251,7 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
 
         # Fallback: recommend music album
         logger.info("⚠️  No fresh content found, recommending music album...")
-        result = await _recommend_music_album()
+        result = await _recommend_music_album(user_id=user_id)
         return result
 
     except Exception as e:
@@ -1232,7 +1259,7 @@ async def get_content_recommendation_with_review() -> Optional[Dict[str, Any]]:
         return None
 
 
-async def get_album_of_day() -> Optional[Dict[str, Any]]:
+async def get_album_of_day(user_id: int = 71488343) -> Optional[Dict[str, Any]]:
     """
     Get today's music album recommendation via GPT + Spotify.
 
@@ -1254,7 +1281,7 @@ async def get_album_of_day() -> Optional[Dict[str, Any]]:
         access_token = await _spotify_get_access_token()
 
         # Get album recommendation
-        result = await _recommend_music_album(access_token=access_token)
+        result = await _recommend_music_album(user_id=user_id, access_token=access_token)
 
         if result and result.get('title') and result.get('creator'):
             logger.info(f"✓ Album of day: {result.get('title')} by {result.get('creator')}")

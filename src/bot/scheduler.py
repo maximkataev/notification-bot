@@ -13,7 +13,7 @@ from src.utils.doppler import get_secret
 from src.utils.openai_client import get_client
 from src.db.database import get_user_profile, get_news_prompt
 from src.workers.todoist_client import get_todoist_tasks
-from src.ai.weather_aggregator import get_aggregated_weather
+from src.ai.weather_aggregator import get_aggregated_weather, generate_clothing_recommendation
 from src.workers.news_fetcher import (
     get_politics_economy_news,
     get_sports_news,
@@ -21,7 +21,7 @@ from src.workers.news_fetcher import (
     get_culture_science_news,
     get_good_news,
 )
-from src.ai.news_processor import select_and_summarize_news_with_gpt
+from src.ai.news_processor import select_and_summarize_news_with_gpt, select_good_news_with_summaries
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
 from src.workers.rates_fetcher import (
     get_crypto_and_forex_rates,
@@ -238,10 +238,12 @@ async def _morning_digest_impl(
                 if temp:
                     break
 
-        # Check for precipitation (new: use precipitation_mm instead of condition string)
+        # Check for precipitation from weather condition keywords
+        # (Yandex/Gismeteo HTML parsers return precipitation_mm=0.0, use condition keywords instead)
+        RAIN_KEYWORDS = ["дождь", "снег", "гроза", "морось", "ливень", "ледяной дождь", "град"]
         is_raining = any(
             isinstance(weather.get(period), dict)
-            and weather[period].get("precipitation_mm", 0) > 0
+            and any(kw in weather[period].get("condition", "").lower() for kw in RAIN_KEYWORDS)
             for period in ["morning", "day", "evening"]
         )
 
@@ -267,8 +269,7 @@ async def _morning_digest_impl(
 - Пустые мотивационные фразы
 
 ✅ СТИЛЬ:
-- Просто и честно: "вот и утро пришло"
-- Личный контакт: можно "ты", теплая интонация
+- Личный контакт: можно "ты", теплая интонация, подбадривающие слова
 - Практичность: учти погоду, подготовься к дню
 - Лёгкий юмор или наблюдение, если уместно
 
@@ -308,38 +309,26 @@ async def _morning_digest_impl(
         logger.error("❌ AI returned incomplete response, using fallback")
         simple_greeting = "Доброе утро! Вот и началось новое утро. Кофе, завтрак, планы — и можно начинать день."
 
-    # Compute clothing recommendation based on weather rules (not AI)
-    morning_temp = None
-    day_temp = None
-    morning_wind = None
-    if weather and isinstance(weather.get("morning"), dict):
-        morning_temp = weather["morning"].get("temperature")
-        morning_wind = weather["morning"].get("wind_speed")
-    if weather and isinstance(weather.get("day"), dict):
-        day_temp = weather["day"].get("temperature")
+    # AI-based clothing recommendation with jacket validation
+    # (Replaces old rule-based logic that didn't account for temperature < 10°C)
+    outfit_advice = await generate_clothing_recommendation(weather, is_raining=is_raining)
 
-    # Jacket needed ONLY if: precipitation expected (rain, snow, etc.)
-    needs_jacket = is_raining
+    if not outfit_advice:
+        # Fallback: rule-based with correct jacket threshold (< 10°C OR is_raining)
+        logger.warning("⚠️ AI clothing recommendation failed, using fallback")
+        morning_temp = None
+        day_temp = None
+        if weather and isinstance(weather.get("morning"), dict):
+            morning_temp = weather["morning"].get("temperature")
+        if weather and isinstance(weather.get("day"), dict):
+            day_temp = weather["day"].get("temperature")
 
-    # Determine outer layer recommendation
-    if needs_jacket:
-        # Jacket is primary recommendation (only for rain/precipitation)
-        outer_layer = "куртка"
-    elif morning_wind is not None and morning_wind > 15:
-        # Strong wind → recommend hoodie
-        outer_layer = "худи"
-    elif day_temp is not None and day_temp < 15:
-        # Day temperature < 15°C → recommend hoodie
-        outer_layer = "худи"
-    else:
-        # No outerwear recommendation needed
-        outer_layer = None
-
-    # Build outfit advice (with or without outer layer)
-    if outer_layer:
-        outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки"
-    else:
-        outfit_advice = "Штаны, кофта, кроссовки"
+        needs_jacket = is_raining or (
+            (morning_temp is not None and morning_temp < 10) or
+            (day_temp is not None and day_temp < 10)
+        )
+        outer_layer = "куртка" if needs_jacket else ("худи" if day_temp is not None and day_temp < 15 else None)
+        outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки" if outer_layer else "Штаны, кофта, кроссовки"
 
     logger.info(
         f"✓ Generated - greeting: {simple_greeting[:70]}... | outfit: {outfit_advice}"
@@ -478,16 +467,36 @@ async def _morning_digest_impl(
         f"✓ News fetched: {total_news} items total | politics: {len(politics_news)}, sports: {len(sports_news)}, tech: {len(technology_news)}, culture: {len(culture_news)}, good: {len(goodness_news)}"
     )
 
+    # Check if this is a secondary user without tasks (and not user 71488343)
+    is_secondary_no_tasks = skip_tasks and user_id != 71488343
+
     if total_news > 0:
-        logger.info("Sending news pools to ChatGPT for selection and summarization")
-        selected_with_indices = await select_and_summarize_news_with_gpt(
-            politics_news,
-            sports_news,
-            technology_news,
-            culture_news,
-            goodness_news,
-            user_id,
-        )
+        if is_secondary_no_tasks:
+            # For secondary users without tasks: show only 6 good news with summaries
+            if goodness_news:
+                logger.info(f"Secondary user {user_id} without tasks: using good news selection ({len(goodness_news)} items)")
+                selected_with_indices = await select_good_news_with_summaries(goodness_news)
+            else:
+                logger.warning(f"Secondary user {user_id}: no good news available, fallback to standard selection")
+                selected_with_indices = await select_and_summarize_news_with_gpt(
+                    politics_news,
+                    sports_news,
+                    technology_news,
+                    culture_news,
+                    goodness_news,
+                    user_id,
+                )
+        else:
+            # Standard news selection for primary user or user 71488343
+            logger.info("Sending news pools to ChatGPT for selection and summarization")
+            selected_with_indices = await select_and_summarize_news_with_gpt(
+                politics_news,
+                sports_news,
+                technology_news,
+                culture_news,
+                goodness_news,
+                user_id,
+            )
 
         if selected_with_indices:
             logger.info(f"✓ ChatGPT selected {len(selected_with_indices)} news items")
@@ -501,6 +510,9 @@ async def _morning_digest_impl(
                 + goodness_news
             )
 
+            # Calculate offset for good news indices (only used in good news selection)
+            goodness_offset = len(politics_news) + len(sports_news) + len(technology_news) + len(culture_news)
+
             # Match indices back to original news items and format with URLs
             message_lines.append("Новости:")
             message_lines.append("")
@@ -510,9 +522,15 @@ async def _morning_digest_impl(
                 category = item["category"]
                 description_ru = item.get("description_ru", "")
 
+                # For good news selection, adjust index to combined array offset
+                if is_secondary_no_tasks and category == "goodness":
+                    combined_idx = idx + goodness_offset
+                else:
+                    combined_idx = idx
+
                 # Get original news item by index (with safety check)
-                if 0 <= idx < len(all_news):
-                    original_news = all_news[idx]
+                if 0 <= combined_idx < len(all_news):
+                    original_news = all_news[combined_idx]
                     source = original_news.get("source", "Unknown")
                     url = original_news.get("url", "")
 
@@ -530,7 +548,7 @@ async def _morning_digest_impl(
                         f"  [{i}] {category}: {description_ru[:60]}... | {source}"
                     )
                 else:
-                    logger.warning(f"Invalid index {idx} for news selection, skipping")
+                    logger.warning(f"Invalid index {combined_idx} for news selection, skipping")
 
         else:
             logger.warning("⚠️  ChatGPT news selection failed, showing placeholder")
@@ -882,9 +900,9 @@ async def _morning_digest_impl(
         try:
             if hasattr(asyncio, "timeout"):  # Python 3.11+
                 async with asyncio.timeout(15):
-                    album = await get_album_of_day()
+                    album = await get_album_of_day(user_id=user_id)
             else:  # Python 3.10 and earlier
-                album = await asyncio.wait_for(get_album_of_day(), timeout=15.0)
+                album = await asyncio.wait_for(get_album_of_day(user_id=user_id), timeout=15.0)
         except asyncio.TimeoutError:
             logger.warning("Album of the day timed out (15s), skipping")
         except Exception as e:

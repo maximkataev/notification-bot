@@ -74,6 +74,179 @@ def _has_excluded_content(text: str, exclusions: list) -> bool:
     return False
 
 
+async def select_good_news_with_summaries(
+    goodness_news: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    For secondary users without tasks: select up to 6 good news items
+    and generate ChatGPT summaries for each. No duplicates.
+
+    Returns:
+        [
+            {"index": 0, "category": "goodness", "description_ru": "..."},
+            ...
+        ]
+        or None if ChatGPT call fails
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    if not goodness_news:
+        logger.warning("No good news items to process")
+        return None
+
+    try:
+        # Build indexed news list, removing duplicates by URL
+        # Keep original indices so we can match them back in scheduler
+        indexed_news = []
+        seen_urls = set()
+
+        for orig_pos, item in enumerate(goodness_news):
+            url = item.get("url", "")
+            # Skip if duplicate URL
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+
+            description = item.get("description", "")
+            description = _clean_html(description)[:500]
+
+            indexed_news.append({
+                "index": orig_pos,  # Keep original position in goodness_news
+                "title": item.get("title", ""),
+                "description": description,
+                "source": item.get("source", ""),
+                "url": item.get("url", ""),
+            })
+
+            # Limit to 15 items for ChatGPT to choose from
+            if len(indexed_news) >= 15:
+                break
+
+        if not indexed_news:
+            logger.warning("No unique good news items after deduplication")
+            return None
+
+        logger.info(f"Processing {len(indexed_news)} unique good news items (deduplicated)")
+
+        # Build prompt for ChatGPT
+        system_prompt = """You are a news editor who selects the most positive and uplifting news stories.
+Select exactly 6 news items that are genuinely positive, heartwarming, or inspiring.
+For each, write a summary in Russian (50-70 words) that captures the essence of the good news.
+Ensure no duplicates by checking titles and descriptions.
+Return ONLY valid JSON array."""
+
+        user_prompt = f"""SELECT EXACTLY 6 GOOD NEWS ITEMS from this list (or fewer if not enough).
+For each, provide a summary in Russian.
+Ensure they are truly positive (animals, volunteering, achievements, rescues, breakthroughs).
+BAN: deaths, diseases, tragedies, wars, negative events.
+
+NEWS:
+{json.dumps(indexed_news, ensure_ascii=False, indent=2)}
+
+REQUIREMENTS:
+- Select UP TO 6 news items (can be fewer if not enough positive stories)
+- description_ru: ONE COMPLETE SUMMARY (50-70 words in Russian)
+  * Starts with NEW information (not just title rewrite)
+  * Includes details, facts, context
+  * Ends with period
+  * Grammatically correct Russian
+- Return ONLY JSON array, no other text
+
+EXAMPLE OUTPUT:
+[
+  {{"index": 0, "category": "goodness", "description_ru": "Волонтеры спасли 500 бездомных собак и открыли новый приют. Проект получил грант, все животные здоровы и получат заботу."}},
+  {{"index": 2, "category": "goodness", "description_ru": "Ученые разработали новый метод лечения рака. Испытания показали 85% эффективность при минимальных побочных эффектах."}}
+]
+"""
+
+        # Get API key
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.5,
+                    "max_completion_tokens": 800,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        # Parse JSON response
+        try:
+            # Extract JSON if wrapped in markdown
+            if "```json" in gpt_response:
+                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in gpt_response:
+                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
+
+            selected_news = json.loads(gpt_response)
+        except json.JSONDecodeError:
+            # Try extracting first [ ... ] block
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
+            if match:
+                try:
+                    selected_news = json.loads(match.group())
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse JSON: {gpt_response[:100]}")
+                    return None
+            else:
+                logger.error(f"No JSON array found in response: {gpt_response[:100]}")
+                return None
+
+        # Validate indices and build result
+        valid_news = []
+        seen_indices = set()
+
+        for item in selected_news:
+            if not isinstance(item, dict):
+                continue
+
+            idx = item.get("index", -1)
+
+            # Skip duplicates
+            if idx in seen_indices:
+                logger.debug(f"Skipping duplicate index {idx}")
+                continue
+
+            # Validate index
+            if not (0 <= idx < len(indexed_news)):
+                logger.warning(f"Invalid index {idx} (max {len(indexed_news)-1}), skipping")
+                continue
+
+            seen_indices.add(idx)
+            valid_news.append(item)
+
+        if not valid_news:
+            logger.warning("No valid news items selected")
+            return None
+
+        logger.info(f"✓ ChatGPT selected {len(valid_news)} good news items")
+        for item in valid_news:
+            desc = item.get("description_ru", "")[:50]
+            logger.info(f"  [{item['index']}] {desc}...")
+
+        return valid_news
+
+    except Exception as e:
+        logger.error(f"Failed to process good news with ChatGPT: {type(e).__name__}: {e}")
+        return None
+
+
 async def select_and_summarize_news_with_gpt(
     politics_news: List[Dict[str, Any]],
     sports_news: List[Dict[str, Any]],

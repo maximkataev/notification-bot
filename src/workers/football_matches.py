@@ -1,13 +1,203 @@
 """Fetch football matches for priority teams today via kulichki.net parser."""
 
 import logging
-import asyncio
 from typing import Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
+from html import unescape
+import re
+import feedparser
+import httpx
 from src.utils.openai_client import get_client
 from src.workers.kulichki_parser import get_today_matches_from_kulichki, get_yesterday_results_from_kulichki
 
 logger = logging.getLogger(__name__)
+
+# Sport RSS feeds (from news_fetcher.py)
+SPORTS_FEEDS = [
+    "https://feeds.bbci.co.uk/sport/rss.xml",  # BBC Sport
+    "https://www.espn.com/espn/rss/news",  # ESPN
+    "https://www.eurosport.com/rss/eurosport_rss_news.xml",  # Eurosport
+    "https://www.goal.com/feeds/news",  # Goal.com (football)
+    "https://feeds.sky.com/feed/sports/football",  # Sky Sports Football
+    "https://www.marca.com/rss/futbol/",  # Marca (Spanish football)
+    "https://www.as.com/rss/futbol/",  # AS.com (Spanish sports)
+    "https://feeds.theguardian.com/theguardian/sport/football/rss",  # Guardian Football
+]
+
+# Country translations: Russian name → English name for World Cup matches
+COUNTRY_TRANSLATIONS = {
+    "Испания": "Spain",
+    "Франция": "France",
+    "Англия": "England",
+    "Германия": "Germany",
+    "Нидерланды": "Netherlands",
+    "Португалия": "Portugal",
+    "Бельгия": "Belgium",
+    "Бразилия": "Brazil",
+    "Аргентина": "Argentina",
+    "Мексика": "Mexico",
+    "Канада": "Canada",
+    "США": "USA",
+    "Япония": "Japan",
+    "Австралия": "Australia",
+    "Южная Корея": "South Korea",
+    "Марокко": "Morocco",
+    "Уэльс": "Wales",
+    "Шотландия": "Scotland",
+    "Швейцария": "Switzerland",
+    "Дания": "Denmark",
+    "Норвегия": "Norway",
+    "Швеция": "Sweden",
+    "Греция": "Greece",
+    "Чехия": "Czech Republic",
+    "Венгрия": "Hungary",
+    "Польша": "Poland",
+    "Украина": "Ukraine",
+    "Турция": "Turkey",
+    "Иран": "Iran",
+    "Саудовская Аравия": "Saudi Arabia",
+    "Ирак": "Iraq",
+    "Катар": "Qatar",
+    "ОАЭ": "UAE",
+    "Австрия": "Austria",
+    "Хорватия": "Croatia",
+    "Сербия": "Serbia",
+    "Россия": "Russia",
+    "Новая Зеландия": "New Zealand",
+    "Косово": "Kosovo",
+    "Грузия": "Georgia",
+    "Киргизия": "Kyrgyzstan",
+    "Узбекистан": "Uzbekistan",
+    "Казахстан": "Kazakhstan",
+    "Монголия": "Mongolia",
+    "Таиланд": "Thailand",
+    "Вьетнам": "Vietnam",
+    "Индия": "India",
+    "Чили": "Chile",
+    "Парагвай": "Paraguay",
+    "Коста-Рика": "Costa Rica",
+    "Панама": "Panama",
+    "Гондурас": "Honduras",
+    "Сальвадор": "El Salvador",
+}
+
+
+def _clean_html(text: str) -> str:
+    """Remove HTML tags and decode HTML entities."""
+    text = re.sub(r"<[^>]+>", "", text)
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _is_football_article(title: str, description: str) -> bool:
+    """Check if article is about football/soccer."""
+    text = f"{title} {description}".lower()
+
+    # Core football keywords (at least one of these required)
+    core_football_keywords = [
+        "football", "soccer", "match", "goal", "goalkeeper",
+        "striker", "midfielder", "defender", "offside", "penalty",
+        "corner", "freekick", "free kick", "half-time", "halftime",
+        "premier league", "la liga", "ligue 1", "serie a", "bundesliga",
+        "champions league", "europa league", "world cup", "worldcup",
+        "football club", "football team", "soccer team",
+        "scored", "conceded", "assist", "tackle",
+        "футбол", "матч", "гол", "вратарь", "защитник",
+        "нападающий", "полузащитник", "офсайд", "пенальти",
+        "чемпионат", "лига", "кубок", "мировой кубок"
+    ]
+
+    # Check if any core football keyword is in the text
+    for keyword in core_football_keywords:
+        if keyword in text:
+            return True
+
+    return False
+
+
+async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_world_cup: bool = False) -> Optional[str]:
+    """
+    Find sport news article about a specific match from RSS feeds.
+    Searches SPORTS_FEEDS for articles mentioning both teams.
+
+    Args:
+        home: Home team name (Russian or English)
+        away: Away team name (Russian or English)
+        match_date: Match date in YYYY-MM-DD format
+        is_world_cup: If True, translate Russian country names to English for RSS search
+
+    Returns:
+        Match news text or None if not found
+    """
+    # For World Cup matches, translate Russian country names to English
+    search_home = home
+    search_away = away
+
+    if is_world_cup:
+        search_home = COUNTRY_TRANSLATIONS.get(home, home)
+        search_away = COUNTRY_TRANSLATIONS.get(away, away)
+        logger.debug(f"World Cup match: translating {home} → {search_home}, {away} → {search_away}")
+
+    logger.debug(f"Searching RSS feeds for match news: {search_home} vs {search_away} on {match_date}")
+
+    cutoff_time = datetime.strptime(match_date, "%Y-%m-%d")
+    all_items = []
+
+    # Fetch from all sports feeds in parallel
+    for feed_url in SPORTS_FEEDS:
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(feed_url)
+                response.raise_for_status()
+
+            feed = feedparser.parse(response.text)
+
+            for entry in feed.entries[:20]:  # Check first 20 items per feed
+                # Check publication date
+                pub_time = None
+                if hasattr(entry, "published_parsed") and entry.published_parsed:
+                    pub_time = datetime(*entry.published_parsed[:6])
+                elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
+                    pub_time = datetime(*entry.updated_parsed[:6])
+
+                # Only include articles from match date
+                if pub_time:
+                    # Check if date matches (within same day)
+                    if pub_time.date() != cutoff_time.date():
+                        continue
+
+                title = entry.get("title", "").lower()
+                description = entry.get("summary", "")
+                description = _clean_html(description)
+
+                # Check if both team names are mentioned (using translated names for World Cup)
+                home_mentioned = search_home.lower() in title or search_home.lower() in description.lower()
+                away_mentioned = search_away.lower() in title or search_away.lower() in description.lower()
+
+                # Verify this is actually a football article
+                if home_mentioned and away_mentioned and _is_football_article(title, description):
+                    url = entry.get("link", "")
+                    all_items.append({
+                        "title": entry.get("title", ""),
+                        "description": description[:300],
+                        "url": url,
+                        "source": feed.feed.get("title", "Unknown")
+                    })
+                    logger.debug(f"Found match article: {entry.get('title', '')[:60]}")
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch {feed_url.split('/')[2]}: {type(e).__name__}")
+            continue
+
+    # Return the first matching article's description
+    if all_items:
+        best = all_items[0]
+        logger.info(f"✓ Found match news: {best['title'][:60]}...")
+        return best["description"]
+
+    logger.debug(f"No match news found for {search_home} vs {search_away}")
+    return None
 
 # Priority teams in exact order (Russian names as they appear on kulichki.net)
 PRIORITY_TEAMS = ["Барселона", "Реал Мадрид", "Арсенал", "ПСЖ", "Атлетико", "Манчестер"]
@@ -93,7 +283,7 @@ LEAGUE_FLAGS = {
 
 async def get_today_matches() -> Optional[List[Dict[str, Any]]]:
     """
-    Get football matches for priority teams today via championat.com parser.
+    Get football matches for priority teams today via kulichki.net parser.
     Returns up to 3 matches in priority team order.
     """
     try:
@@ -392,7 +582,7 @@ async def get_yesterday_results() -> Optional[List[Dict[str, Any]]]:
 
 
 async def format_result_with_ai(result: Dict[str, Any]) -> str:
-    """Format a yesterday's result with AI-generated commentary."""
+    """Format a yesterday's result with AI-generated commentary enhanced with match report."""
     home = result.get("home", "Unknown")
     away = result.get("away", "Unknown")
     score = result.get("score", "?:?")
@@ -451,9 +641,24 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
             standings_str = f"🏆 {league}"
             standings_info = f"Матч турнира: {league}"
 
+    # Fetch match news from RSS feeds (yesterday's date)
+    match_report = ""
+    try:
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        is_world_cup = "World Cup" in league
+        news = await _find_match_news_from_rss(home, away, yesterday, is_world_cup=is_world_cup)
+
+        if news:
+            match_report = f"\nСПОРТИВНАЯ НОВОСТЬ О МАТЧЕ:\n{news}"
+            logger.debug(f"Found match news for {home} vs {away}")
+        else:
+            logger.debug(f"No match news found for {home} vs {away}")
+    except Exception as e:
+        logger.warning(f"Failed to fetch match news: {type(e).__name__}")
+
     # Generate AI commentary (1-2 sentences)
     halftime_context = f" (перерыв: {halftime_score})" if halftime_score else ""
-    prompt = f"""Напиши краткий обзор прошедшего матча (1-2 предложения). Используй доступные данные для максимальной информативности.
+    prompt = f"""Напиши краткий обзор прошедшего матча (1-2 предложения). Используй ВСЕ доступные данные для максимальной информативности.
 
 МАТЧ:
 {home} vs {away}
@@ -465,11 +670,12 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
 {score}{halftime_context}
 
 КОНТЕКСТ И СТАТИСТИКА:
-{standings_info}
+{standings_info}{match_report}
 
 ТРЕБОВАНИЯ:
 - 1-2 предложения (максимум 30 слов)
 - Укажи, кто победил и почему (разница класса, тактика, счёт)
+- Используй информацию из спортивной новости если доступна
 - Укажи позиции в таблице, если доступно, или кто прошёл дальше если кубок
 - На русском языке
 - Без вводных фраз типа "Это был матч"
@@ -488,7 +694,7 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
             model="gpt-5.4-mini",
             max_completion_tokens=100,
             messages=[
-                {"role": "system", "content": "You are a sports analyst in Russian. Provide brief match summaries."},
+                {"role": "system", "content": "You are a sports analyst in Russian. Provide brief match summaries based on available information."},
                 {"role": "user", "content": prompt},
             ],
         )

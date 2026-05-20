@@ -10,7 +10,6 @@ Fetches content from last 24 hours. Fallback sources used if primary yields insu
 import logging
 import httpx
 import asyncio
-import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import feedparser
@@ -91,73 +90,101 @@ MEME_SOURCES_RU = [
 ]
 
 
-async def _fetch_from_rss(url: str, source_title: str, timeout: float = 10.0) -> List[Dict[str, Any]]:
-    """Fetch items from RSS feed with detailed error handling."""
+async def _fetch_from_rss(url: str, source_title: str, timeout: float = 10.0, max_retries: int = 3) -> List[Dict[str, Any]]:
+    """Fetch items from RSS feed with retries and redirect handling."""
     items = []
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-            except httpx.TimeoutException:
-                logger.warning(f"⏱️  {source_title}: timeout after {timeout}s")
-                return []
-            except httpx.ConnectError as e:
-                logger.warning(f"🔗 {source_title}: connection failed - {str(e)[:100]}")
-                return []
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"❌ {source_title}: HTTP {e.response.status_code}")
-                return []
 
+    for attempt in range(max_retries):
         try:
-            feed = feedparser.parse(response.content)
-        except Exception as e:
-            logger.warning(f"📄 {source_title}: parse error - {type(e).__name__}")
-            return []
-
-        entry_count = 0
-        for entry in feed.entries[:10]:  # Check up to 10 entries
-            entry_count += 1
-            try:
-                # Check if published within last 24 hours
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    try:
-                        pub_time = datetime(*entry.published_parsed[:6])
-                        if (datetime.now() - pub_time).total_seconds() > 86400:  # 24 hours
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                except httpx.TimeoutException:
+                    if attempt < max_retries - 1:
+                        delay = 1.0 * (2 ** attempt)
+                        logger.debug(f"⏱️  {source_title}: timeout (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.warning(f"⏱️  {source_title}: timeout after {timeout}s (all retries exhausted)")
+                        return []
+                except httpx.ConnectError as e:
+                    if attempt < max_retries - 1:
+                        delay = 1.0 * (2 ** attempt)
+                        logger.debug(f"🔗 {source_title}: connection error (attempt {attempt + 1}/{max_retries}), retrying...")
+                        await asyncio.sleep(delay)
+                        continue
+                    else:
+                        logger.warning(f"🔗 {source_title}: connection failed after {max_retries} attempts")
+                        return []
+                except httpx.HTTPStatusError as e:
+                    # Retry on 502, 503, 504, 429
+                    if e.response.status_code in [429, 502, 503, 504]:
+                        if attempt < max_retries - 1:
+                            delay = 1.0 * (2 ** attempt)
+                            logger.debug(f"⚠️  {source_title}: HTTP {e.response.status_code} (attempt {attempt + 1}/{max_retries}), retrying in {delay}s...")
+                            await asyncio.sleep(delay)
                             continue
-                    except (TypeError, ValueError) as e:
-                        logger.debug(f"Date parse error in {source_title}: {type(e).__name__}")
-                        pass  # No valid date, include it
+                        else:
+                            logger.warning(f"❌ {source_title}: HTTP {e.response.status_code} (all {max_retries} retries exhausted)")
+                            return []
+                    else:
+                        logger.warning(f"❌ {source_title}: HTTP {e.response.status_code}")
+                        return []
 
-                title = entry.get("title", "").strip()
-                url = entry.get("link", "").strip()
+            try:
+                feed = feedparser.parse(response.content)
+            except Exception as e:
+                logger.warning(f"📄 {source_title}: parse error - {type(e).__name__}")
+                return []
 
-                if not title or not url:
+            entry_count = 0
+            for entry in feed.entries[:10]:  # Check up to 10 entries
+                entry_count += 1
+                try:
+                    # Check if published within last 24 hours
+                    if hasattr(entry, "published_parsed") and entry.published_parsed:
+                        try:
+                            pub_time = datetime(*entry.published_parsed[:6])
+                            if (datetime.now() - pub_time).total_seconds() > 86400:  # 24 hours
+                                continue
+                        except (TypeError, ValueError) as e:
+                            logger.debug(f"Date parse error in {source_title}: {type(e).__name__}")
+                            pass  # No valid date, include it
+
+                    title = entry.get("title", "").strip()
+                    url = entry.get("link", "").strip()
+
+                    if not title or not url:
+                        continue
+
+                    item = {
+                        "title": title,
+                        "url": url,
+                        "description": entry.get("summary", "")[:300],
+                        "source": source_title,
+                        "language": "en",
+                        "published": entry.get("published", ""),
+                    }
+                    items.append(item)
+
+                except Exception as e:
+                    logger.debug(f"Entry parse error in {source_title}: {type(e).__name__}")
                     continue
 
-                item = {
-                    "title": title,
-                    "url": url,
-                    "description": entry.get("summary", "")[:300],
-                    "source": source_title,
-                    "language": "en",
-                    "published": entry.get("published", ""),
-                }
-                items.append(item)
+            if items:
+                logger.info(f"✓ {source_title}: {len(items)}/{entry_count} items")
+            else:
+                logger.debug(f"⊘ {source_title}: no valid items found")
+            return items
 
-            except Exception as e:
-                logger.debug(f"Entry parse error in {source_title}: {type(e).__name__}")
-                continue
+        except Exception as e:
+            logger.error(f"❌ {source_title}: unexpected error - {type(e).__name__}: {str(e)[:150]}")
+            return []
 
-        if items:
-            logger.info(f"✓ {source_title}: {len(items)}/{entry_count} items")
-        else:
-            logger.debug(f"⊘ {source_title}: no valid items found")
-        return items
-
-    except Exception as e:
-        logger.error(f"❌ {source_title}: unexpected error - {type(e).__name__}: {str(e)[:150]}")
-        return []
+    # If all retries exhausted
+    return items
 
 
 async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
