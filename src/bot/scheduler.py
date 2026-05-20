@@ -665,7 +665,6 @@ async def _morning_digest_impl(
                     message_lines.append(formatted)
                     message_lines.append("")
                     logger.info(f"  Non-urgent: {task.what or task.raw_text[:30]}")
-                message_lines.append("")
         else:
             message_lines.append("Дел на сегодня нет.")
             logger.info("No tasks for today")
