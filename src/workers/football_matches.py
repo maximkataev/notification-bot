@@ -140,6 +140,19 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
     Returns:
         Match news text or None if not found
     """
+    # Team name mappings (Russian → English alternatives)
+    TEAM_MAPPINGS = {
+        "Манчестер": ["Manchester", "Man City", "Man Utd"],
+        "Борнмут": ["Bournemouth", "AFC Bournemouth"],
+        "Барселона": ["Barcelona", "Barça"],
+        "Реал Мадрид": ["Real Madrid"],
+        "Атлетико": ["Atlético Madrid", "Atletico"],
+        "Арсенал": ["Arsenal"],
+        "ПСЖ": ["PSG", "Paris"],
+        "Манчестер Сити": ["Manchester City", "Man City"],
+        "Манчестер Юнайтед": ["Manchester United", "Man Utd"],
+    }
+
     # For World Cup matches, translate Russian country names to English
     search_home = home
     search_away = away
@@ -149,7 +162,10 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
         search_away = COUNTRY_TRANSLATIONS.get(away, away)
         logger.debug(f"World Cup match: translating {home} → {search_home}, {away} → {search_away}")
 
-    logger.debug(f"Searching {len(SPORTS_FEEDS)} RSS feeds for: {search_home} vs {search_away} on {match_date}")
+    # Build search alternatives
+    home_alts = TEAM_MAPPINGS.get(search_home, [])
+    away_alts = TEAM_MAPPINGS.get(search_away, [])
+    logger.debug(f"Searching {len(SPORTS_FEEDS)} feeds for: '{search_home}'{f' (+{home_alts})' if home_alts else ''} vs '{search_away}'{f' (+{away_alts})' if away_alts else ''}")
 
     cutoff_time = datetime.strptime(match_date, "%Y-%m-%d")
     all_items = []
@@ -157,6 +173,7 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
 
     # Fetch from all sports feeds
     for feed_url in SPORTS_FEEDS:
+        feed_name = feed_url.split('/')[2] if '/' in feed_url else feed_url
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 response = await client.get(feed_url)
@@ -164,6 +181,9 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
 
             feed = feedparser.parse(response.text)
             feed_success_count += 1
+
+            # Count matching articles in this feed
+            feed_match_count = 0
 
             for entry in feed.entries[:20]:  # Check first 20 items per feed
                 # Check publication date
@@ -184,12 +204,26 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
                 description = entry.get("summary", "")
                 description = _clean_html(description)
 
-                # Check if both team names are mentioned (using translated names for World Cup)
-                home_mentioned = search_home.lower() in title or search_home.lower() in description.lower()
-                away_mentioned = search_away.lower() in title or search_away.lower() in description.lower()
+                # Check if both team names are mentioned (with alternative names)
+                def team_mentioned(team: str, text: str) -> bool:
+                    """Check if team is mentioned in text (primary name or alternatives)."""
+                    text_lower = text.lower()
+                    if team.lower() in text_lower:
+                        return True
+                    # Check alternative names
+                    alternatives = TEAM_MAPPINGS.get(team, [])
+                    return any(alt.lower() in text_lower for alt in alternatives)
+
+                home_mentioned = team_mentioned(search_home, title) or team_mentioned(search_home, description)
+                away_mentioned = team_mentioned(search_away, title) or team_mentioned(search_away, description)
+                is_football = _is_football_article(title, description)
+
+                # Log matching attempts for first few non-matching entries
+                if len(all_items) == 0 and len([x for x in [home_mentioned, away_mentioned, is_football] if x]) > 0:
+                    logger.debug(f"  Partial match: home={home_mentioned}, away={away_mentioned}, football={is_football} | {entry.get('title', '')[:50]}")
 
                 # Verify this is actually a football article
-                if home_mentioned and away_mentioned and _is_football_article(title, description):
+                if home_mentioned and away_mentioned and is_football:
                     url = entry.get("link", "")
                     all_items.append({
                         "title": entry.get("title", ""),
@@ -197,21 +231,27 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
                         "url": url,
                         "source": feed.feed.get("title", "Unknown")
                     })
-                    logger.debug(f"Found match article: {entry.get('title', '')[:60]}")
+                    feed_match_count += 1
+                    logger.debug(f"  ✓ Match article found: {entry.get('title', '')[:60]}")
+
+            # Log per-feed results if found matches
+            if feed_match_count > 0:
+                logger.debug(f"  {feed_name}: {feed_match_count} match article(s) found")
 
         except Exception as e:
-            feed_domain = feed_url.split('/')[2] if '/' in feed_url else feed_url
-            logger.debug(f"Failed to fetch {feed_domain}: {type(e).__name__}")
+            logger.debug(f"Failed to fetch {feed_name}: {type(e).__name__}: {str(e)[:50]}")
             continue
 
     # Return the first matching article's description
-    logger.debug(f"Checked {feed_success_count}/{len(SPORTS_FEEDS)} feeds, found {len(all_items)} match articles")
+    logger.info(f"[RSS] Checked {feed_success_count}/{len(SPORTS_FEEDS)} feeds for '{search_home}' vs '{search_away}' on {match_date}")
+    logger.debug(f"[RSS] Found {len(all_items)} matching articles across all feeds")
+
     if all_items:
         best = all_items[0]
         logger.info(f"✓ Found match news: {best['title'][:60]}... ({best['source']})")
         return best["description"]
 
-    logger.debug(f"No match news found for {search_home} vs {search_away} on {match_date}")
+    logger.info(f"[RSS] No match articles found for {search_home} vs {search_away} (checked {feed_success_count} feeds)")
     return None
 
 # Priority teams in exact order (Russian names as they appear on kulichki.net)
