@@ -14,14 +14,24 @@ logger = logging.getLogger(__name__)
 
 # Sport RSS feeds (from news_fetcher.py)
 SPORTS_FEEDS = [
+    # Premium football sources
     "https://feeds.bbci.co.uk/sport/rss.xml",  # BBC Sport
     "https://www.espn.com/espn/rss/news",  # ESPN
     "https://www.eurosport.com/rss/eurosport_rss_news.xml",  # Eurosport
     "https://www.goal.com/feeds/news",  # Goal.com (football)
     "https://feeds.sky.com/feed/sports/football",  # Sky Sports Football
+
+    # La Liga, Premier League specific
     "https://www.marca.com/rss/futbol/",  # Marca (Spanish football)
     "https://www.as.com/rss/futbol/",  # AS.com (Spanish sports)
+    "https://www.mundodeportivo.com/feed.xml",  # Mundo Deportivo (La Liga)
     "https://feeds.theguardian.com/theguardian/sport/football/rss",  # Guardian Football
+
+    # Additional European coverage
+    "https://www.football-italia.net/rss.xml",  # Serie A
+    "https://www.sport1.de/fussball/rss.xml",  # Sport1 (Bundesliga)
+    "https://www.l1.fr/rss.xml",  # Ligue 1 official
+    "https://www.football-esp.com/feed",  # Spanish football focus
 ]
 
 # Country translations: Russian name → English name for World Cup matches
@@ -139,12 +149,13 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
         search_away = COUNTRY_TRANSLATIONS.get(away, away)
         logger.debug(f"World Cup match: translating {home} → {search_home}, {away} → {search_away}")
 
-    logger.debug(f"Searching RSS feeds for match news: {search_home} vs {search_away} on {match_date}")
+    logger.debug(f"Searching {len(SPORTS_FEEDS)} RSS feeds for: {search_home} vs {search_away} on {match_date}")
 
     cutoff_time = datetime.strptime(match_date, "%Y-%m-%d")
     all_items = []
+    feed_success_count = 0
 
-    # Fetch from all sports feeds in parallel
+    # Fetch from all sports feeds
     for feed_url in SPORTS_FEEDS:
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
@@ -152,6 +163,7 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
                 response.raise_for_status()
 
             feed = feedparser.parse(response.text)
+            feed_success_count += 1
 
             for entry in feed.entries[:20]:  # Check first 20 items per feed
                 # Check publication date
@@ -161,10 +173,11 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
                 elif hasattr(entry, "updated_parsed") and entry.updated_parsed:
                     pub_time = datetime(*entry.updated_parsed[:6])
 
-                # Only include articles from match date
+                # Only include articles from match date (or 1 day after for delayed reports)
                 if pub_time:
-                    # Check if date matches (within same day)
-                    if pub_time.date() != cutoff_time.date():
+                    # Check if date matches (match date or 1 day after for delayed reports)
+                    days_diff = (pub_time.date() - cutoff_time.date()).days
+                    if days_diff < 0 or days_diff > 1:
                         continue
 
                 title = entry.get("title", "").lower()
@@ -187,16 +200,18 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
                     logger.debug(f"Found match article: {entry.get('title', '')[:60]}")
 
         except Exception as e:
-            logger.debug(f"Failed to fetch {feed_url.split('/')[2]}: {type(e).__name__}")
+            feed_domain = feed_url.split('/')[2] if '/' in feed_url else feed_url
+            logger.debug(f"Failed to fetch {feed_domain}: {type(e).__name__}")
             continue
 
     # Return the first matching article's description
+    logger.debug(f"Checked {feed_success_count}/{len(SPORTS_FEEDS)} feeds, found {len(all_items)} match articles")
     if all_items:
         best = all_items[0]
-        logger.info(f"✓ Found match news: {best['title'][:60]}...")
+        logger.info(f"✓ Found match news: {best['title'][:60]}... ({best['source']})")
         return best["description"]
 
-    logger.debug(f"No match news found for {search_home} vs {search_away}")
+    logger.debug(f"No match news found for {search_home} vs {search_away} on {match_date}")
     return None
 
 # Priority teams in exact order (Russian names as they appear on kulichki.net)
@@ -646,15 +661,23 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     try:
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         is_world_cup = "World Cup" in league
+
+        # First try to find news on match date (yesterday)
         news = await _find_match_news_from_rss(home, away, yesterday, is_world_cup=is_world_cup)
+
+        # Fallback: if no news found, try 2 days ago (in case of delay)
+        if not news:
+            two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
+            logger.info(f"No match news on {yesterday}, trying {two_days_ago}...")
+            news = await _find_match_news_from_rss(home, away, two_days_ago, is_world_cup=is_world_cup)
 
         if news:
             match_report = f"\nСПОРТИВНАЯ НОВОСТЬ О МАТЧЕ:\n{news}"
-            logger.debug(f"Found match news for {home} vs {away}")
+            logger.info(f"✓ Found match news for {home} vs {away} ({len(news)} chars)")
         else:
-            logger.debug(f"No match news found for {home} vs {away}")
+            logger.info(f"⚠️  No match news found for {home} vs {away} in last 2 days (will use standings only)")
     except Exception as e:
-        logger.warning(f"Failed to fetch match news: {type(e).__name__}")
+        logger.warning(f"Failed to fetch match news: {type(e).__name__}: {str(e)[:100]}")
 
     # Generate AI commentary (1-2 sentences)
     halftime_context = f" (перерыв: {halftime_score})" if halftime_score else ""

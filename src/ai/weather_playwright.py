@@ -1,4 +1,4 @@
-"""Weather fetching with Playwright (handles JavaScript rendering)."""
+"""Weather fetching with Playwright (handles JavaScript rendering) - with detailed logging."""
 
 import asyncio
 import logging
@@ -15,56 +15,67 @@ CONDITION_EMOJI = {
 }
 
 
-async def _fetch_with_playwright(url: str, timeout_ms: int = 15000) -> Optional[str]:
+async def _fetch_with_playwright(url: str, timeout_ms: int = 15000, source: str = "source") -> Optional[str]:
     """Fetch page with Playwright (renders JavaScript)."""
     try:
+        logger.info(f"[{source}] Launching browser and loading {url}...")
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             )
             page = await context.new_page()
+
+            logger.info(f"[{source}] Navigating to {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            await page.wait_for_timeout(2000)  # Extra wait for JS rendering
+
+            logger.info(f"[{source}] Page loaded, waiting for JavaScript to render...")
+            await page.wait_for_timeout(3000)  # Wait for JS rendering
+
             html = await page.content()
+            html_size = len(html)
+
+            logger.info(f"[{source}] ✓ HTML fetched: {html_size} bytes")
+
             await context.close()
             await browser.close()
             return html
     except PlaywrightTimeoutError:
-        logger.warning(f"Playwright timeout for {url}")
+        logger.error(f"[{source}] ❌ Playwright timeout ({timeout_ms}ms)")
         return None
     except Exception as e:
-        logger.warning(f"Playwright error: {type(e).__name__}: {str(e)[:100]}")
+        logger.error(f"[{source}] ❌ Playwright error: {type(e).__name__}: {str(e)[:200]}")
         return None
 
 
 async def get_weather_gismeteo() -> Optional[Dict[str, Any]]:
     """Fetch from Gismeteo with Playwright."""
     url = "https://www.gismeteo.ru/weather-tbilisi-5277/"
-    html = await _fetch_with_playwright(url)
+    html = await _fetch_with_playwright(url, source="GISMETEO")
     if html:
-        logger.debug("✓ Gismeteo fetch success")
+        logger.info("[GISMETEO] ✓ Fetch success")
         return {"html": html, "source": "gismeteo"}
     else:
-        logger.warning("❌ Gismeteo fetch failed")
+        logger.warning("[GISMETEO] ❌ Fetch failed")
         return None
 
 
 async def get_weather_yandex() -> Optional[Dict[str, Any]]:
     """Fetch from Yandex with Playwright."""
     url = "https://yandex.ru/pogoda/ru/tbilisi"
-    html = await _fetch_with_playwright(url)
+    html = await _fetch_with_playwright(url, source="YANDEX")
     if html:
-        logger.debug("✓ Yandex fetch success")
+        logger.info("[YANDEX] ✓ Fetch success")
         return {"html": html, "source": "yandex"}
     else:
-        logger.warning("❌ Yandex fetch failed")
+        logger.warning("[YANDEX] ❌ Fetch failed")
         return None
 
 
 def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
     """Parse Gismeteo HTML (with multiple selector strategies)."""
     if not data or "html" not in data:
+        logger.warning("[GISMETEO] No HTML data provided")
         return None
 
     try:
@@ -72,21 +83,34 @@ def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
         weather_by_period = {}
         periods = ["night", "morning", "day", "evening"]
 
-        # Try multiple selectors
-        cards = soup.find_all("div", class_="time-item")
-        if not cards:
-            cards = soup.find_all("div", class_="weather-card")
-        if not cards:
-            cards = soup.find_all("div", attrs={"data-period": True})
-        if not cards:
-            cards = soup.find_all("div", attrs={"class": lambda x: x and "period" in x})
+        logger.info("[GISMETEO] Parsing HTML with multiple selectors...")
 
-        logger.debug(f"Gismeteo: found {len(cards)} cards")
+        # Try multiple selectors
+        selectors = [
+            ("div.time-item", soup.find_all("div", class_="time-item")),
+            ("div.weather-card", soup.find_all("div", class_="weather-card")),
+            ("div[data-period]", soup.find_all("div", attrs={"data-period": True})),
+            ("div with 'period' class", soup.find_all("div", attrs={"class": lambda x: x and "period" in x})),
+            ("div with 'weather' class", soup.find_all("div", attrs={"class": lambda x: x and "weather" in x})),
+        ]
+
+        cards = []
+        for selector_name, result in selectors:
+            logger.debug(f"[GISMETEO] Selector '{selector_name}': {len(result)} elements")
+            if result:
+                cards = result
+                logger.info(f"[GISMETEO] ✓ Found {len(cards)} cards with selector: {selector_name}")
+                break
+
         if not cards:
+            # Log HTML snippet for debugging
+            html_snippet = data["html"][:1000]
+            logger.error(f"[GISMETEO] ❌ No weather cards found. HTML snippet:\n{html_snippet}")
             return None
 
         for idx, period_name in enumerate(periods[:len(cards)]):
             card = cards[idx]
+            logger.debug(f"[GISMETEO] Processing period {idx}: {period_name}")
 
             # Temperature
             temp_elem = card.find("span", class_="unit")
@@ -101,8 +125,12 @@ def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
                     temp_str = temp_elem.get_text(strip=True)
                     temp_val = temp_str.split("°")[0].strip()
                     temp = float(temp_val.replace("−", "-").replace("–", "-"))
-                except (ValueError, AttributeError):
+                    logger.debug(f"[GISMETEO] {period_name}: temp={temp}°C")
+                except (ValueError, AttributeError) as e:
+                    logger.debug(f"[GISMETEO] Failed to parse temp for {period_name}: {e}")
                     temp = None
+            else:
+                logger.debug(f"[GISMETEO] No temperature element found for {period_name}")
 
             # Condition
             condition = "облачно"
@@ -111,6 +139,7 @@ def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
                 cond_elem = card.find("div", attrs={"class": lambda x: x and "condition" in x})
             if cond_elem:
                 condition = cond_elem.get_text(strip=True).lower()
+                logger.debug(f"[GISMETEO] {period_name}: condition={condition}")
 
             emoji = CONDITION_EMOJI.get(condition, "🌤️")
 
@@ -122,16 +151,18 @@ def _parse_gismeteo(data: Dict) -> Optional[Dict[str, Dict]]:
                     "precipitation_mm": 0.0,
                 }
 
+        logger.info(f"[GISMETEO] ✓ Parsed {len(weather_by_period)} periods")
         return weather_by_period if weather_by_period else None
 
     except Exception as e:
-        logger.warning(f"Gismeteo parse error: {type(e).__name__}: {str(e)[:100]}")
+        logger.error(f"[GISMETEO] ❌ Parse error: {type(e).__name__}: {str(e)[:200]}")
         return None
 
 
 def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
     """Parse Yandex HTML (with multiple selector strategies)."""
     if not data or "html" not in data:
+        logger.warning("[YANDEX] No HTML data provided")
         return None
 
     try:
@@ -139,19 +170,34 @@ def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
         weather_by_period = {}
         periods = ["night", "morning", "day", "evening"]
 
-        # Try multiple selectors
-        cards = soup.find_all("div", attrs={"class": lambda x: x and "forecast-item" in x})
-        if not cards:
-            cards = soup.find_all("li", attrs={"class": lambda x: x and "forecast" in x})
-        if not cards:
-            cards = soup.find_all("div", attrs={"class": lambda x: x and "period" in x})
+        logger.info("[YANDEX] Parsing HTML with multiple selectors...")
 
-        logger.debug(f"Yandex: found {len(cards)} cards")
+        # Try multiple selectors
+        selectors = [
+            ("div with 'forecast-item' class", soup.find_all("div", attrs={"class": lambda x: x and "forecast-item" in x})),
+            ("li with 'forecast' class", soup.find_all("li", attrs={"class": lambda x: x and "forecast" in x})),
+            ("div with 'period' class", soup.find_all("div", attrs={"class": lambda x: x and "period" in x})),
+            ("div with 'temp' class", soup.find_all("div", attrs={"class": lambda x: x and "temp" in x})),
+            ("div.weather-forecast", soup.find_all("div", class_="weather-forecast")),
+        ]
+
+        cards = []
+        for selector_name, result in selectors:
+            logger.debug(f"[YANDEX] Selector '{selector_name}': {len(result)} elements")
+            if result:
+                cards = result
+                logger.info(f"[YANDEX] ✓ Found {len(cards)} cards with selector: {selector_name}")
+                break
+
         if not cards:
+            # Log HTML snippet for debugging
+            html_snippet = data["html"][:1000]
+            logger.error(f"[YANDEX] ❌ No weather cards found. HTML snippet:\n{html_snippet}")
             return None
 
         for idx, period_name in enumerate(periods[:len(cards)]):
             card = cards[idx]
+            logger.debug(f"[YANDEX] Processing period {idx}: {period_name}")
 
             # Temperature
             temp_elem = card.find("span", attrs={"class": lambda x: x and "temp" in x})
@@ -164,8 +210,12 @@ def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
                     temp_str = temp_elem.get_text(strip=True)
                     temp_val = temp_str.split("°")[0].strip().replace("+", "")
                     temp = float(temp_val.replace("−", "-").replace("–", "-"))
-                except (ValueError, AttributeError):
+                    logger.debug(f"[YANDEX] {period_name}: temp={temp}°C")
+                except (ValueError, AttributeError) as e:
+                    logger.debug(f"[YANDEX] Failed to parse temp for {period_name}: {e}")
                     temp = None
+            else:
+                logger.debug(f"[YANDEX] No temperature element found for {period_name}")
 
             # Condition
             condition = "облачно"
@@ -174,6 +224,7 @@ def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
                 cond_elem = card.find("div", attrs={"class": lambda x: x and "description" in x})
             if cond_elem:
                 condition = cond_elem.get_text(strip=True).lower()
+                logger.debug(f"[YANDEX] {period_name}: condition={condition}")
 
             emoji = CONDITION_EMOJI.get(condition, "🌤️")
 
@@ -185,10 +236,11 @@ def _parse_yandex(data: Dict) -> Optional[Dict[str, Dict]]:
                     "precipitation_mm": 0.0,
                 }
 
+        logger.info(f"[YANDEX] ✓ Parsed {len(weather_by_period)} periods")
         return weather_by_period if weather_by_period else None
 
     except Exception as e:
-        logger.warning(f"Yandex parse error: {type(e).__name__}: {str(e)[:100]}")
+        logger.error(f"[YANDEX] ❌ Parse error: {type(e).__name__}: {str(e)[:200]}")
         return None
 
 
@@ -206,7 +258,7 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
 
     # Process Gismeteo
     if isinstance(gismeteo_data, Exception):
-        logger.warning(f"Gismeteo: {gismeteo_data}")
+        logger.error(f"[GISMETEO] Exception: {type(gismeteo_data).__name__}: {str(gismeteo_data)[:200]}")
     elif gismeteo_data:
         parsed = _parse_gismeteo(gismeteo_data)
         if parsed:
@@ -214,10 +266,12 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
             logger.info("✓ Gismeteo: OK")
         else:
             logger.warning("✗ Gismeteo: parse failed")
+    else:
+        logger.warning("[GISMETEO] Fetch returned None")
 
     # Process Yandex
     if isinstance(yandex_data, Exception):
-        logger.warning(f"Yandex: {yandex_data}")
+        logger.error(f"[YANDEX] Exception: {type(yandex_data).__name__}: {str(yandex_data)[:200]}")
     elif yandex_data:
         parsed = _parse_yandex(yandex_data)
         if parsed:
@@ -225,6 +279,8 @@ async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
             logger.info("✓ Yandex: OK")
         else:
             logger.warning("✗ Yandex: parse failed")
+    else:
+        logger.warning("[YANDEX] Fetch returned None")
 
     if not results:
         logger.error("❌ All weather sources failed")
