@@ -83,7 +83,6 @@ notification-bot/
 │   ├── test_gwp*.py                # GWP scraper validation
 │   ├── test_news_processor.py      # News selection logic
 │   ├── test_task_explanations.py   # Task explanation generation
-│   ├── test_openai_balance.py      # OpenAI balance monitor
 │   └── test_webhook_secret.py      # Webhook security
 │
 ├── scripts/                        # Development utilities and debug scripts
@@ -137,9 +136,8 @@ The heart of the morning digest. Orchestrates all digest components in sequence.
 17. **Fetch exchange rates** (BTC, ETH, USD→EUR, USD→RUB) with 24h/30d changes
 18. **Fetch top Product Hunt product** (today's top product with description)
 19. **Get content recommendation** (random video, podcast, or music for analyst/tech specialist)
-20. **Check OpenAI account balance** (shows balance, warns if <$0.50)
-21. **Build final message** with all sections
-22. **Send to Telegram** via `bot.send_message()` (split if >4000 chars)
+20. **Build final message** with all sections
+21. **Send to Telegram** via `bot.send_message()` (split if >4000 chars)
 
 **Critical Bug Fixes**:
 - News items from `news_fetcher.py` have `description` field, NOT `summary`
@@ -500,42 +498,7 @@ f"({arrow} {abs(change):.1f}% for 24h, ...)"  # Example: (↑ 0.9% for 24h, ↑ 
 
 ---
 
-### 9. **OpenAI Balance Monitor** (`src/workers/openai_balance.py`)
-
-Checks OpenAI account balance and displays in digest with low-balance warning.
-
-**Function**: `async get_openai_balance() → Optional[float]`
-
-**How it works**:
-1. Tries OpenAI SDK billing API (`client.billing.credit_grants.list()`)
-2. Falls back to direct HTTP request to `/v1/billing/credit_grants`
-3. Returns balance in USD or `None` if unavailable
-
-**Requirements**:
-- OPENAI_API_KEY configured in Doppler
-- API key must have billing access (Organization-level keys usually do)
-- Graceful fallback: if key lacks permissions, digest still sends without balance
-
-**Display Format**:
-```
-💳 Баланс OpenAI: $5.42
-```
-
-**Alert** (if balance < $0.50):
-```
-💳 Баланс OpenAI: $0.32
-⚠️  Баланс менее 50¢ — рекомендуется пополнить аккаунт!
-```
-
-**If Unavailable**: No balance line shown (digest sends normally)
-
-**Timeout**: 10 seconds per request
-
-**See also**: [OPENAI_BALANCE.md](OPENAI_BALANCE.md) for setup and troubleshooting
-
----
-
-### 10. **Quote of the Day** (`src/workers/quote_of_day.py`)
+### 9. **Quote of the Day** (`src/workers/quote_of_day.py`)
 
 Fetches inspirational wisdom/quotes to energize the user for the day.
 
@@ -557,7 +520,7 @@ Fetches inspirational wisdom/quotes to energize the user for the day.
 
 ---
 
-### 11. **Air Quality Monitor** (`src/workers/air_quality.py`)
+### 10. **Air Quality Monitor** (`src/workers/air_quality.py`)
 
 Monitors air quality in Tbilisi using World Air Quality Index (WAQI) API.
 
@@ -590,7 +553,7 @@ Monitors air quality in Tbilisi using World Air Quality Index (WAQI) API.
 
 ---
 
-### 12. **Product Hunt Aggregator** (`src/workers/product_hunt.py`)
+### 11. **Product Hunt Aggregator** (`src/workers/product_hunt.py`)
 
 Fetches today's top product from Product Hunt using free RSS feed.
 
@@ -609,7 +572,7 @@ Fetches today's top product from Product Hunt using free RSS feed.
 
 ---
 
-### 13. **Content Recommender** (`src/workers/content_recommender.py`)
+### 12. **Content Recommender** (`src/workers/content_recommender.py`)
 
 Recommends niche, high-quality content (video, podcast, music) curated for systems engineer + business analyst + AI enthusiast.
 
@@ -653,7 +616,7 @@ Recommends niche, high-quality content (video, podcast, music) curated for syste
 
 ---
 
-### 14. **Task Explainer** (`src/ai/task_explainer.py`)
+### 13. **Task Explainer** (`src/ai/task_explainer.py`)
 
 Generates brief AI explanations for tasks in the digest.
 
@@ -680,7 +643,7 @@ Generates brief AI explanations for tasks in the digest.
 
 ---
 
-### 15. **Tbilisi Events** (`src/workers/tbilisi_events.py` + `src/bot/handlers/events_handler.py`)
+### 14. **Tbilisi Events** (`src/workers/tbilisi_events.py` + `src/bot/handlers/events_handler.py`)
 
 Aggregates upcoming Tbilisi events from 4+ sources and generates personalized descriptions via ChatGPT.
 
@@ -731,7 +694,7 @@ Each event gets a **280-character personalized description** that:
 
 ---
 
-### 16. **Database** (`src/db/`)
+### 15. **Database** (`src/db/`)
 
 SQLite with aiosqlite for async access.
 
@@ -784,7 +747,7 @@ async def delete_task(task_id: int) → None
 
 ---
 
-### 17. **Telegram Handlers** (`src/bot/handlers/`)
+### 16. **Telegram Handlers** (`src/bot/handlers/`)
 
 Command routing and user interaction.
 
@@ -997,7 +960,6 @@ All unit tests are located in [`tests/`](tests/) directory:
 | [`test_gwp_all_streets.py`](tests/test_gwp_all_streets.py) | GWP comprehensive street matching |
 | [`test_news_processor.py`](tests/test_news_processor.py) | News selection logic, keyword filtering |
 | [`test_task_explanations.py`](tests/test_task_explanations.py) | Task explanation generation via GPT |
-| [`test_openai_balance.py`](tests/test_openai_balance.py) | OpenAI balance monitor |
 | [`test_webhook_secret.py`](tests/test_webhook_secret.py) | Webhook security validation |
 
 Run all tests:

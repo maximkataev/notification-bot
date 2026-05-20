@@ -8,6 +8,7 @@ AI selects fresh content and writes review in Russian.
 import logging
 import httpx
 import asyncio
+import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 import feedparser

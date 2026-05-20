@@ -64,7 +64,6 @@
 │  │  │  - air_quality (WAQI)                           │ │ │
 │  │  │  - product_hunt (RSS feed)                      │ │ │
 │  │  │  - quote_of_day (quotable.io + fallback)        │ │ │
-│  │  │  - openai_balance (billing API)                 │ │ │
 │  │  │  - content_recommender (curated list)           │ │ │
 │  │  │  - currency_monitor (EUR/USD alerts)            │ │ │
 │  │  │  - water_cut_monitor (water outage alerts)      │ │ │
@@ -133,7 +132,6 @@ notification-bot/
 │   │   ├── air_quality.py              # Air quality API
 │   │   ├── product_hunt.py             # Product Hunt RSS
 │   │   ├── quote_of_day.py             # Inspirational quotes
-│   │   ├── openai_balance.py           # OpenAI balance check
 │   │   ├── content_recommender.py      # Content suggestions
 │   │   ├── currency_monitor.py         # EUR/USD alerts (background task)
 │   │   ├── water_cut_monitor.py        # Water outage alerts (background task)

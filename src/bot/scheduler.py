@@ -13,7 +13,7 @@ from src.utils.doppler import get_secret
 from src.utils.openai_client import get_client
 from src.db.database import get_user_profile, get_news_prompt
 from src.workers.todoist_client import get_todoist_tasks
-from src.ai.weather_bbc import get_aggregated_weather, generate_clothing_recommendation
+from src.ai.weather_sources import get_aggregated_weather, generate_clothing_recommendation
 from src.workers.news_fetcher import (
     get_politics_economy_news,
     get_sports_news,
@@ -278,7 +278,7 @@ async def _morning_digest_impl(
 Погода в Тбилиси: {weather_desc}
 {weather_details}
 
-Напиши приветствие естественно, как письмо другу, которое начинается с "Привет" и заканчивается готовностью начать день."""
+Напиши приветствие естественно, как письмо другу, которое начинается с "Привет" и заканчивается готовностью начать день. Ты пишешь человеку мужского пола, который просыпается в Тбилиси и видит такую погоду. Учитывай это в тоне и содержании приветствия."""  # noqa: E501
 
     logger.info("🔄 Calling AI to generate morning greeting and weather advice")
 

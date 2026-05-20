@@ -67,11 +67,6 @@ This directory contains all unit and integration tests for the notification bot.
 
 ### Monitoring Tests
 
-**[`test_openai_balance.py`](test_openai_balance.py)** — OpenAI balance monitor
-- Tests balance retrieval from OpenAI API
-- Tests low-balance warning ($0.50 threshold)
-- Tests fallback if API key lacks permissions
-
 **[`test_webhook_secret.py`](test_webhook_secret.py)** — Webhook security
 - Tests HMAC-SHA256 validation
 - Tests webhook signature verification

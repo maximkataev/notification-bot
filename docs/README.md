@@ -31,13 +31,11 @@ All project context, implementation details, and guides are organized here.
 ## Data & APIs
 - **[FOREX_DYNAMIC.md](FOREX_DYNAMIC.md)** — Exchange rate fetching with dynamic changes
 - **[FOREX_HISTORY_SETUP.md](FOREX_HISTORY_SETUP.md)** — Historical forex data setup
-- **[OPENAI_BALANCE.md](OPENAI_BALANCE.md)** — OpenAI account balance monitoring
 - **[NEWS_DIGEST_FEATURE.md](NEWS_DIGEST_FEATURE.md)** — News fetching and filtering
 
 ## Changelog & Updates
 - **[CHANGELOG_GPT_SORTING.md](CHANGELOG_GPT_SORTING.md)** — Task sorting with GPT priority ranking
 - **[CHANGELOG_TASK_DISPLAY.md](CHANGELOG_TASK_DISPLAY.md)** — Task display improvements
-- **[CHANGELOG_OPENAI_BALANCE.md](CHANGELOG_OPENAI_BALANCE.md)** — OpenAI balance monitoring
 - **[CHANGELOG_FOREX.md](CHANGELOG_FOREX.md)** — Forex rate changes
 - **[EVENTS_IMPLEMENTATION_DONE.md](EVENTS_IMPLEMENTATION_DONE.md)** — World Cup events feature
 - **[EVENTS_SOURCES_DIAGNOSTIC.md](EVENTS_SOURCES_DIAGNOSTIC.md)** — Events API diagnostics
