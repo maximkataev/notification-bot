@@ -196,6 +196,12 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
 
                 try:
                     response = await client.get(url)
+
+                    # Skip 4xx errors (not found, etc) without retry
+                    if 400 <= response.status_code < 500:
+                        logger.debug(f"[KULICHKI] {league_name}: {response.status_code} Not Found")
+                        continue
+
                     response.raise_for_status()
 
                     matches = _parse_league_page(response.text, league_name)
@@ -327,6 +333,12 @@ async def get_yesterday_results_from_kulichki() -> Optional[List[Dict[str, Any]]
 
                 try:
                     response = await client.get(url)
+
+                    # Skip 4xx errors (not found, etc) without retry
+                    if 400 <= response.status_code < 500:
+                        logger.debug(f"[KULICHKI] {league_name}: {response.status_code} Not Found")
+                        continue
+
                     response.raise_for_status()
 
                     matches = _parse_league_page_for_results(response.text, league_name)

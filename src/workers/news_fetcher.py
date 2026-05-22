@@ -76,6 +76,13 @@ async def _fetch_from_feeds(
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(feed_url)
+
+                # Skip 4xx errors (not found, etc) without retry
+                if 400 <= response.status_code < 500:
+                    logger.debug(f"{feed_url}: {response.status_code} Not Found")
+                    failed += 1
+                    continue
+
                 response.raise_for_status()
 
             feed = feedparser.parse(response.text)

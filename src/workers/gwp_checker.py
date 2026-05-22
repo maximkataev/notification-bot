@@ -119,6 +119,12 @@ async def check_water_cuts() -> Optional[str]:
                     response = await client.get(
                         url, follow_redirects=True, timeout=10.0
                     )
+
+                    # Skip 4xx errors (not found, etc) without retry
+                    if 400 <= response.status_code < 500:
+                        logger.debug(f"{url}: {response.status_code} Not Found")
+                        continue
+
                     response.raise_for_status()
                 except Exception as e:
                     logger.debug(f"Error fetching {url}: {e}")

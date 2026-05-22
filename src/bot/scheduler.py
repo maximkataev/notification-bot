@@ -43,7 +43,7 @@ from src.workers.tbilisi_events import get_tbilisi_events, format_events_for_tel
 logger = logging.getLogger(__name__)
 
 # Constants
-MORNING_DIGEST_TIMEOUT_SECONDS = 120
+MORNING_DIGEST_TIMEOUT_SECONDS = 300
 TELEGRAM_MESSAGE_CHAR_LIMIT = 4000
 WEATHER_JACKET_THRESHOLD_C = 10
 PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
