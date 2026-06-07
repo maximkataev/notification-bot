@@ -23,6 +23,7 @@ from src.workers.news_fetcher import (
 )
 from src.ai.news_processor import select_and_summarize_news_with_gpt, select_good_news_with_summaries
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
+from src.workers.subscriptions_checker import check_expiring_subscriptions
 from src.workers.rates_fetcher import (
     get_crypto_and_forex_rates,
     _update_historical_forex_cache,
@@ -424,6 +425,16 @@ async def _morning_digest_impl(
         message_lines.append("")
     else:
         logger.info("No scheduled works on Vazha Iverievi")
+
+    # Check Google Sheet for expiring VPS / domains (within 7 days)
+    logger.info("Checking Google Sheet for expiring VPS / domains")
+    expiring = await check_expiring_subscriptions()
+    if expiring:
+        message_lines.append("🔔 Скоро истекает оплата (продли!):")
+        message_lines.extend(expiring)
+        message_lines.append("")
+    else:
+        logger.info("No expiring VPS / domains in the next 7 days")
 
     # Fetch news from 5 specialized pools in parallel
     logger.info(
