@@ -105,30 +105,49 @@ def _check_rows(
     return warnings
 
 
-async def check_expiring_subscriptions() -> Optional[List[str]]:
+async def check_expiring_subscriptions() -> Dict:
     """
     Check VPS and Domains sheets for items expiring within WARN_DAYS.
 
-    Returns a list of formatted warning lines, or None if nothing is expiring
-    or the sheet could not be fetched.
+    Returns a dict:
+        {
+            "ok": bool,            # False if the sheet could not be fetched
+            "warnings": List[str], # expiring items (may be empty)
+            "error": str | None,   # human-readable error when ok is False
+        }
     """
     today = date.today()
 
     sheet_id = _get_sheet_id()
     if not sheet_id:
-        return None
+        return {
+            "ok": False,
+            "warnings": [],
+            "error": "SUBSCRIPTIONS_SHEET_ID не задан в Doppler",
+        }
 
     vps_rows = await _fetch_csv(sheet_id, "VPS")
     # Tab name "Домены" must be URL-encoded for the request
     domain_rows = await _fetch_csv(sheet_id, "%D0%94%D0%BE%D0%BC%D0%B5%D0%BD%D1%8B")
 
-    warnings: List[str] = []
+    failed_tabs: List[str] = []
+    if vps_rows is None:
+        failed_tabs.append("VPS")
+    if domain_rows is None:
+        failed_tabs.append("Домены")
 
+    warnings: List[str] = []
     if vps_rows:
         warnings.extend(_check_rows(vps_rows, "Название", "VPS", today))
     if domain_rows:
         warnings.extend(_check_rows(domain_rows, "Домен", "Домен", today))
 
-    if not warnings:
-        return None
-    return warnings
+    error = None
+    if failed_tabs:
+        error = "не удалось загрузить вкладки: " + ", ".join(failed_tabs)
+
+    return {
+        "ok": not failed_tabs,
+        "warnings": warnings,
+        "error": error,
+    }

@@ -428,12 +428,17 @@ async def _morning_digest_impl(
 
     # Check Google Sheet for expiring VPS / domains (within 7 days)
     logger.info("Checking Google Sheet for expiring VPS / domains")
-    expiring = await check_expiring_subscriptions()
-    if expiring:
-        message_lines.append("🔔 Скоро истекает оплата (продли!):")
-        message_lines.extend(expiring)
+    subs = await check_expiring_subscriptions()
+    if not subs["ok"]:
+        message_lines.append(
+            f"⚠️ Не удалось проверить VPS/домены: {subs['error']}"
+        )
         message_lines.append("")
-    else:
+    if subs["warnings"]:
+        message_lines.append("🔔 Скоро истекает оплата (продли!):")
+        message_lines.extend(subs["warnings"])
+        message_lines.append("")
+    elif subs["ok"]:
         logger.info("No expiring VPS / domains in the next 7 days")
 
     # Fetch news from 5 specialized pools in parallel
