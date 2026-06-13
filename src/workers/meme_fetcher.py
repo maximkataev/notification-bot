@@ -187,6 +187,48 @@ async def _fetch_from_rss(url: str, source_title: str, timeout: float = 10.0, ma
     return items
 
 
+async def _fetch_from_meme_api(count: int = 10) -> List[Dict[str, Any]]:
+    """Fetch memes via meme-api.com (D3vd Meme API).
+
+    This proxies Reddit server-side, so it works even when Reddit IP-blocks us
+    (HTTP 429 on the .rss endpoints). Returns SFW memes only.
+    """
+    items: List[Dict[str, Any]] = []
+    try:
+        # /gimme/{count} returns a mix from popular meme subreddits
+        url = f"https://meme-api.com/gimme/{max(1, min(count, 50))}"
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+
+        for m in data.get("memes", []):
+            if m.get("nsfw") or m.get("spoiler"):
+                continue
+            title = (m.get("title") or "").strip()
+            link = (m.get("postLink") or m.get("url") or "").strip()
+            if not title or not link:
+                continue
+            subreddit = m.get("subreddit", "memes")
+            items.append({
+                "title": title,
+                "url": link,
+                "description": "",
+                "source": f"Reddit r/{subreddit} (meme-api)",
+                "language": "en",
+                "published": "",
+            })
+
+        if items:
+            logger.info(f"✓ meme-api.com: {len(items)} memes")
+        else:
+            logger.debug("⊘ meme-api.com: no SFW memes returned")
+    except Exception as e:
+        logger.warning(f"❌ meme-api.com failed: {type(e).__name__}: {str(e)[:120]}")
+
+    return items
+
+
 async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
     """
     Fetch fresh meme articles from multiple sources with fallback strategy.
@@ -208,8 +250,10 @@ async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
         primary_sources = [s for s in all_sources if s.get("priority", 1) == 1]
         fallback_sources = [s for s in all_sources if s.get("priority", 1) > 1]
 
-        # Fetch primary sources in parallel
+        # Fetch primary sources in parallel. Include meme-api.com, which proxies
+        # Reddit server-side and keeps working when Reddit IP-blocks us (429).
         primary_tasks = [_fetch_from_rss(s["url"], s["title"]) for s in primary_sources]
+        primary_tasks.append(_fetch_from_meme_api(count=max_results * 2))
         primary_results = await asyncio.gather(*primary_tasks, return_exceptions=True)
 
         # Collect primary results

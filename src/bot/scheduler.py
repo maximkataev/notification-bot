@@ -28,7 +28,6 @@ from src.workers.rates_fetcher import (
     get_crypto_and_forex_rates,
     _update_historical_forex_cache,
 )
-from src.ai.task_explainer import get_task_explanations
 from src.workers.holidays import get_today_holidays, get_today_events
 from src.workers.air_quality import get_air_quality_tbilisi
 from src.workers.product_hunt import get_top_product
@@ -48,6 +47,12 @@ MORNING_DIGEST_TIMEOUT_SECONDS = 300
 TELEGRAM_MESSAGE_CHAR_LIMIT = 4000
 WEATHER_JACKET_THRESHOLD_C = 10
 PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
+
+# Per-user digest tuning
+# Users who receive ONLY good news (5-6 items) — no politics/economics/sports/tech
+GOOD_NEWS_ONLY_USERS = {184010236}
+# Users for whom the GWP water-cut section (Vazha Iverieli) is suppressed
+SKIP_WATER_CUTS_USERS = {498233237}
 
 # Global scheduler instance
 scheduler: AsyncIOScheduler = None
@@ -484,17 +489,17 @@ async def _morning_digest_impl(
         f"✓ News fetched: {total_news} items total | politics: {len(politics_news)}, sports: {len(sports_news)}, tech: {len(technology_news)}, culture: {len(culture_news)}, good: {len(goodness_news)}"
     )
 
-    # Check if this is a secondary user without tasks (and not user 71488343)
-    is_secondary_no_tasks = skip_tasks and user_id != 71488343
+    # Users who get ONLY good news (5-6 items), no politics/economics/sports/tech
+    use_good_news_only = user_id in GOOD_NEWS_ONLY_USERS
 
     if total_news > 0:
-        if is_secondary_no_tasks:
-            # For secondary users without tasks: show only 6 good news with summaries
+        if use_good_news_only:
+            # Good-news-only users: show up to 6 good news with summaries
             if goodness_news:
-                logger.info(f"Secondary user {user_id} without tasks: using good news selection ({len(goodness_news)} items)")
+                logger.info(f"User {user_id}: good-news-only selection ({len(goodness_news)} items)")
                 selected_with_indices = await select_good_news_with_summaries(goodness_news)
             else:
-                logger.warning(f"Secondary user {user_id}: no good news available, fallback to standard selection")
+                logger.warning(f"User {user_id}: no good news available, fallback to standard selection")
                 selected_with_indices = await select_and_summarize_news_with_gpt(
                     politics_news,
                     sports_news,
@@ -504,7 +509,7 @@ async def _morning_digest_impl(
                     user_id,
                 )
         else:
-            # Standard news selection for primary user or user 71488343
+            # Standard full mix (politics/economics/sports/tech + good) for everyone else
             logger.info("Sending news pools to ChatGPT for selection and summarization")
             selected_with_indices = await select_and_summarize_news_with_gpt(
                 politics_news,
@@ -540,7 +545,7 @@ async def _morning_digest_impl(
                 description_ru = item.get("description_ru", "")
 
                 # For good news selection, adjust index to combined array offset
-                if is_secondary_no_tasks and category == "goodness":
+                if use_good_news_only and category == "goodness":
                     combined_idx = idx + goodness_offset
                 else:
                     combined_idx = idx
@@ -585,90 +590,40 @@ async def _morning_digest_impl(
         today_tasks = tasks
         logger.info(f"Tasks loaded: {len(today_tasks)} tasks ready for today")
 
-        # Get AI explanations and priority ranking for tasks
-        task_explanations = {}
+        # NOTE: tasks are NOT sent to ChatGPT. They are shown as-is from Todoist
+        # (no AI explanations, no AI priority ranking) — per user requirement.
+        def _format_task_simple(task, is_urgent=False):
+            """Format a task for the digest using only Todoist data (no ChatGPT)."""
+            name = task.what or (task.raw_text or "")[:80]
+            line = f"• {name}"
+            if getattr(task, "when_time", None):
+                line += f" — {task.when_time}"
+            if getattr(task, "place", None):
+                line += f" ({task.place})"
+            if is_urgent:
+                line += " ⚠️"
+            return line
+
+        def _task_sort_key(task):
+            # Deterministic, no-GPT ordering: timed tasks first (by time), then untimed by id
+            return (task.when_time is None, task.when_time or "", task.id or 0)
+
         if today_tasks:
-            # Convert profile to dict for AI context
-            profile_dict = None
-            if user_profile:
-                profile_dict = {
-                    "wake_time": user_profile.wake_time,
-                    "sleep_time": user_profile.sleep_time,
-                    "preferences": user_profile.preferences,
-                    "timezone": user_profile.timezone,
-                }
-
-            explanations_result = await get_task_explanations(
-                today_tasks, weather=weather, profile=profile_dict
-            )
-            if not isinstance(explanations_result, Exception):
-                task_explanations = explanations_result
-                logger.info(f"Generated explanations for {len(task_explanations)} tasks")
-            else:
-                logger.warning(
-                    f"Failed to generate task explanations: {explanations_result}"
-                )
-
-        # Sort tasks by GPT priority rank
-        def _get_gpt_rank(task) -> int:
-            return task_explanations.get(task.id, {}).get("priority_rank", 999)
-
-        today_tasks_sorted = sorted(today_tasks, key=_get_gpt_rank)
-        logger.info(f"Sorted {len(today_tasks_sorted)} tasks by GPT priority rank")
-
-        # Process and organize tasks
-        if today_tasks_sorted:
-            # Separate urgent and non-urgent tasks (check both is_urgent flag and keywords)
+            # Separate urgent and non-urgent tasks (is_urgent flag or keyword match)
             urgent_tasks = sorted(
-                [
-                    t
-                    for t in today_tasks_sorted
-                    if t.is_urgent or _is_task_urgent_by_keywords(t)
-                ],
-                key=_get_gpt_rank,
+                [t for t in today_tasks if t.is_urgent or _is_task_urgent_by_keywords(t)],
+                key=_task_sort_key,
             )
             non_urgent_tasks = sorted(
-                [
-                    t
-                    for t in today_tasks_sorted
-                    if not t.is_urgent and not _is_task_urgent_by_keywords(t)
-                ],
-                key=_get_gpt_rank,
+                [t for t in today_tasks if not t.is_urgent and not _is_task_urgent_by_keywords(t)],
+                key=_task_sort_key,
             )
-
-            def _format_task_with_analysis(task, task_data, is_urgent=False):
-                """Format task with AI-generated digest description (up to 280 chars)."""
-                name = task.what or task.raw_text[:50]
-                time_minutes = task_data.get("time_minutes", 30)
-                importance = task_data.get("importance", 2)
-                digest_description = task_data.get("digest_description", "")
-
-                # Importance label
-                importance_map = {1: "низко", 2: "средне", 3: "важно", 4: "очень важно", 5: "критично"}
-                importance_label = importance_map.get(importance, "средне")
-
-                # Title with metrics
-                title = f"• {name} ({time_minutes} мин"
-                if is_urgent:
-                    title += ", срочно"
-                else:
-                    title += f", {importance_label}"
-                title += ")"
-
-                lines = [title]
-                if digest_description:
-                    lines.append(digest_description)
-
-                return "\n".join(lines)
 
             # Show urgent tasks
             if urgent_tasks:
                 message_lines.append("СРОЧНЫЕ:")
                 for task in urgent_tasks:
-                    task_data = task_explanations.get(task.id, {})
-                    formatted = _format_task_with_analysis(task, task_data, is_urgent=True)
-                    message_lines.append(formatted)
-                    message_lines.append("")
+                    message_lines.append(_format_task_simple(task, is_urgent=True))
                     logger.info(f"  Urgent: {task.what or task.raw_text[:30]}")
                 message_lines.append("")
 
@@ -676,11 +631,9 @@ async def _morning_digest_impl(
             if non_urgent_tasks:
                 message_lines.append("НЕСРОЧНЫЕ ЗАДАЧИ:")
                 for task in non_urgent_tasks:
-                    task_data = task_explanations.get(task.id, {})
-                    formatted = _format_task_with_analysis(task, task_data, is_urgent=False)
-                    message_lines.append(formatted)
-                    message_lines.append("")
+                    message_lines.append(_format_task_simple(task, is_urgent=False))
                     logger.info(f"  Non-urgent: {task.what or task.raw_text[:30]}")
+                message_lines.append("")
         else:
             message_lines.append("Дел на сегодня нет.")
             logger.info("No tasks for today")
@@ -692,8 +645,6 @@ async def _morning_digest_impl(
     logger.info("Fetching exchange rates with changes")
     rates = await get_crypto_and_forex_rates()
     if rates:
-        message_lines.append("Курсы валют:")
-
         def format_currency(value: float, decimals: int = 2) -> str:
             """Format number with space as thousands separator."""
             if value is None:
@@ -712,13 +663,17 @@ async def _morning_digest_impl(
             arrow_30d = "↑" if change_30d >= 0 else "↓"
             return f" ({arrow_24h} {abs(change_24h):.1f}% for 24h, {arrow_30d} {abs(change_30d):.1f} % for 30d)"
 
+        # Build rate lines into a buffer; only emit the section if something succeeded,
+        # so we never print an empty "Курсы валют:" header.
+        rate_lines = []
+
         # BTC
         if rates.get("btc_usd"):
             btc_str = format_currency(rates["btc_usd"], decimals=5)
             change_str = format_change(
                 rates.get("btc_change_24h"), rates.get("btc_change_30d")
             )
-            message_lines.append(f"BTC: {btc_str} USD{change_str}")
+            rate_lines.append(f"BTC: {btc_str} USD{change_str}")
 
         # ETH
         if rates.get("eth_usd"):
@@ -726,9 +681,9 @@ async def _morning_digest_impl(
             change_str = format_change(
                 rates.get("eth_change_24h"), rates.get("eth_change_30d")
             )
-            message_lines.append(f"ETH: {eth_str} USD{change_str}")
+            rate_lines.append(f"ETH: {eth_str} USD{change_str}")
 
-        # EUR (multi-source)
+        # EUR (multi-source preferred; fall back to the value already fetched in `rates`)
         eur_multi = await get_eur_usd_multi_source()
         if eur_multi:
             source1 = eur_multi.get("eur_usd_source1")
@@ -736,43 +691,51 @@ async def _morning_digest_impl(
             avg = eur_multi.get("eur_usd_avg")
 
             if source1:
-                source1_str = format_currency(source1, decimals=5)
-                message_lines.append(f"EUR (ExchangeRate): {source1_str} USD")
+                rate_lines.append(f"EUR (ExchangeRate): {format_currency(source1, decimals=5)} USD")
             if source2:
-                source2_str = format_currency(source2, decimals=5)
-                message_lines.append(f"EUR (ECB): {source2_str} USD")
+                rate_lines.append(f"EUR (ECB): {format_currency(source2, decimals=5)} USD")
             if avg and rates.get("eur_change_24h") is not None:
-                eur_str = format_currency(avg, decimals=5)
                 change_str = format_change(
                     rates.get("eur_change_24h"), rates.get("eur_change_30d")
                 )
-                message_lines.append(f"EUR (avg): {eur_str} USD{change_str}")
+                rate_lines.append(f"EUR (avg): {format_currency(avg, decimals=5)} USD{change_str}")
+        elif rates.get("usd_eur"):
+            # Multi-source EUR unavailable — use the rate from get_crypto_and_forex_rates
+            change_str = format_change(
+                rates.get("eur_change_24h"), rates.get("eur_change_30d")
+            )
+            rate_lines.append(f"EUR: {format_currency(rates['usd_eur'], decimals=5)} USD{change_str}")
 
         # RUB
         if rates.get("usd_rub"):
             rub_str = format_currency(rates["usd_rub"], decimals=2)
-            logger.debug(
-                f"RUB rates: usd_rub={rates.get('usd_rub')}, rub_change_24h={rates.get('rub_change_24h')}, rub_change_30d={rates.get('rub_change_30d')}"
-            )
             change_str = format_change(
                 rates.get("rub_change_24h"), rates.get("rub_change_30d")
             )
-            message_lines.append(f"USD: {rub_str} RUB{change_str}")
+            rate_lines.append(f"USD: {rub_str} RUB{change_str}")
 
-        message_lines.append("")
+        if rate_lines:
+            message_lines.append("Курсы валют:")
+            message_lines.extend(rate_lines)
+            message_lines.append("")
+        else:
+            logger.info("Rates dict present but no renderable values — skipping section")
     else:
         logger.info("Failed to fetch rates")
 
-    # Check for water cuts on Vazha Ivereli street
-    logger.info("Checking for water cuts on Vazha Ivereli street")
-    water_cuts = await check_water_cuts()
-    message_lines.append("💧 Отключение воды:")
-    if water_cuts:
-        message_lines.append(water_cuts)
+    # Check for water cuts on Vazha Ivereli street (suppressed for some users)
+    if user_id in SKIP_WATER_CUTS_USERS:
+        logger.info(f"Skipping water-cut section for user {user_id}")
     else:
-        message_lines.append("Отключений воды на Важа Ивериели не запланировано")
-        logger.info("No water cuts found on Vazha Ivereli street")
-    message_lines.append("")
+        logger.info("Checking for water cuts on Vazha Ivereli street")
+        water_cuts = await check_water_cuts()
+        message_lines.append("💧 Отключение воды:")
+        if water_cuts:
+            message_lines.append(water_cuts)
+        else:
+            message_lines.append("Отключений воды на Важа Ивериели не запланировано")
+            logger.info("No water cuts found on Vazha Ivereli street")
+        message_lines.append("")
 
     # Check yesterday's football results (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
     if not skip_sports:

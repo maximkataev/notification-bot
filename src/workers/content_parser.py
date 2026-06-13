@@ -1043,7 +1043,7 @@ async def _spotify_get_access_token() -> Optional[str]:
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=10.0) as client:
                 token_response = await client.post(
                     "https://accounts.spotify.com/api/token",
                     headers={"Authorization": f"Basic {auth_b64}"},
@@ -1051,7 +1051,7 @@ async def _spotify_get_access_token() -> Optional[str]:
                 )
                 token_response.raise_for_status()
         except httpx.TimeoutException:
-            logger.error("🔐 Spotify auth: timeout (5s)")
+            logger.error("🔐 Spotify auth: timeout (10s)")
             return None
         except httpx.HTTPStatusError as e:
             logger.error(f"🔐 Spotify auth: HTTP {e.response.status_code}")

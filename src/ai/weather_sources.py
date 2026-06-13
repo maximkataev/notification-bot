@@ -1,4 +1,8 @@
-"""Weather from BBC, world-weather.ru, wttr.in with smart fallback."""
+"""Weather from Gismeteo (primary), BBC, and Georgian Weather with smart fallback.
+
+All sources are fetched via Playwright (JavaScript-rendered pages) and return real
+data. There are no hardcoded fallbacks — if every source fails, None is returned.
+"""
 
 import asyncio
 import logging
@@ -14,6 +18,165 @@ CONDITION_EMOJI = {
     "гроза": "⛈️", "туман": "🌫️", "переменная облачность": "⛅",
     "морось": "🌦️", "град": "🌨️", "ливень": "🌧️", "ледяной дождь": "🌧️",
 }
+
+# Map Gismeteo's Russian condition phrases to our internal condition keys
+GISMETEO_CONDITION_MAP = [
+    ("ясно", "ясно"),
+    ("безоблач", "ясно"),
+    ("малооблач", "переменная облачность"),
+    ("переменная облач", "переменная облачность"),
+    ("пасмурно", "облачно"),
+    ("облачно", "облачно"),
+    ("гроза", "гроза"),
+    ("ливень", "ливень"),
+    ("дождь", "дождь"),
+    ("морос", "морось"),
+    ("снег", "снег"),
+    ("туман", "туман"),
+]
+
+
+def _map_gismeteo_condition(text: str) -> str:
+    """Map a Gismeteo condition tooltip to an internal condition key."""
+    t = (text or "").lower()
+    for needle, condition in GISMETEO_CONDITION_MAP:
+        if needle in t:
+            return condition
+    return "облачно"
+
+
+# ============ GISMETEO (PRIMARY) ============
+
+async def _fetch_gismeteo_html() -> Optional[str]:
+    """Fetch Gismeteo Tbilisi page with Playwright (renders the forecast widget)."""
+    try:
+        logger.info("[GISMETEO] Launching browser...")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            )
+            page = await context.new_page()
+
+            url = "https://www.gismeteo.ru/weather-tbilisi-5277/"
+            logger.info(f"[GISMETEO] Loading {url}")
+            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(3000)
+
+            html = await page.content()
+            logger.info(f"[GISMETEO] ✓ HTML fetched: {len(html)} bytes")
+
+            await context.close()
+            await browser.close()
+            return html
+
+    except PlaywrightTimeoutError:
+        logger.error("[GISMETEO] ❌ Timeout")
+        return None
+    except Exception as e:
+        logger.error(f"[GISMETEO] ❌ Fetch error: {type(e).__name__}: {str(e)[:100]}")
+        return None
+
+
+def _parse_gismeteo(html: str) -> Optional[Dict[str, Dict]]:
+    """Parse Gismeteo's today widget into night/morning/day/evening periods.
+
+    Widget structure:
+      - time row (`widget-row-datetime-time`): 8 three-hour slots, e.g. 1:00..22:00
+      - air temp row (`widget-row-chart-temperature-air`): <temperature-value value=..>
+      - icon row (`widget-row-icon`): row-item[data-tooltip] condition per slot
+    """
+    if not html:
+        return None
+
+    try:
+        import re
+        soup = BeautifulSoup(html, "html.parser")
+        logger.info("[GISMETEO] Parsing widget...")
+
+        # Time slots (hours)
+        time_row = soup.find(class_="widget-row-datetime-time")
+        if not time_row:
+            logger.error("[GISMETEO] ❌ No time row found")
+            return None
+        time_texts = [el.get_text(strip=True) for el in time_row.find_all(class_="row-item")]
+        if not time_texts:
+            time_texts = time_row.get_text(" ", strip=True).split()
+        hours = []
+        for t in time_texts:
+            m = re.match(r"(\d{1,2}):", t)
+            hours.append(int(m.group(1)) if m else None)
+
+        # Air temperatures
+        air_row = soup.find(class_=re.compile("widget-row-chart-temperature-air"))
+        if not air_row:
+            logger.error("[GISMETEO] ❌ No air temperature row found")
+            return None
+        temps = []
+        for tv in air_row.find_all("temperature-value"):
+            val = tv.get("value")
+            if val is None:
+                continue
+            try:
+                temps.append(float(val))
+            except ValueError:
+                continue
+
+        # Conditions (tooltips on icon row)
+        icon_row = soup.find(class_=re.compile(r"\bwidget-row-icon\b"))
+        conditions = []
+        if icon_row:
+            conditions = [
+                el.get("data-tooltip", "")
+                for el in icon_row.find_all(attrs={"data-tooltip": True})
+            ]
+
+        n = min(len(hours), len(temps))
+        if n == 0:
+            logger.error(f"[GISMETEO] ❌ No aligned data (hours={len(hours)}, temps={len(temps)})")
+            return None
+
+        periods = {"night": (0, 6), "morning": (6, 12), "day": (12, 18), "evening": (18, 24)}
+        bucket_temps = {p: [] for p in periods}
+        bucket_conds = {p: [] for p in periods}
+
+        for i in range(n):
+            hour = hours[i]
+            if hour is None:
+                continue
+            for period_name, (start, end) in periods.items():
+                if start <= hour < end:
+                    bucket_temps[period_name].append(temps[i])
+                    if i < len(conditions) and conditions[i]:
+                        bucket_conds[period_name].append(conditions[i])
+                    break
+
+        weather_by_period = {}
+        for period_name in periods:
+            t_list = bucket_temps[period_name]
+            if not t_list:
+                continue
+            avg_temp = round(sum(t_list) / len(t_list), 1)
+            cond_text = bucket_conds[period_name][0] if bucket_conds[period_name] else "облачно"
+            condition = _map_gismeteo_condition(cond_text)
+            weather_by_period[period_name] = {
+                "temperature": avg_temp,
+                "condition": condition,
+                "emoji": CONDITION_EMOJI.get(condition, "🌤️"),
+                "precipitation_mm": 0.0,
+            }
+            logger.info(f"[GISMETEO] {period_name}: {avg_temp}°C, {condition}")
+
+        if weather_by_period:
+            logger.info(f"[GISMETEO] ✓ Parsed {len(weather_by_period)} periods")
+            return weather_by_period
+
+        logger.error("[GISMETEO] ❌ No period data extracted")
+        return None
+
+    except Exception as e:
+        logger.error(f"[GISMETEO] ❌ Parse error: {type(e).__name__}: {str(e)[:200]}")
+        return None
 
 
 # ============ BBC WEATHER ============
@@ -524,10 +687,23 @@ def _parse_georgian_weather(html: str) -> Optional[Dict[str, Dict]]:
 # ============ MAIN FUNCTION ============
 
 async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
-    """Fetch weather: BBC → Georgian Weather"""
-    logger.info("🌤️ Fetching weather (BBC → Georgian Weather)...")
+    """Fetch weather: Gismeteo (primary) → BBC → Georgian Weather"""
+    logger.info("🌤️ Fetching weather (Gismeteo → BBC → Georgian Weather)...")
 
-    # Try BBC first (now uses JSON parsing - accurate hourly data)
+    # Try Gismeteo first (well-known source, clean per-period widget data)
+    logger.info("[GISMETEO] Attempting (primary)...")
+    gismeteo_html = await _fetch_gismeteo_html()
+    if gismeteo_html:
+        gismeteo_weather = _parse_gismeteo(gismeteo_html)
+        if gismeteo_weather:
+            logger.info("✓ Using Gismeteo")
+            return gismeteo_weather
+        else:
+            logger.warning("[GISMETEO] Parse failed, trying BBC...")
+    else:
+        logger.warning("[GISMETEO] Fetch failed, trying BBC...")
+
+    # Try BBC (uses JSON parsing - accurate hourly data)
     logger.info("[BBC] Attempting...")
     bbc_html = await _fetch_bbc_html()
     if bbc_html:

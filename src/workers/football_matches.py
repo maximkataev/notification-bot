@@ -559,7 +559,7 @@ async def get_formatted_matches(matches: List[Dict[str, Any]]) -> Optional[str]:
         return None
 
     try:
-        message_lines = ["⚽ <b>Матчи сегодня:</b>", ""]
+        message_lines = ["⚽ <b>Ближайшие матчи (сегодня и ночью):</b>", ""]
 
         for match in matches:
             formatted = await format_match_with_ai(match)

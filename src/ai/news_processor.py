@@ -74,6 +74,33 @@ def _has_excluded_content(text: str, exclusions: list) -> bool:
     return False
 
 
+# Marker ChatGPT must return when it cannot/won't summarize an item
+REJECT_MARKER = "❌"
+
+# Refusal phrases that may leak if the model ignores the ❌ marker.
+# Must be SPECIFIC — bare "не могу"/"не может"/"cannot" appear in legitimate news
+# (e.g. "ЕС не может договориться о санкциях") and must NOT trigger a drop.
+_REFUSAL_MARKERS = [
+    "я не могу", "не могу оценить", "не могу описать", "не могу составить",
+    "не могу подобрать", "невозможно оценить", "не удалось оценить",
+    "as an ai", "i cannot", "i can't", "i'm unable", "i am unable",
+    "cannot summarize", "can't summarize", "unable to summarize",
+]
+
+
+def _is_rejected_description(desc: str) -> bool:
+    """True if a description signals a ChatGPT rejection / failed summary.
+
+    Such items must be dropped from the digest rather than shown to the user.
+    """
+    if not desc or not desc.strip():
+        return True
+    if REJECT_MARKER in desc:
+        return True
+    d = desc.strip().lower()
+    return any(marker in d for marker in _REFUSAL_MARKERS)
+
+
 async def select_good_news_with_summaries(
     goodness_news: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
@@ -152,6 +179,9 @@ REQUIREMENTS:
   * Includes details, facts, context
   * Ends with period
   * Grammatically correct Russian
+- ⚠️ Если ты НЕ можешь составить описание или хочешь ОТКЛОНИТЬ новость (она не позитивная,
+  не можешь её оценить и т.п.) — верни в "description_ru" РОВНО символ ❌ (не пиши
+  "я не могу оценить эту новость"). Скрипт сам уберёт такие новости из дайджеста.
 - Return ONLY JSON array, no other text
 
 EXAMPLE OUTPUT:
@@ -226,6 +256,11 @@ EXAMPLE OUTPUT:
             # Validate index
             if not (0 <= idx < len(indexed_news)):
                 logger.warning(f"Invalid index {idx} (max {len(indexed_news)-1}), skipping")
+                continue
+
+            # Drop items ChatGPT refused/couldn't summarize (returns ❌ or a refusal phrase)
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped good news (GPT reject marker ❌ / refusal): index {idx}")
                 continue
 
             seen_indices.add(idx)
@@ -363,6 +398,11 @@ FORMAT - ВАЖНО:
   * Заканчивается полной точкой
   * Без разрывов, без объединения фрагментов
 - Текст должен читаться естественно и грамотно
+- ⚠️ ЕСЛИ ты НЕ можешь составить нормальное описание новости, или хочешь ОТКЛОНИТЬ новость
+  (например, она не подходит по теме, негативная для позиции goodness, или ты не можешь её оценить) —
+  верни в поле "description_ru" РОВНО один символ: ❌
+  НИКОГДА не пиши фразы вроде "я не могу оценить эту новость" — вместо этого ставь ❌.
+  Скрипт сам уберёт такие новости из дайджеста.
 
 Профиль пользователя:
 {user_profile_section}
@@ -391,6 +431,8 @@ FORMAT - ВАЖНО:
    - включает детали, цифры, факты, контекст
    - заканчивается точкой
    - БЕЗ объединения фрагментов, БЕЗ разрывов
+✅ Если НЕ можешь описать новость или хочешь её ОТКЛОНИТЬ — поставь в "description_ru" РОВНО: ❌
+   (не пиши "я не могу оценить...", только символ ❌ — скрипт удалит новость из дайджеста)
 ✅ Только JSON, без текста
 
 ПРИМЕР ХОРОШЕГО description_ru:
@@ -483,6 +525,11 @@ FORMAT - ВАЖНО:
 
             idx = item.get("index")
             category = item.get("category", "unknown")
+
+            # Drop items ChatGPT refused/couldn't summarize (returns ❌ or a refusal phrase)
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped news (GPT reject marker ❌ / refusal): index {idx}")
+                continue
 
             # Get original news item from saved mapping
             if idx in idx_to_original:

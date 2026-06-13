@@ -146,6 +146,76 @@ async def get_historical_forex_rates() -> Dict[str, Optional[float]]:
     return {}
 
 
+async def _get_crypto_from_binance() -> Optional[Dict[str, Optional[float]]]:
+    """Fallback crypto source: Binance public API (used when CoinGecko 429s).
+
+    24h change comes from the /ticker/24hr endpoint; 30d change is computed from
+    daily klines (close 30 days ago vs latest close). No API key required.
+    """
+    result: Dict[str, Optional[float]] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for coin, symbol in (("btc", "BTCUSDT"), ("eth", "ETHUSDT")):
+                # Price + 24h change
+                ticker = await client.get(
+                    f"https://api.binance.com/api/v3/ticker/24hr?symbol={symbol}"
+                )
+                ticker.raise_for_status()
+                tdata = ticker.json()
+                price = float(tdata["lastPrice"])
+                result[f"{coin}_usd"] = price if price > 0 else None
+                result[f"{coin}_change_24h"] = round(float(tdata["priceChangePercent"]), 1)
+
+                # 30d change from daily klines (31 candles → close ~30 days ago)
+                try:
+                    klines = await client.get(
+                        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=31"
+                    )
+                    klines.raise_for_status()
+                    candles = klines.json()
+                    if len(candles) >= 2:
+                        close_30d_ago = float(candles[0][4])
+                        latest_close = float(candles[-1][4])
+                        if close_30d_ago > 0:
+                            result[f"{coin}_change_30d"] = round(
+                                (latest_close - close_30d_ago) / close_30d_ago * 100, 1
+                            )
+                except Exception as e:
+                    logger.debug(f"Binance 30d klines for {symbol} failed: {e}")
+
+        logger.info(
+            f"✓ Crypto (Binance fallback): BTC=${result.get('btc_usd')}, ETH=${result.get('eth_usd')}"
+        )
+        return result
+    except Exception as e:
+        logger.warning(f"Binance crypto fallback failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def _get_crypto_from_coinbase() -> Optional[Dict[str, Optional[float]]]:
+    """Last-resort crypto source: Coinbase spot price (used if CoinGecko AND Binance fail).
+
+    Price only — no 24h/30d change (those will simply be omitted from the digest).
+    """
+    result: Dict[str, Optional[float]] = {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for coin, pair in (("btc", "BTC-USD"), ("eth", "ETH-USD")):
+                resp = await client.get(f"https://api.coinbase.com/v2/prices/{pair}/spot")
+                resp.raise_for_status()
+                amount = resp.json().get("data", {}).get("amount")
+                if amount:
+                    price = float(amount)
+                    result[f"{coin}_usd"] = price if price > 0 else None
+        if result.get("btc_usd") or result.get("eth_usd"):
+            logger.info(f"✓ Crypto (Coinbase fallback): BTC=${result.get('btc_usd')}, ETH=${result.get('eth_usd')}")
+            return result
+        return None
+    except Exception as e:
+        logger.warning(f"Coinbase crypto fallback failed: {type(e).__name__}: {e}")
+        return None
+
+
 async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:
     """Fetch forex rates from European Central Bank (official, reliable fallback).
 
@@ -183,12 +253,23 @@ async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:
 
 
 async def get_crypto_and_forex_rates() -> Optional[Dict]:
-    """Fetch BTC, ETH, USD/EUR, USD/RUB rates with 24h and 30d changes."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            rates = {}
+    """Fetch BTC, ETH, USD/EUR, USD/RUB rates with 24h and 30d changes.
 
-            # Fetch BTC with full market data (has 24h and 30d changes)
+    Crypto and forex are fetched independently: a failure in one (e.g. CoinGecko
+    429) must NOT drop the other from the digest. Returns whatever succeeded, or
+    None only if every source failed.
+    """
+    rates = {
+        "btc_usd": None, "btc_change_24h": None, "btc_change_30d": None,
+        "eth_usd": None, "eth_change_24h": None, "eth_change_30d": None,
+        "usd_eur": None, "usd_rub": None,
+        "eur_change_24h": None, "eur_change_30d": None,
+        "rub_change_24h": None, "rub_change_30d": None,
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        # ---- Crypto (CoinGecko) — isolated so a 429 doesn't kill forex ----
+        try:
             logger.info("Fetching crypto rates from CoinGecko")
             btc_url = (
                 "https://api.coingecko.com/api/v3/coins/bitcoin?"
@@ -196,91 +277,77 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
             )
             btc_response = await client.get(btc_url)
             btc_response.raise_for_status()
-            btc_data = btc_response.json()
-
-            # Extract BTC rates from market_data with validation
-            market_data = btc_data.get("market_data", {})
+            market_data = btc_response.json().get("market_data", {})
             btc_price = market_data.get("current_price", {}).get("usd")
             rates["btc_usd"] = btc_price if btc_price and btc_price > 0 else None
             rates["btc_change_24h"] = market_data.get("price_change_percentage_24h")
             rates["btc_change_30d"] = market_data.get("price_change_percentage_30d")
 
-            # Fetch ETH with full market data
             eth_url = (
                 "https://api.coingecko.com/api/v3/coins/ethereum?"
                 "localization=false&tickers=false&market_data=true&community_data=false&developer_data=false"
             )
             eth_response = await client.get(eth_url)
             eth_response.raise_for_status()
-            eth_data = eth_response.json()
-
-            # Extract ETH rates from market_data with validation
-            eth_market_data = eth_data.get("market_data", {})
+            eth_market_data = eth_response.json().get("market_data", {})
             eth_price = eth_market_data.get("current_price", {}).get("usd")
             rates["eth_usd"] = eth_price if eth_price and eth_price > 0 else None
             rates["eth_change_24h"] = eth_market_data.get("price_change_percentage_24h")
             rates["eth_change_30d"] = eth_market_data.get("price_change_percentage_30d")
 
-            # Safe logging with None checks
-            btc_info = f"${rates['btc_usd']}" if rates["btc_usd"] else "N/A"
-            if (
-                rates["btc_change_24h"] is not None
-                and rates["btc_change_30d"] is not None
-            ):
-                btc_info += f" ({rates['btc_change_24h']:+.1f}% for 24h, {rates['btc_change_30d']:+.1f} % for 30d)"
+            logger.info(f"✓ Crypto: BTC=${rates['btc_usd']}, ETH=${rates['eth_usd']}")
+        except Exception as e:
+            logger.warning(f"⚠️  CoinGecko failed ({type(e).__name__}), trying Binance fallback...")
+            crypto_fallback = await _get_crypto_from_binance()
+            if not crypto_fallback:
+                logger.warning("⚠️  Binance failed too, trying Coinbase fallback...")
+                crypto_fallback = await _get_crypto_from_coinbase()
+            if crypto_fallback:
+                for k, v in crypto_fallback.items():
+                    if v is not None:
+                        rates[k] = v
+            else:
+                logger.warning("⚠️  Crypto rates unavailable from all sources (forex unaffected)")
 
-            eth_info = f"${rates['eth_usd']}" if rates["eth_usd"] else "N/A"
-            if (
-                rates["eth_change_24h"] is not None
-                and rates["eth_change_30d"] is not None
-            ):
-                eth_info += f" ({rates['eth_change_24h']:+.1f}% for 24h, {rates['eth_change_30d']:+.1f} % for 30d)"
-
-            logger.info(f"✓ Crypto: BTC={btc_info}, ETH={eth_info}")
-
-            # Fetch forex rates from exchangerate-api (primary)
+        # ---- Forex (exchangerate-api → ECB fallback) — isolated ----
+        try:
             logger.info("Fetching forex rates from exchangerate-api")
+            forex_url = "https://api.exchangerate-api.com/v4/latest/USD"
+            forex_response = await client.get(forex_url)
+            forex_response.raise_for_status()
+            forex_rates = forex_response.json().get("rates", {})
+            eur_rate = forex_rates.get("EUR")
+            rub_rate = forex_rates.get("RUB")
+            rates["usd_eur"] = eur_rate if eur_rate and eur_rate > 0 else None
+            rates["usd_rub"] = rub_rate if rub_rate and rub_rate > 0 else None
+        except Exception as e:
+            logger.warning(f"exchangerate-api failed, trying ECB fallback: {e}")
             try:
-                forex_url = "https://api.exchangerate-api.com/v4/latest/USD"
-                forex_response = await client.get(forex_url)
-                forex_response.raise_for_status()
-                forex_data = forex_response.json()
-
-                eur_rate = forex_data.get("rates", {}).get("EUR")
-                rub_rate = forex_data.get("rates", {}).get("RUB")
-                rates["usd_eur"] = eur_rate if eur_rate and eur_rate > 0 else None
-                rates["usd_rub"] = rub_rate if rub_rate and rub_rate > 0 else None
-            except Exception as e:
-                logger.warning(f"exchangerate-api failed, trying ECB fallback: {e}")
                 ecb_rates = await _get_rates_from_ecb()
                 if ecb_rates:
                     rates["usd_eur"] = ecb_rates.get("usd_eur")
                     rates["usd_rub"] = ecb_rates.get("usd_rub")
-                else:
-                    rates["usd_eur"] = None
-                    rates["usd_rub"] = None
+            except Exception as e2:
+                logger.warning(f"⚠️  Forex rates unavailable: {type(e2).__name__}: {e2}")
 
-            # Get historical forex rates
-            logger.info("Fetching historical forex changes")
+        # ---- Historical forex changes (cached, never fatal) ----
+        try:
             historical_forex = await get_historical_forex_rates()
-            logger.debug(f"Historical forex data: {historical_forex}")
-
-            # Use historical data
             rates["eur_change_24h"] = historical_forex.get("eur_usd_24h")
             rates["eur_change_30d"] = historical_forex.get("eur_usd_30d")
             rates["rub_change_24h"] = historical_forex.get("rub_usd_24h")
             rates["rub_change_30d"] = historical_forex.get("rub_usd_30d")
-            logger.debug(
-                f"Assigned forex changes: eur_24h={rates.get('eur_change_24h')}, eur_30d={rates.get('eur_change_30d')}, rub_24h={rates.get('rub_change_24h')}, rub_30d={rates.get('rub_change_30d')}"
-            )
+        except Exception as e:
+            logger.debug(f"Historical forex changes unavailable: {e}")
 
-            logger.info(
-                f"✓ Forex: 1 USD = {rates['usd_eur']:.5f} EUR, {rates['usd_rub']:.2f} RUB"
-            )
+    # Log forex with None-safe formatting
+    eur_log = f"{rates['usd_eur']:.5f}" if rates["usd_eur"] is not None else "N/A"
+    rub_log = f"{rates['usd_rub']:.2f}" if rates["usd_rub"] is not None else "N/A"
+    logger.info(f"✓ Forex: 1 USD = {eur_log} EUR, {rub_log} RUB")
 
-            return rates
+    # Return partial data if anything succeeded; None only if everything failed
+    if any(rates.get(k) for k in ("btc_usd", "eth_usd", "usd_eur", "usd_rub")):
+        return rates
 
-    except Exception as e:
-        logger.warning(f"⚠️  Failed to fetch rates: {type(e).__name__}: {e}")
-        logger.debug(f"Full error:", exc_info=True)
-        return None
+    logger.warning("⚠️  All rate sources failed (crypto + forex)")
+    return None

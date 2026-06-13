@@ -3,6 +3,11 @@
 import logging
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
+except Exception:  # pragma: no cover - fallback if tzdata unavailable
+    TBILISI_TZ = None
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -10,6 +15,14 @@ logger = logging.getLogger(__name__)
 # Tbilisi coordinates
 TBILISI_LAT = 41.7151
 TBILISI_LON = 44.8271
+
+
+def _tbilisi_now() -> datetime:
+    """Current time in Tbilisi (naive), independent of server timezone (UTC)."""
+    if TBILISI_TZ is not None:
+        return datetime.now(TBILISI_TZ).replace(tzinfo=None)
+    # Fallback: Tbilisi is UTC+4 year-round
+    return datetime.utcnow() + timedelta(hours=4)
 
 # WMO weather code to (Russian condition, emoji) mapping (same as weather_aggregator)
 WMO_CODES: dict[int, tuple[str, str]] = {
@@ -77,8 +90,9 @@ async def get_upcoming_precipitation(hours: int = 3) -> Optional[Dict[str, Any]]
             codes = data["hourly"]["weather_code"]
             precips = data["hourly"].get("precipitation", [])
 
-            # Find current hour
-            now = datetime.now()
+            # Find current hour — times[] are in Asia/Tbilisi, so compare against
+            # Tbilisi local time (NOT server/UTC time, which produced negative hours).
+            now = _tbilisi_now()
             current_hour_str = now.strftime("%Y-%m-%dT%H:00")
 
             current_idx = None
@@ -98,14 +112,17 @@ async def get_upcoming_precipitation(hours: int = 3) -> Optional[Dict[str, Any]]
                 # Precipitation threshold: weather_code >= 51 (drizzle and above)
                 if code >= 51 and precip_mm > 0:
                     time_str = times[i]
-                    hour = int(time_str.split("T")[1].split(":")[0])
-                    hour_from_now = hour - now.hour
+                    # Parse the local forecast timestamp and diff against local now,
+                    # so the result is correct even across midnight.
+                    forecast_dt = datetime.strptime(time_str, "%Y-%m-%dT%H:%M")
+                    hour = forecast_dt.hour
+                    hours_from_now = max(0, round((forecast_dt - now).total_seconds() / 3600))
 
                     condition, emoji = WMO_CODES.get(code, ("осадки", "🌧️"))
 
                     return {
                         "time": f"{hour:02d}:00",
-                        "hours_from_now": hour_from_now,
+                        "hours_from_now": hours_from_now,
                         "weather_code": code,
                         "condition": condition,
                         "emoji": emoji,

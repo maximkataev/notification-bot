@@ -3,11 +3,28 @@
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime as dt, timedelta
+try:
+    from zoneinfo import ZoneInfo
+    _TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
+except Exception:  # pragma: no cover - fallback if tzdata unavailable
+    _TBILISI_TZ = None
 import httpx
 from bs4 import BeautifulSoup
 import re
 
 logger = logging.getLogger(__name__)
+
+
+def _tbilisi_now() -> dt:
+    """Current time in Tbilisi (naive), independent of server timezone (UTC).
+
+    The digest is for a Tbilisi user, so "today"/"tomorrow"/"yesterday" and match
+    times must be anchored to Asia/Tbilisi, not the server clock.
+    """
+    if _TBILISI_TZ is not None:
+        return dt.now(_TBILISI_TZ).replace(tzinfo=None)
+    # Fallback: Tbilisi is UTC+4 year-round
+    return dt.utcnow() + timedelta(hours=4)
 
 # Russian month names to numbers
 RUSSIAN_MONTHS = {
@@ -36,7 +53,7 @@ def _get_league_urls() -> Dict[str, str]:
     For regular seasons (La Liga, Premier League, Ligue 1) use base URL.
     For cups and international, check current and next year.
     """
-    current_year = dt.now().year
+    current_year = _tbilisi_now().year
     next_year = current_year + 1
 
     urls = {
@@ -77,7 +94,7 @@ def _is_today(date_cell: str) -> bool:
     Returns True only if date matches today's date (day and month).
     """
     try:
-        today = dt.now()
+        today = _tbilisi_now()
         today_day = today.day
         today_month = today.month
 
@@ -132,7 +149,7 @@ def _is_yesterday(date_cell: str) -> bool:
     Returns True only if date matches yesterday's date (day and month).
     """
     try:
-        yesterday = dt.now() - timedelta(days=1)
+        yesterday = _tbilisi_now() - timedelta(days=1)
         yesterday_day = yesterday.day
         yesterday_month = yesterday.month
 
@@ -178,6 +195,67 @@ def _is_yesterday(date_cell: str) -> bool:
     except Exception as e:
         logger.debug(f"[KULICHKI] Error parsing yesterday date '{date_cell}': {e}")
         return False
+
+
+def _parse_match_date(date_cell: str):
+    """
+    Parse a kulichki date cell into a datetime.date (current year).
+
+    Handles "DD.MM" and "DD месяц" formats. Returns None if unparseable.
+    Rolls over to next year if the parsed month is far in the past (Dec vs Jan).
+    """
+    try:
+        from datetime import date as _date
+
+        today = _tbilisi_now()
+        date_text = date_cell.strip().lower()
+
+        day = None
+        month = None
+
+        # Format 1: "DD.MM"
+        dot_match = re.search(r"(\d{1,2})\.(\d{1,2})", date_text)
+        if dot_match:
+            day = int(dot_match.group(1))
+            month = int(dot_match.group(2))
+        else:
+            # Format 2: "DD месяц"
+            parts = date_text.split()
+            if parts:
+                try:
+                    day = int(parts[0])
+                except ValueError:
+                    return None
+                for month_name, month_num in RUSSIAN_MONTHS.items():
+                    if month_name in date_text:
+                        month = month_num
+                        break
+
+        if not day or not month or day > 31 or month > 12:
+            return None
+
+        year = today.year
+        # Handle year rollover (e.g. parsing January while it's December)
+        if month < today.month - 6:
+            year += 1
+
+        return _date(year, month, day)
+
+    except Exception as e:
+        logger.debug(f"[KULICHKI] Error parsing match date '{date_cell}': {e}")
+        return None
+
+
+def _convert_msk_to_tbilisi(time_str: str) -> str:
+    """Convert HH:MM from Moscow time (UTC+3) to Tbilisi time (UTC+4, +1h)."""
+    if time_str == "TBD":
+        return time_str
+    try:
+        msk_hour, msk_minute = map(int, time_str.split(":"))
+        tbilisi_hour = (msk_hour + 1) % 24
+        return f"{tbilisi_hour:02d}:{msk_minute:02d}"
+    except (ValueError, AttributeError):
+        return time_str
 
 
 async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
@@ -238,39 +316,36 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
             logger.info(f"[KULICHKI] Deduplicated: {len(all_matches)} → {len(unique_matches)}")
             all_matches = unique_matches
 
-        # Filter out past matches (time in future)
-        from datetime import datetime as dt
-        now_time = dt.now().strftime("%H:%M")
-        future_matches = []
+        # Apply display window: all of today's matches + tomorrow's night matches
+        # strictly BEFORE 08:00 Tbilisi. The cutoff is EXCLUSIVE: the digest is sent
+        # at 08:00, so a match at exactly 08:00 belongs to its OWN day's digest
+        # (shown as "today"), not to the previous day's digest as "tomorrow night".
+        from datetime import timedelta as _timedelta
+        today_iso = _tbilisi_now().date().isoformat()
+        tomorrow_iso = (_tbilisi_now().date() + _timedelta(days=1)).isoformat()
+        NIGHT_CUTOFF = "08:00"
 
+        windowed_matches = []
         for match in all_matches:
-            if match["time"] == "TBD":
-                # Keep matches with unknown time, but check for hidden scores in team names
-                # (completed matches may have score embedded in away team name)
-                home = match.get("home", "")
-                away = match.get("away", "")
+            md = match.get("match_date")
+            time_str = match.get("time", "TBD")
 
-                # Skip if team names contain score patterns (shouldn't happen, but be defensive)
-                if re.search(r"\d{1,2}:\d{1,2}$", away) or re.search(r"\d{1,2}:\d{1,2}$", home):
-                    logger.debug(f"[KULICHKI] Filtering out TBD match with embedded score: {home} vs {away}")
-                    continue
+            if md == today_iso:
+                windowed_matches.append(match)
+            elif md == tomorrow_iso:
+                # Only night games strictly before 08:00; skip TBD (unknown if night)
+                if time_str != "TBD" and time_str < NIGHT_CUTOFF:
+                    windowed_matches.append(match)
+                else:
+                    logger.debug(f"[KULICHKI] Tomorrow match outside night window: {match['home']} vs {match['away']} at {time_str}")
 
-                future_matches.append(match)
-            else:
-                try:
-                    match_time = match["time"]
-                    # Simple time comparison (assumes same day)
-                    if match_time >= now_time:
-                        future_matches.append(match)
-                    else:
-                        logger.debug(f"[KULICHKI] Filtering out past match: {match['home']} vs {match['away']} at {match['time']}")
-                except Exception as e:
-                    logger.debug(f"[KULICHKI] Error filtering by time: {e}, keeping match")
-                    future_matches.append(match)
+        if len(windowed_matches) < len(all_matches):
+            logger.info(f"[KULICHKI] Window filter (today + tomorrow night <{NIGHT_CUTOFF}): {len(all_matches)} → {len(windowed_matches)}")
+        all_matches = windowed_matches
 
-        if len(future_matches) < len(all_matches):
-            logger.info(f"[KULICHKI] Filtered past matches: {len(all_matches)} → {len(future_matches)}")
-            all_matches = future_matches
+        if not all_matches:
+            logger.info("[KULICHKI] No matches in display window")
+            return None
 
         # Separate World Cup matches from regular league matches
         world_cup_matches = [m for m in all_matches if "World Cup" in m.get("league", "")]
@@ -321,7 +396,7 @@ async def get_yesterday_results_from_kulichki() -> Optional[List[Dict[str, Any]]
     Returns up to 3 matches for priority teams.
     """
     try:
-        yesterday = (dt.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday = (_tbilisi_now() - timedelta(days=1)).strftime("%Y-%m-%d")
         logger.info(f"[KULICHKI] Fetching yesterday's results for {yesterday}")
         logger.debug(f"[KULICHKI] Priority teams: {PRIORITY_TEAMS}")
 
@@ -512,6 +587,7 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
     """
     soup = BeautifulSoup(html, "html.parser")
     matches = []
+    is_world_cup = "World Cup" in league_name
 
     try:
         tables = soup.find_all("table")
@@ -528,73 +604,73 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
                     continue
 
                 try:
-                    # Structure: [Date] [Teams] [Score] [Status]
                     date_cell = cells[0].get_text().strip()
-                    teams_cell = cells[1].get_text().strip()
-                    score_or_time = cells[2].get_text().strip() if len(cells) > 2 else ""
 
                     # Filter by yesterday's date
                     if not _is_yesterday(date_cell):
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-yesterday date: {date_cell}")
                         continue
 
-                    # Skip header/empty rows
-                    if not teams_cell or " - " not in teams_cell:
-                        continue
-                    if "тур" in teams_cell.lower() or "клуб" in teams_cell.lower():
-                        continue
+                    if is_world_cup:
+                        # World Cup layout: [Date] [Time] [Teams - Score] [Group]
+                        teams_cell = " ".join(cells[2].get_text().split())
 
-                    # Parse teams from "Home - Away" format
-                    parts = teams_cell.split(" - ")
-                    if len(parts) < 2:
-                        continue
+                        # Must contain a final score
+                        score_match = re.search(r"-\s*(\d{1,2}):(\d{1,2})\s*$", teams_cell)
+                        if not score_match:
+                            continue
+                        score = f"{score_match.group(1)}:{score_match.group(2)}"
 
-                    home = parts[0].strip()
-                    away = " - ".join(parts[1:]).strip()
+                        # Teams are everything before the trailing score
+                        teams_text = teams_cell[: score_match.start()].strip().rstrip("-").strip()
+                        if " - " not in teams_text:
+                            continue
+                        tparts = teams_text.split(" - ")
+                        home = " ".join(tparts[0].split())
+                        away = " ".join(" - ".join(tparts[1:]).split())
+                        halftime_score = None
+                    else:
+                        # League layout: [Date] [Teams] [Score] [Status]
+                        teams_cell = cells[1].get_text().strip()
+                        score_or_time = cells[2].get_text().strip() if len(cells) > 2 else ""
 
-                    # Clean up team names
-                    home = " ".join(home.split())
-                    away = " ".join(away.split())
+                        if not teams_cell or " - " not in teams_cell:
+                            continue
+                        if "тур" in teams_cell.lower() or "клуб" in teams_cell.lower():
+                            continue
+
+                        parts = teams_cell.split(" - ")
+                        if len(parts) < 2:
+                            continue
+                        home = " ".join(parts[0].split())
+                        away = " ".join(" - ".join(parts[1:]).split())
+
+                        # Skip future matches (time format like "14:30")
+                        if re.match(r"^\d{1,2}:\d{2}$", score_or_time):
+                            continue
+
+                        is_result_format = (
+                            re.search(r"^\d{1,2}:\d{1,2}\s", score_or_time)
+                            or re.search(r"^\d{1,2}:\d{1,2}$", score_or_time)
+                            or re.search(r"\(\d+:\d+\)", score_or_time)
+                        )
+                        if not is_result_format:
+                            continue
+
+                        score = None
+                        score_match = re.match(r"^(\d+):(\d+)", score_or_time)
+                        if score_match:
+                            score = f"{score_match.group(1)}:{score_match.group(2)}"
+
+                        halftime_score = None
+                        halftime_match = re.search(r"\((\d+):(\d+)\)", score_or_time)
+                        if halftime_match:
+                            halftime_score = f"{halftime_match.group(1)}:{halftime_match.group(2)}"
+
+                        if not score:
+                            continue
 
                     # Skip garbage
                     if not home or not away or len(home) < 3 or len(away) < 3:
-                        continue
-
-                    # Check if this is a completed match (score format) or future match (time format)
-                    is_time_format = re.match(r"^\d{1,2}:\d{2}$", score_or_time) and ":" in score_or_time
-
-                    # Skip future matches (time format like "14:30")
-                    if is_time_format:
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping future match: {home} vs {away} at {score_or_time}")
-                        continue
-
-                    # Check if it looks like a score (digits:digits format with optional halftime score)
-                    # Score formats: "1:0", "2:1", "1:0 (1:0)", "2:1(1:0)"
-                    is_result_format = (
-                        re.search(r"^\d{1,2}:\d{1,2}\s", score_or_time) or  # "1:0 " format
-                        re.search(r"^\d{1,2}:\d{1,2}$", score_or_time) or   # "1:0" format
-                        re.search(r"\(\d+:\d+\)", score_or_time)             # "X:Y (A:B)" format
-                    )
-
-                    # Skip if doesn't look like a result
-                    if not is_result_format:
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-result format: {home} vs {away} ({score_or_time})")
-                        continue
-
-                    # Extract score and halftime score
-                    score = None
-                    halftime_score = None
-
-                    score_match = re.match(r"^(\d+):(\d+)", score_or_time)
-                    if score_match:
-                        score = f"{score_match.group(1)}:{score_match.group(2)}"
-
-                    halftime_match = re.search(r"\((\d+):(\d+)\)", score_or_time)
-                    if halftime_match:
-                        halftime_score = f"{halftime_match.group(1)}:{halftime_match.group(2)}"
-
-                    if not score:
-                        logger.debug(f"[KULICHKI] {league_name}: Could not extract score from: {score_or_time}")
                         continue
 
                     match = {
@@ -622,12 +698,23 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
 
 def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
     """
-    Parse matches from kulichki.net league page HTML.
-    Structure: [Date] [Home - Away] [Time/Result] [Status]
-    Returns only future matches (time in HH:MM format, not score format X:Y)
+    Parse upcoming matches from a kulichki.net page for today and tomorrow.
+
+    Two distinct table layouts are handled:
+      - League pages:    [Date] [Home - Away]   [Time/Result] [Status]
+      - World Cup pages: [Date] [Time] [Home - Away (- Score)] [Group]
+
+    Each returned match carries a "match_date" (ISO YYYY-MM-DD). Only matches
+    dated today or tomorrow are returned; the caller applies the time window.
+    Completed matches (with a score) are skipped.
     """
     soup = BeautifulSoup(html, "html.parser")
     matches = []
+    is_world_cup = "World Cup" in league_name
+
+    from datetime import timedelta as _timedelta
+    today = _tbilisi_now().date()
+    tomorrow = today + _timedelta(days=1)
 
     try:
         tables = soup.find_all("table")
@@ -644,131 +731,100 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                     continue
 
                 try:
-                    # Structure: [Date] [Teams] [Time/Result] [Status]
-                    # Cell 0: Date like "14 мая"
-                    # Cell 1: Teams like "Реал Мадрид - Овьедо"
-                    # Cell 2: Time like "22:30" or Result like "1:0 (1:0)"
-                    # Cell 3+: Status like "Онлайн"
-
                     date_cell = cells[0].get_text().strip()
-                    teams_cell = cells[1].get_text().strip()
-                    time_or_result = cells[2].get_text().strip() if len(cells) > 2 else ""
 
-                    # Filter by today's date (strict check - must match day and month)
-                    if not _is_today(date_cell):
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping non-today date: {date_cell}")
+                    # Only keep today's and tomorrow's matches
+                    match_date = _parse_match_date(date_cell)
+                    if match_date not in (today, tomorrow):
                         continue
 
-                    # Skip header/empty rows
-                    if not teams_cell or " - " not in teams_cell:
-                        continue
-                    if "тур" in teams_cell.lower() or "клуб" in teams_cell.lower():
-                        continue
+                    if is_world_cup:
+                        # World Cup layout: [Date] [Time] [Teams (- Score)] [Group]
+                        time_cell = cells[1].get_text().strip()
+                        teams_cell = " ".join(cells[2].get_text().split())
+                        group = None
+                        if len(cells) > 3:
+                            group_match = re.search(r"[Гг]руппа\s+([A-L])", cells[3].get_text())
+                            if group_match:
+                                group = f"Группа {group_match.group(1)}"
 
-                    # Parse teams from "Home - Away" format
-                    parts = teams_cell.split(" - ")
-                    if len(parts) < 2:
-                        continue
+                        # Skip completed matches (score appended after teams)
+                        if re.search(r"-\s*\d{1,2}:\d{1,2}\s*$", teams_cell):
+                            logger.debug(f"[KULICHKI] {league_name}: skipping completed WC match: {teams_cell}")
+                            continue
 
-                    home = parts[0].strip()
-                    away = " - ".join(parts[1:]).strip()
+                        if " - " not in teams_cell:
+                            continue
+                        parts = teams_cell.split(" - ")
+                        home = " ".join(parts[0].split())
+                        away = " ".join(" - ".join(parts[1:]).split())
 
-                    # Clean up team names (remove line breaks, tabs, extra spaces)
-                    home = " ".join(home.split())
-                    away = " ".join(away.split())
+                        time_match = re.match(r"^(\d{1,2}):(\d{2})$", time_cell)
+                        time_str = f"{time_match.group(1)}:{time_match.group(2)}" if time_match else "TBD"
+                    else:
+                        # League layout: [Date] [Teams] [Time/Result] [Status]
+                        teams_cell = cells[1].get_text().strip()
+                        time_or_result = cells[2].get_text().strip() if len(cells) > 2 else ""
+                        group = None
 
-                    # Skip garbage
+                        if not teams_cell or " - " not in teams_cell:
+                            continue
+                        if "тур" in teams_cell.lower() or "клуб" in teams_cell.lower():
+                            continue
+
+                        parts = teams_cell.split(" - ")
+                        if len(parts) < 2:
+                            continue
+                        home = " ".join(parts[0].split())
+                        away = " ".join(" - ".join(parts[1:]).split())
+
+                        # Skip if team names contain a score (completed match)
+                        if re.search(r"\d{1,2}:\d{1,2}$", away) or re.search(r"\d{1,2}:\d{1,2}$", home):
+                            continue
+
+                        is_time_format = bool(re.match(r"^\d{1,2}:\d{2}$", time_or_result))
+                        is_result_format = (
+                            re.search(r"^\d{1,2}:\d{1,2}\s", time_or_result)
+                            or re.search(r"^\d{1,2}:\d{1,2}$", time_or_result)
+                            or re.search(r"\(\d+:\d+\)", time_or_result)
+                        )
+
+                        # Skip completed matches (score, not time)
+                        if re.search(r"\d{1,2}:\d{1,2}", time_or_result) and not is_time_format:
+                            logger.debug(f"[KULICHKI] {league_name}: skipping completed: {home} vs {away} ({time_or_result})")
+                            continue
+
+                        time_str = "TBD"
+                        if is_time_format:
+                            time_str = time_or_result
+                        else:
+                            for cell in cells[2:]:
+                                tm = re.search(r"(\d{1,2}):(\d{2})", cell.get_text().strip())
+                                if tm:
+                                    time_str = f"{tm.group(1)}:{tm.group(2)}"
+                                    break
+
+                    # Skip garbage team names
                     if not home or not away or len(home) < 3 or len(away) < 3:
                         continue
 
-                    # Skip if team names contain score format (e.g., "Team - 1:2" or "Team 4:3")
-                    # This indicates a completed match incorrectly parsed
-                    if re.search(r"\d{1,2}:\d{1,2}$", away) or re.search(r"\d{1,2}:\d{1,2}$", home):
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping match with score in team name: {home} vs {away}")
-                        continue
-                    if re.search(r"\s-\s\d{1,2}:\d{1,2}$", away) or re.search(r"\s-\s\d{1,2}:\d{1,2}$", home):
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping match with score in name: {home} vs {away}")
-                        continue
-
-                    # Distinguish future matches from completed matches
-                    # Future: "22:30" format (HH:MM with 2 digits for minutes)
-                    # Completed: "1:0" or "1:0 (1:0)" format (score format - usually 1 digit:1 digit or with halftime)
-                    time_str = "TBD"
-
-                    # Check if this is time format (HH:MM) vs result format (X:Y)
-                    # Time: must have HH:MM with exactly 2 minute digits
-                    is_time_format = re.match(r"^\d{1,2}:\d{2}$", time_or_result) and ":" in time_or_result
-
-                    # Result formats: "1:0", "2:1", "1:0 (1:0)", etc - usually single/double digit scores
-                    # Check if it looks like a score (digits:digits without leading zero in hours part that would suggest HH:MM)
-                    is_result_format = (
-                        re.search(r"^\d{1,2}:\d{1,2}\s", time_or_result) or  # "1:0 " format
-                        re.search(r"^\d{1,2}:\d{1,2}$", time_or_result) or   # "1:0" format
-                        re.search(r"\(\d+:\d+\)", time_or_result)             # "X:Y (A:B)" format
-                    )
-
-                    # Skip completed matches
-                    if is_result_format and not is_time_format:
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping completed: {home} vs {away} ({time_or_result})")
-                        continue
-
-                    # Also skip if time_or_result looks like ANY score format, even if we couldn't extract time
-                    if re.search(r"\d{1,2}:\d{1,2}", time_or_result) and not is_time_format:
-                        logger.debug(f"[KULICHKI] {league_name}: Skipping match with score format: {home} vs {away} ({time_or_result})")
-                        continue
-
-                    # Extract time from time_or_result or other cells
-                    # Note: kulichki.net uses Moscow Time (UTC+3), convert to Tbilisi (UTC+4) = +1 hour
-                    if is_time_format:
-                        time_str = time_or_result
-                    else:
-                        # Try to find time in this cell or others
-                        time_match = re.search(r"(\d{1,2}):(\d{2})", time_or_result)
-                        if time_match:
-                            time_str = f"{time_match.group(1)}:{time_match.group(2)}"
-                        else:
-                            # Try other cells
-                            for cell in cells[3:]:
-                                cell_text = cell.get_text().strip()
-                                time_match = re.search(r"(\d{1,2}):(\d{2})", cell_text)
-                                if time_match:
-                                    time_str = f"{time_match.group(1)}:{time_match.group(2)}"
-                                    break
-
-                    # Convert from Moscow Time (UTC+3) to Tbilisi Time (UTC+4)
-                    if time_str != "TBD":
-                        try:
-                            msk_hour, msk_minute = map(int, time_str.split(":"))
-                            tbilisi_hour = (msk_hour + 1) % 24  # +1 hour for timezone conversion
-                            time_str = f"{tbilisi_hour:02d}:{msk_minute:02d}"
-                        except (ValueError, AttributeError):
-                            pass  # Keep original if conversion fails
-
-                    # For World Cup matches: extract group information (e.g., "Группа A")
-                    group = None
-                    if "World Cup" in league_name:
-                        # Try to find group info in the row (usually in cell 3 or in the entire row text)
-                        row_text = " ".join(cell.get_text().strip() for cell in cells)
-                        group_match = re.search(r"[Гг]руппа\s+([A-L])", row_text)
-                        if group_match:
-                            group = f"Группа {group_match.group(1)}"
-                            logger.debug(f"[KULICHKI] Extracted group: {group}")
+                    # Convert Moscow Time (UTC+3) to Tbilisi Time (UTC+4)
+                    time_str = _convert_msk_to_tbilisi(time_str)
 
                     match = {
                         "home": home,
                         "away": away,
                         "time": time_str,
+                        "match_date": match_date.isoformat(),
                         "league": league_name,
                         "home_flag": "⚽",
                         "away_flag": "⚽",
                     }
-
-                    # Add group info for World Cup matches
                     if group:
                         match["group"] = group
 
                     matches.append(match)
-                    logger.debug(f"[KULICHKI] {league_name}: {home} vs {away} at {time_str}" + (f" ({group})" if group else ""))
+                    logger.debug(f"[KULICHKI] {league_name}: {home} vs {away} at {time_str} on {match_date}" + (f" ({group})" if group else ""))
 
                 except Exception as e:
                     logger.debug(f"[KULICHKI] Parse error: {e}")

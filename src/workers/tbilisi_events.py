@@ -134,7 +134,7 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
         _scrape_redevents(),           # Russian events site
         _scrape_eventbrite(),          # Eventbrite Georgia/Tbilisi
         _scrape_meetup_tbilisi(),      # Meetup.com Tbilisi events
-        _scrape_cinemaqa(),            # Georgian cinema - movie showtimes
+        # _scrape_cinemaqa(),            # Disabled: domain no longer resolves (DNS error) + only undated events
         # _scrape_biletebi(),            # Disabled: poor title extraction (concatenated fields)
         # _scrape_georgia_travel(),      # Disabled: poor title extraction (calendar UI noise)
     ]
@@ -152,9 +152,33 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
     # Remove duplicates and sort by date
     if events:
         events = _deduplicate_events(events)
-        # Sort by date (None dates go to end), then by time
+
+        # Keep only events within the [today, today + days_ahead] window.
+        # Past events and events further out (e.g. next month) are dropped.
+        today = datetime.now().date()
+        cutoff = today + timedelta(days=days_ahead)
+        before = len(events)
+        windowed = []
+        for e in events:
+            d = e.get("date")
+            if not d:
+                # Undated events can't be confirmed to fall in the week — skip them
+                logger.debug(f"⏭️  Skipped undated event: {e.get('title', 'Unknown')[:40]}")
+                continue
+            try:
+                ed = datetime.strptime(d, "%Y-%m-%d").date()
+            except ValueError:
+                logger.debug(f"⏭️  Skipped event with unparseable date '{d}': {e.get('title', 'Unknown')[:40]}")
+                continue
+            if today <= ed <= cutoff:
+                windowed.append(e)
+            else:
+                logger.debug(f"⏭️  Outside {days_ahead}-day window ({d}): {e.get('title', 'Unknown')[:40]}")
+        events = windowed
+
+        # Sort by date, then by time
         events.sort(key=lambda e: (e.get("date") or "9999-12-31", e.get("time") or "23:59"))
-        logger.info(f"✅ Total events fetched: {len(events)}")
+        logger.info(f"✅ Events within next {days_ahead} days: {len(events)} (filtered from {before})")
     else:
         logger.warning("⚠️ No events found")
 
@@ -1395,11 +1419,18 @@ def _is_tbilisi_event(event: Dict) -> bool:
     title = (event.get("title", "") + " " + event.get("description", "")).lower()
     location = event.get("location", "").lower()
 
-    # Exclude events explicitly in other cities
+    # Exclude events explicitly in other cities/countries
     excluded_keywords = [
-        "stockholm", "sweden", "berlin", "amsterdam", "paris", "london",
-        "europe", "european", "overseas", "abroad",
-        "visa", "work abroad", "jobs in",  # Job/visa events (usually not Tbilisi-based)
+        # Cities
+        "stockholm", "berlin", "amsterdam", "paris", "london", "madrid",
+        "barcelona", "rome", "milan", "vienna", "prague", "warsaw", "munich",
+        "dubai", "istanbul", "moscow", "kyiv", "kiev", "yerevan", "baku",
+        "new york", "san francisco", "los angeles", "online only",
+        # Countries / regions
+        "sweden", "germany", "france", "spain", "italy", "netherlands",
+        "europe", "european", "overseas", "abroad", "worldwide",
+        # Job/visa events (usually not Tbilisi-based)
+        "visa", "work abroad", "jobs in", "relocation to",
     ]
 
     for keyword in excluded_keywords:
@@ -1424,30 +1455,49 @@ def _is_tbilisi_event(event: Dict) -> bool:
     return False
 
 
+# Generic placeholder titles that several events legitimately share — for these we
+# keep date/time in the dedup key so distinct events aren't collapsed into one.
+GENERIC_TITLES = {"event", "концерт в тбилиси", "киносеанс", "событие"}
+
+
 def _deduplicate_events(events: List[Dict]) -> List[Dict]:
-    """Remove duplicate events based on title, location, date, and time"""
+    """Remove duplicate events and recurring same-named events.
+
+    A specific event that recurs on multiple dates (e.g. "Фонари в Парке" today
+    and tomorrow) is shown only once — the earliest occurrence is kept. Generic
+    placeholder titles still keep date/time in the key so they aren't over-merged.
+    Non-Tbilisi events are filtered out.
+    """
+
+    # Sort earliest-first so the kept occurrence of a recurring event is the soonest
+    events_sorted = sorted(
+        events,
+        key=lambda e: (e.get("date") or "9999-12-31", e.get("time") or "23:59"),
+    )
 
     seen = set()
     unique = []
 
-    for event in events:
+    for event in events_sorted:
         # Filter out non-Tbilisi events
         if not _is_tbilisi_event(event):
             continue
 
-        # Create key: (title, location, date, time)
-        # Events with same name/location but different times are different events
-        key = (
-            event.get("title", "").lower().strip(),
-            event.get("location", "").lower().strip(),
-            event.get("date", ""),
-            event.get("time", ""),  # Include time to distinguish same-day events
-        )
+        title_norm = event.get("title", "").lower().strip()
+        location_norm = event.get("location", "").lower().strip()
+
+        if title_norm in GENERIC_TITLES:
+            # Keep distinct generic-titled events apart by date/time
+            key = (title_norm, location_norm, event.get("date", ""), event.get("time", ""))
+        else:
+            # Same specific title (+location) = same event, even on a different date
+            key = (title_norm, location_norm)
+
         if key not in seen:
             seen.add(key)
             unique.append(event)
         else:
-            logger.debug(f"⏭️  Skipped duplicate: {event.get('title', 'Unknown')[:40]} "
+            logger.debug(f"⏭️  Skipped duplicate/recurring event: {event.get('title', 'Unknown')[:40]} "
                         f"on {event.get('date')} at {event.get('time', 'N/A')}")
 
     return unique
