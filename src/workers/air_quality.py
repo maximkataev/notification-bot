@@ -53,9 +53,9 @@ def _get_aqi_description(aqi: int) -> str:
         return "Опасно"
 
 
-async def get_air_quality_tbilisi() -> Optional[Dict[str, Any]]:
+async def get_air_quality(lat: float, lon: float) -> Optional[Dict[str, Any]]:
     """
-    Fetch air quality data for Tbilisi using Open-Meteo air quality API.
+    Fetch air quality data for any location (by lat/lon) via Open-Meteo air quality API.
 
     Returns actual PM2.5 concentration in µg/m³ (not sub-index).
     Calculates AQI from PM2.5 using US EPA formula.
@@ -72,7 +72,7 @@ async def get_air_quality_tbilisi() -> Optional[Dict[str, Any]]:
         async with httpx.AsyncClient(timeout=10.0) as client:
             url = (
                 f"https://air-quality-api.open-meteo.com/v1/air-quality?"
-                f"latitude={TBILISI_LAT}&longitude={TBILISI_LON}"
+                f"latitude={lat}&longitude={lon}"
                 f"&current=pm10,pm2_5"
             )
             response = await client.get(url)
@@ -106,3 +106,8 @@ async def get_air_quality_tbilisi() -> Optional[Dict[str, Any]]:
         logger.warning(f"⚠️  Failed to fetch air quality: {type(e).__name__}: {e}")
         logger.debug(f"Full error:", exc_info=True)
         return None
+
+
+async def get_air_quality_tbilisi() -> Optional[Dict[str, Any]]:
+    """Backward-compatible Tbilisi air quality (delegates to get_air_quality)."""
+    return await get_air_quality(TBILISI_LAT, TBILISI_LON)

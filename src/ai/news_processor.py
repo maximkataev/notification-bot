@@ -282,6 +282,153 @@ EXAMPLE OUTPUT:
         return None
 
 
+async def select_crypto_news_with_summaries(
+    crypto_news: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Select ONE most relevant cryptocurrency news item and summarize it in Russian.
+
+    Focus: BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies / DeFi / market moves.
+
+    Returns:
+        [{"index": 0, "category": "crypto", "description_ru": "..."}]
+        or None if ChatGPT call fails, finds nothing suitable, or returns ❌.
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    if not crypto_news:
+        logger.warning("No crypto news items to process")
+        return None
+
+    try:
+        # Build indexed news list, removing duplicates by URL.
+        # Keep original indices so the scheduler can match them back.
+        indexed_news = []
+        seen_urls = set()
+
+        for orig_pos, item in enumerate(crypto_news):
+            url = item.get("url", "")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+
+            description = _clean_html(item.get("description", ""))[:500]
+            indexed_news.append({
+                "index": orig_pos,  # Keep original position in crypto_news
+                "title": item.get("title", ""),
+                "description": description,
+                "source": item.get("source", ""),
+                "url": item.get("url", ""),
+            })
+
+            if len(indexed_news) >= 15:
+                break
+
+        if not indexed_news:
+            logger.warning("No unique crypto news items after deduplication")
+            return None
+
+        logger.info(f"Processing {len(indexed_news)} unique crypto news items (deduplicated)")
+
+        system_prompt = """You are a crypto market editor who selects ONE most important and interesting cryptocurrency news story.
+Priority topics: Bitcoin (BTC), Ethereum (ETH), Solana (SOL), Sui (SUI), Uniswap (UNI) and other major cryptocurrencies, DeFi, ETFs, regulation, significant market moves.
+Write a summary in Russian (40-60 words) that captures the essence.
+Return ONLY a valid JSON array with a single item."""
+
+        user_prompt = f"""ВЫБЕРИ РОВНО 1 САМУЮ ВАЖНУЮ И ИНТЕРЕСНУЮ КРИПТО-НОВОСТЬ из списка.
+Приоритет: BTC, ETH, SOL, SUI, UNI и другие крупные криптовалюты, DeFi, ETF, регулирование, крупные движения рынка.
+
+НОВОСТИ:
+{json.dumps(indexed_news, ensure_ascii=False, indent=2)}
+
+ТРЕБОВАНИЯ:
+- Выбери ТОЛЬКО 1 новость (самую значимую для крипто-рынка)
+- description_ru: ОДНО ПОЛНОЕ описание (40-60 слов на русском)
+  * Начинается с главной идеи (не пересказ title)
+  * Включает детали, цифры, факты, контекст
+  * Заканчивается точкой, грамотный русский
+- ⚠️ Если НИ ОДНА новость не подходит (нет реальной крипто-темы, мусор, не можешь оценить) —
+  верни в "description_ru" РОВНО символ ❌. Скрипт сам уберёт новость из дайджеста.
+- Только JSON-массив, без другого текста
+
+ПРИМЕР ВЫВОДА:
+[
+  {{"index": 0, "category": "crypto", "description_ru": "Bitcoin превысил 100 тысяч долларов на фоне притока институциональных инвестиций в спотовые ETF. Аналитики связывают рост с ожиданием смягчения политики ФРС и снижением предложения после халвинга."}}
+]
+"""
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.5,
+                    "max_completion_tokens": 400,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        # Parse JSON response
+        try:
+            if "```json" in gpt_response:
+                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in gpt_response:
+                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
+
+            selected_news = json.loads(gpt_response)
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
+            if match:
+                try:
+                    selected_news = json.loads(match.group())
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse crypto JSON: {gpt_response[:100]}")
+                    return None
+            else:
+                logger.error(f"No JSON array in crypto response: {gpt_response[:100]}")
+                return None
+
+        # Validate and pick the first valid, non-rejected item
+        for item in selected_news:
+            if not isinstance(item, dict):
+                continue
+            # idx is the ORIGINAL position in crypto_news (kept through dedup), so
+            # validate against crypto_news length, not the deduplicated list length.
+            idx = item.get("index", -1)
+            if not (0 <= idx < len(crypto_news)):
+                logger.warning(f"Invalid crypto index {idx} (max {len(crypto_news)-1}), skipping")
+                continue
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped crypto news (GPT reject marker ❌ / refusal): index {idx}")
+                continue
+
+            item["category"] = "crypto"
+            logger.info(f"✓ ChatGPT selected crypto news: index {idx}")
+            return [item]
+
+        logger.info("No suitable crypto news selected (skipping section)")
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to process crypto news with ChatGPT: {type(e).__name__}: {e}")
+        return None
+
+
 async def select_and_summarize_news_with_gpt(
     politics_news: List[Dict[str, Any]],
     sports_news: List[Dict[str, Any]],

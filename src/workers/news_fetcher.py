@@ -61,6 +61,14 @@ GOOD_NEWS_FEEDS = [
     "https://feeds.bbci.co.uk/news/rss.xml",  # BBC (uplifting human interest)
 ]
 
+# POOL 6: Crypto (BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies)
+CRYPTO_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk
+    "https://cointelegraph.com/rss",  # Cointelegraph
+    "https://decrypt.co/feed",  # Decrypt
+    "https://bitcoinmagazine.com/.rss/full/",  # Bitcoin Magazine
+]
+
 
 async def _fetch_from_feeds(
     feed_urls: List[str], hours: int, category: str, limit_per_feed: int = 15
@@ -205,3 +213,8 @@ async def get_good_news(hours: int = 24) -> List[Dict[str, Any]]:
             filtered.append(item)
 
     return filtered
+
+
+async def get_crypto_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch cryptocurrency news (BTC, ETH, SOL, SUI, UNI and other major coins)."""
+    return await _fetch_from_feeds(CRYPTO_FEEDS, hours, "crypto")

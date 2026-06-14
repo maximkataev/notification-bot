@@ -6,6 +6,7 @@ data. There are no hardcoded fallbacks — if every source fails, None is return
 
 import asyncio
 import logging
+import time
 from typing import Optional, Dict, Any
 import httpx
 from bs4 import BeautifulSoup
@@ -18,6 +19,48 @@ CONDITION_EMOJI = {
     "гроза": "⛈️", "туман": "🌫️", "переменная облачность": "⛅",
     "морось": "🌦️", "град": "🌨️", "ливень": "🌧️", "ледяной дождь": "🌧️",
 }
+
+# Supported weather locations. Each digest fetches weather ONCE per location
+# (cached + lock-guarded below) so all users in the same city see identical weather.
+# Gismeteo is scraping-based and only configured where we have a verified city slug;
+# Open-Meteo (lat/lon JSON API) is the reliable universal fallback for any city.
+LOCATIONS: Dict[str, Dict[str, Any]] = {
+    "tbilisi": {
+        "label_prep": "Тбилиси",
+        "gismeteo_url": "https://www.gismeteo.ru/weather-tbilisi-5277/",
+        "bbc_url": "https://www.bbc.com/weather/611717",
+        "georgian": True,  # xn--lodgobmh.com is Tbilisi/Georgia only
+        "lat": 41.7151,
+        "lon": 44.8271,
+    },
+    "vienna": {
+        "label_prep": "Вене",
+        "gismeteo_url": "https://www.gismeteo.ru/weather-vienna-2911/",
+        "bbc_url": "https://www.bbc.com/weather/2761369",
+        "georgian": False,
+        "lat": 48.2082,
+        "lon": 16.3738,
+    },
+}
+
+# WMO weather_code → (Russian condition, emoji) for the Open-Meteo fallback
+WMO_CODES: Dict[int, tuple] = {
+    0: ("ясно", "☀️"), 1: ("переменная облачность", "🌤️"), 2: ("переменная облачность", "⛅"),
+    3: ("облачно", "☁️"), 45: ("туман", "🌫️"), 48: ("туман", "🌫️"),
+    51: ("морось", "🌦️"), 53: ("морось", "🌦️"), 55: ("морось", "🌧️"),
+    56: ("морось", "🌧️"), 57: ("морось", "🌧️"),
+    61: ("дождь", "🌧️"), 63: ("дождь", "🌧️"), 65: ("ливень", "🌧️"),
+    66: ("ледяной дождь", "🌧️"), 67: ("ледяной дождь", "🌧️"),
+    71: ("снег", "🌨️"), 73: ("снег", "🌨️"), 75: ("снег", "❄️"), 77: ("снег", "❄️"),
+    80: ("ливень", "🌦️"), 81: ("ливень", "🌧️"), 82: ("ливень", "⛈️"),
+    85: ("снег", "🌨️"), 86: ("снег", "❄️"),
+    95: ("гроза", "⛈️"), 96: ("гроза", "⛈️"), 99: ("гроза", "⛈️"),
+}
+
+# Per-location weather cache (shared across users in one digest run) + locks
+_weather_cache: Dict[str, tuple] = {}  # location -> (timestamp, weather_dict)
+_weather_locks: Dict[str, asyncio.Lock] = {}
+_WEATHER_TTL_SECONDS = 1800  # 30 minutes
 
 # Map Gismeteo's Russian condition phrases to our internal condition keys
 GISMETEO_CONDITION_MAP = [
@@ -47,8 +90,8 @@ def _map_gismeteo_condition(text: str) -> str:
 
 # ============ GISMETEO (PRIMARY) ============
 
-async def _fetch_gismeteo_html() -> Optional[str]:
-    """Fetch Gismeteo Tbilisi page with Playwright (renders the forecast widget)."""
+async def _fetch_gismeteo_html(url: str) -> Optional[str]:
+    """Fetch a Gismeteo city page with Playwright (renders the forecast widget)."""
     try:
         logger.info("[GISMETEO] Launching browser...")
         async with async_playwright() as p:
@@ -58,7 +101,6 @@ async def _fetch_gismeteo_html() -> Optional[str]:
             )
             page = await context.new_page()
 
-            url = "https://www.gismeteo.ru/weather-tbilisi-5277/"
             logger.info(f"[GISMETEO] Loading {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await page.wait_for_timeout(3000)
@@ -181,8 +223,8 @@ def _parse_gismeteo(html: str) -> Optional[Dict[str, Dict]]:
 
 # ============ BBC WEATHER ============
 
-async def _fetch_bbc_html() -> Optional[str]:
-    """Fetch BBC Weather page with Playwright."""
+async def _fetch_bbc_html(url: str) -> Optional[str]:
+    """Fetch a BBC Weather city page with Playwright."""
     try:
         logger.info("[BBC] Launching browser...")
         async with async_playwright() as p:
@@ -192,7 +234,6 @@ async def _fetch_bbc_html() -> Optional[str]:
             )
             page = await context.new_page()
 
-            url = "https://www.bbc.com/weather/611717"
             logger.info(f"[BBC] Loading {url}")
             await page.goto(url, wait_until="domcontentloaded", timeout=15000)
             await page.wait_for_timeout(3000)
@@ -686,54 +727,167 @@ def _parse_georgian_weather(html: str) -> Optional[Dict[str, Dict]]:
 
 # ============ MAIN FUNCTION ============
 
-async def get_aggregated_weather() -> Optional[Dict[str, Dict]]:
-    """Fetch weather: Gismeteo (primary) → BBC → Georgian Weather"""
-    logger.info("🌤️ Fetching weather (Gismeteo → BBC → Georgian Weather)...")
+# ============ OPEN-METEO (universal reliable fallback) ============
 
-    # Try Gismeteo first (well-known source, clean per-period widget data)
-    logger.info("[GISMETEO] Attempting (primary)...")
-    gismeteo_html = await _fetch_gismeteo_html()
-    if gismeteo_html:
-        gismeteo_weather = _parse_gismeteo(gismeteo_html)
-        if gismeteo_weather:
-            logger.info("✓ Using Gismeteo")
-            return gismeteo_weather
-        else:
-            logger.warning("[GISMETEO] Parse failed, trying BBC...")
-    else:
-        logger.warning("[GISMETEO] Fetch failed, trying BBC...")
+async def _fetch_openmeteo(lat: float, lon: float) -> Optional[Dict[str, Dict]]:
+    """Fetch weather from Open-Meteo (JSON API, no scraping) → period dict.
 
-    # Try BBC (uses JSON parsing - accurate hourly data)
-    logger.info("[BBC] Attempting...")
-    bbc_html = await _fetch_bbc_html()
-    if bbc_html:
-        bbc_weather = _parse_bbc(bbc_html)
-        if bbc_weather:
-            logger.info("✓ Using BBC Weather")
-            return bbc_weather
-        else:
-            logger.warning("[BBC] Parse failed, trying fallback 1...")
-    else:
-        logger.warning("[BBC] Fetch failed, trying fallback 1...")
+    Works for any city by lat/lon and is far more reliable than scraping, so it
+    serves as the universal last-resort fallback (and the only source for cities
+    without a verified Gismeteo/BBC scraper, e.g. precise non-Tbilisi locations).
+    """
+    try:
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"&hourly=temperature_2m,weather_code&forecast_days=1&timezone=auto"
+        )
+        logger.info(f"[OPEN-METEO] Fetching {lat},{lon}")
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
 
-    # Try Georgian Weather (fallback 1 - xn--lodgobmh.com)
-    logger.info("[GEORGIAN] Attempting fallback 1...")
-    georgian_html = await _fetch_georgian_weather_html()
-    if georgian_html:
-        georgian_weather = _parse_georgian_weather(georgian_html)
-        if georgian_weather:
-            logger.info("✓ Using Georgian Weather (fallback 1)")
-            return georgian_weather
-        else:
-            logger.warning("[GEORGIAN] Parse failed, all sources exhausted...")
-    else:
-        logger.warning("[GEORGIAN] Fetch failed, all sources exhausted...")
+        hourly = data.get("hourly", {})
+        times = hourly.get("time", [])
+        temps = hourly.get("temperature_2m", [])
+        codes = hourly.get("weather_code", [])
+        if not times or not temps:
+            logger.error("[OPEN-METEO] ❌ No hourly data")
+            return None
 
-    logger.error("❌ All weather sources failed")
+        periods = {"night": (0, 6), "morning": (6, 12), "day": (12, 18), "evening": (18, 24)}
+        buckets = {p: {"temps": [], "codes": []} for p in periods}
+
+        for i, t in enumerate(times):
+            try:
+                hour = int(t[11:13])  # ISO "YYYY-MM-DDTHH:MM"
+            except (ValueError, IndexError):
+                continue
+            for name, (start, end) in periods.items():
+                if start <= hour < end:
+                    if i < len(temps) and temps[i] is not None:
+                        buckets[name]["temps"].append(temps[i])
+                    if i < len(codes) and codes[i] is not None:
+                        buckets[name]["codes"].append(codes[i])
+                    break
+
+        result: Dict[str, Dict] = {}
+        for name in periods:
+            tl = buckets[name]["temps"]
+            if not tl:
+                continue
+            avg_temp = round(sum(tl) / len(tl), 1)
+            cl = buckets[name]["codes"]
+            # Use the WORST (max) code in the period so rain/storms aren't hidden by
+            # an averaged "clear" — matters for the rain alert / clothing advice.
+            code = max(cl) if cl else 0
+            condition, emoji = WMO_CODES.get(code, ("облачно", "🌤️"))
+            result[name] = {
+                "temperature": avg_temp,
+                "condition": condition,
+                "emoji": emoji,
+                "precipitation_mm": 0.0,
+            }
+            logger.info(f"[OPEN-METEO] {name}: {avg_temp}°C, {condition}")
+
+        if result:
+            logger.info(f"[OPEN-METEO] ✓ Parsed {len(result)} periods")
+            return result
+
+        logger.error("[OPEN-METEO] ❌ No period data extracted")
+        return None
+
+    except Exception as e:
+        logger.error(f"[OPEN-METEO] ❌ {type(e).__name__}: {str(e)[:100]}")
+        return None
+
+
+# ============ MAIN FUNCTION ============
+
+async def _fetch_aggregated_weather(location: str) -> Optional[Dict[str, Dict]]:
+    """Fetch weather for a location via its configured source chain (uncached)."""
+    cfg = LOCATIONS[location]
+    label = cfg.get("label_prep", location)
+    logger.info(f"🌤️ Fetching weather for {label} (Gismeteo → BBC → Georgian → Open-Meteo)...")
+
+    # Gismeteo (primary, where a verified city slug exists)
+    if cfg.get("gismeteo_url"):
+        logger.info("[GISMETEO] Attempting (primary)...")
+        gismeteo_html = await _fetch_gismeteo_html(cfg["gismeteo_url"])
+        if gismeteo_html:
+            gismeteo_weather = _parse_gismeteo(gismeteo_html)
+            if gismeteo_weather:
+                logger.info(f"✓ Using Gismeteo for {label}")
+                return gismeteo_weather
+        logger.warning(f"[GISMETEO] failed for {label}, trying BBC...")
+
+    # BBC (JSON parsing - accurate hourly data)
+    if cfg.get("bbc_url"):
+        logger.info("[BBC] Attempting...")
+        bbc_html = await _fetch_bbc_html(cfg["bbc_url"])
+        if bbc_html:
+            bbc_weather = _parse_bbc(bbc_html)
+            if bbc_weather:
+                logger.info(f"✓ Using BBC Weather for {label}")
+                return bbc_weather
+        logger.warning(f"[BBC] failed for {label}, trying next fallback...")
+
+    # Georgian Weather (Tbilisi only)
+    if cfg.get("georgian"):
+        logger.info("[GEORGIAN] Attempting fallback...")
+        georgian_html = await _fetch_georgian_weather_html()
+        if georgian_html:
+            georgian_weather = _parse_georgian_weather(georgian_html)
+            if georgian_weather:
+                logger.info(f"✓ Using Georgian Weather for {label}")
+                return georgian_weather
+        logger.warning(f"[GEORGIAN] failed for {label}, trying Open-Meteo...")
+
+    # Open-Meteo (universal reliable fallback)
+    if cfg.get("lat") is not None and cfg.get("lon") is not None:
+        logger.info("[OPEN-METEO] Attempting fallback...")
+        om_weather = await _fetch_openmeteo(cfg["lat"], cfg["lon"])
+        if om_weather:
+            logger.info(f"✓ Using Open-Meteo for {label}")
+            return om_weather
+
+    logger.error(f"❌ All weather sources failed for {label}")
     return None
 
 
-async def generate_clothing_recommendation(weather: Optional[Dict[str, Dict]], is_raining: bool = False) -> Optional[str]:
+async def get_aggregated_weather(location: str = "tbilisi") -> Optional[Dict[str, Dict]]:
+    """Fetch weather for a location, fetched at most once per TTL and shared.
+
+    The result is cached per location (lock-guarded) so that every user in the same
+    city during a single morning run sees IDENTICAL weather, instead of each user
+    independently re-fetching and possibly landing on a different source.
+    """
+    location = (location or "tbilisi").lower()
+    if location not in LOCATIONS:
+        logger.warning(f"Unknown weather location '{location}', falling back to tbilisi")
+        location = "tbilisi"
+
+    # Fast path: fresh cached value
+    cached = _weather_cache.get(location)
+    if cached and cached[1] and (time.time() - cached[0]) < _WEATHER_TTL_SECONDS:
+        logger.info(f"✓ Using cached weather for {location} (age {int(time.time() - cached[0])}s)")
+        return cached[1]
+
+    # Slow path: only one coroutine fetches; others wait and reuse the cache
+    lock = _weather_locks.setdefault(location, asyncio.Lock())
+    async with lock:
+        cached = _weather_cache.get(location)
+        if cached and cached[1] and (time.time() - cached[0]) < _WEATHER_TTL_SECONDS:
+            logger.info(f"✓ Using cached weather for {location} (age {int(time.time() - cached[0])}s)")
+            return cached[1]
+
+        result = await _fetch_aggregated_weather(location)
+        if result:  # don't cache failures — let the next user retry
+            _weather_cache[location] = (time.time(), result)
+        return result
+
+
+async def generate_clothing_recommendation(weather: Optional[Dict[str, Dict]], is_raining: bool = False, city: str = "Тбилиси") -> Optional[str]:
     """Generate clothing recommendation based on weather."""
     if not weather:
         return None
@@ -756,7 +910,7 @@ async def generate_clothing_recommendation(weather: Optional[Dict[str, Dict]], i
             max_completion_tokens=100,
             messages=[
                 {"role": "system", "content": "You are a fashion advisor in Russian."},
-                {"role": "user", "content": f"Во что одеться в Тбилиси? Температура {avg_temp:.1f}°C, {'с осадками' if has_precip else 'без осадков'}. Ответ: 2-3 вещи, без объяснений."},
+                {"role": "user", "content": f"Во что одеться в {city}? Температура {avg_temp:.1f}°C, {'с осадками' if has_precip else 'без осадков'}. Ответ: 2-3 вещи, без объяснений."},
             ],
         )
 

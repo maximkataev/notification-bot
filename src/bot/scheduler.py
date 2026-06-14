@@ -13,15 +13,20 @@ from src.utils.doppler import get_secret
 from src.utils.openai_client import get_client
 from src.db.database import get_user_profile, get_news_prompt
 from src.workers.todoist_client import get_todoist_tasks
-from src.ai.weather_sources import get_aggregated_weather, generate_clothing_recommendation
+from src.ai.weather_sources import get_aggregated_weather, generate_clothing_recommendation, LOCATIONS
 from src.workers.news_fetcher import (
     get_politics_economy_news,
     get_sports_news,
     get_technology_news,
     get_culture_science_news,
     get_good_news,
+    get_crypto_news,
 )
-from src.ai.news_processor import select_and_summarize_news_with_gpt, select_good_news_with_summaries
+from src.ai.news_processor import (
+    select_and_summarize_news_with_gpt,
+    select_good_news_with_summaries,
+    select_crypto_news_with_summaries,
+)
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
 from src.workers.subscriptions_checker import check_expiring_subscriptions
 from src.workers.rates_fetcher import (
@@ -29,7 +34,7 @@ from src.workers.rates_fetcher import (
     _update_historical_forex_cache,
 )
 from src.workers.holidays import get_today_holidays, get_today_events
-from src.workers.air_quality import get_air_quality_tbilisi
+from src.workers.air_quality import get_air_quality
 from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.content_parser import get_album_of_day
@@ -39,6 +44,7 @@ from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
 from src.workers.tbilisi_events import get_tbilisi_events, format_events_for_telegram
+from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +59,27 @@ PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
 GOOD_NEWS_ONLY_USERS = {184010236}
 # Users for whom the GWP water-cut section (Vazha Iverieli) is suppressed
 SKIP_WATER_CUTS_USERS = {498233237}
+# Users who get the server/VPS-and-domain expiry section (main user only)
+SERVER_SUBSCRIPTIONS_USERS = {71488343}
+# Users who get the r/tbilisi city highlight section
+TBILISI_REDDIT_USERS = {71488343, 184010236}
+# Users who get an extra crypto news item (main user only)
+CRYPTO_NEWS_USERS = {71488343}
+
+# Per-user weather location: (location key for get_aggregated_weather, prepositional label).
+# Everyone defaults to Tbilisi; user 498233237 (Юля) gets Vienna.
+WEATHER_LOCATIONS = {498233237: ("vienna", "Вене")}
+DEFAULT_WEATHER_LOCATION = ("tbilisi", "Тбилиси")
+
+# Display names + grammatical gender for the personalized morning greeting
+USER_NAMES = {184010236: "Маша", 498233237: "Юля", 71488343: "Максим"}
+USER_GENDER = {184010236: "женского", 498233237: "женского", 71488343: "мужского"}
+
+# Russian weekday names (Monday=0 .. Sunday=6)
+WEEKDAYS_RU = [
+    "понедельник", "вторник", "среда", "четверг",
+    "пятница", "суббота", "воскресенье",
+]
 
 # Global scheduler instance
 scheduler: AsyncIOScheduler = None
@@ -198,13 +225,16 @@ async def _morning_digest_impl(
     if skip_tasks:
         include_tasks = False
 
-    logger.info(f"Loading tasks, profile, weather for user {user_id} (include_tasks={include_tasks})")
+    # Weather location per user (default Tbilisi; user 498233237 → Vienna)
+    weather_location, city_prep = WEATHER_LOCATIONS.get(user_id, DEFAULT_WEATHER_LOCATION)
+
+    logger.info(f"Loading tasks, profile, weather ({weather_location}) for user {user_id} (include_tasks={include_tasks})")
 
     # Parallel API calls - much faster than sequential
     # Only load tasks if include_tasks=True
     gather_tasks = [
         get_user_profile(user_id),
-        get_aggregated_weather(),
+        get_aggregated_weather(weather_location),
     ]
     if include_tasks:
         gather_tasks.insert(0, get_todoist_tasks())
@@ -230,7 +260,7 @@ async def _morning_digest_impl(
     )
 
     # Generate intro context via AI
-    weather_desc = _format_weather(weather) if weather else "неизвестная погода"
+    weather_desc = _format_weather(weather, city_prep) if weather else "неизвестная погода"
     logger.info(f"Weather condition: {weather_desc}")
 
     # Extract weather data for clothing recommendations
@@ -260,37 +290,32 @@ async def _morning_digest_impl(
                 " (ожидаются осадки)" if weather_details else "Ожидаются осадки"
             )
 
-    intro_prompt = f"""Напиши мне теплое утреннее приветствие (2-3 предложения):
+    # Personalize the greeting: name, grammatical gender, weekday
+    user_name = USER_NAMES.get(user_id, "")
+    user_gender = USER_GENDER.get(user_id, "мужского")
+    weekday_ru = WEEKDAYS_RU[datetime.now(timezone("Asia/Tbilisi")).weekday()]
+    name_part = f", {user_name}" if user_name else ""
 
-📌 СУТЬ приветствия:
-- Дружелюбное и поддерживающее
-- Как будто знакомый человек, который рад тебя видеть
-- Плавно подведи меня от "хорошего утра" к "давай начнем день"
-- Это переход от сна к активности - спокойный, но мотивирующий
+    intro_prompt = f"""Напиши КОРОТКОЕ (1-2 предложения) тёплое и обаятельное утреннее приветствие для человека по имени {user_name or 'друг'} ({user_gender} рода).
 
-🚫 НЕ ИСПОЛЬЗУЙ:
-- Клише: "начни день с улыбки", "ты можешь всё", "зарядит энергией"
-- Странные фразы про кофе/чай
-- Метафоры про "свеженность" и "воскрешение"
-- Официозный тон
-- Пустые мотивационные фразы
+Сегодня {weekday_ru}. {weather_desc}. {weather_details}
 
-✅ СТИЛЬ:
-- Личный контакт: можно "ты", теплая интонация, подбадривающие слова
-- Практичность: учти погоду, подготовься к дню
-- Лёгкий юмор или наблюдение, если уместно
+Требования:
+- Обязательно обратись по имени: {user_name or 'друг'}
+- Дружелюбно, живо, с лёгкой искрой — как сообщение от хорошего друга
+- Естественно упомяни день недели и/или погоду
+- Заверши фразой-подводкой к дайджесту (типа «Вот что я для тебя подготовил этим утром:»)
+- Без клише («начни день с улыбки», «ты можешь всё», «заряд энергии») и без официоза
 
-🌡️ КОНТЕКСТ:
-Погода в Тбилиси: {weather_desc}
-{weather_details}
+Пример тона: "Доброе утро{name_part}! Наконец-то начинается этот солнечный (должно соответствовать реальной погоды, солнечный необязательно) {weekday_ru} день. Вот что я для тебя подготовил этим утром:"
 
-Напиши приветствие естественно, как письмо другу, которое начинается с "Привет" и заканчивается готовностью начать день. Ты пишешь человеку мужского пола, который просыпается в Тбилиси и видит такую погоду. Учитывай это в тоне и содержании приветствия."""  # noqa: E501
+Ответ — только текст приветствия, строго 1-2 предложения."""  # noqa: E501
 
     logger.info("🔄 Calling AI to generate morning greeting and weather advice")
 
     response = await get_client().chat.completions.create(
         model="gpt-5.4-mini",
-        max_completion_tokens=250,
+        max_completion_tokens=150,
         messages=[
             {
                 "role": "system",
@@ -310,15 +335,15 @@ async def _morning_digest_impl(
     logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
 
     # Use the entire response as the greeting
-    simple_greeting = response_text.strip() if response_text else "Доброе утро! Вот и началось новое утро - давай начнём день."
+    simple_greeting = response_text.strip() if response_text else f"Доброе утро{name_part}! Вот что я для тебя подготовил этим утром:"
 
     if not simple_greeting or len(simple_greeting) < 10:
         logger.error("❌ AI returned incomplete response, using fallback")
-        simple_greeting = "Доброе утро! Вот и началось новое утро. Кофе, завтрак, планы — и можно начинать день."
+        simple_greeting = f"Доброе утро{name_part}! Вот что я для тебя подготовил этим утром:"
 
     # AI-based clothing recommendation with jacket validation
     # (Replaces old rule-based logic that didn't account for temperature < 10°C)
-    outfit_advice = await generate_clothing_recommendation(weather, is_raining=is_raining)
+    outfit_advice = await generate_clothing_recommendation(weather, is_raining=is_raining, city=city_prep)
 
     if not outfit_advice:
         # Fallback: rule-based with correct jacket threshold (< 10°C OR is_raining)
@@ -364,16 +389,17 @@ async def _morning_digest_impl(
     # Add weather by periods
     logger.info("Formatting weather by periods")
     if weather:
-        weather_str = _format_weather(weather)
+        weather_str = _format_weather(weather, city_prep)
         message_lines.append(weather_str)
         message_lines.append("")
     else:
         message_lines.append("Погода недоступна")
         message_lines.append("")
 
-    # Add air quality in Tbilisi
-    logger.info("Fetching air quality")
-    air_quality = await get_air_quality_tbilisi()
+    # Add air quality for the user's city (Tbilisi by default, Vienna for Юля)
+    _loc_cfg = LOCATIONS.get(weather_location, LOCATIONS["tbilisi"])
+    logger.info(f"Fetching air quality for {weather_location}")
+    air_quality = await get_air_quality(_loc_cfg["lat"], _loc_cfg["lon"])
     if air_quality:
         aqi = air_quality.get("aqi", "?")
         desc = air_quality.get("description", "")
@@ -431,20 +457,23 @@ async def _morning_digest_impl(
     else:
         logger.info("No scheduled works on Vazha Iverievi")
 
-    # Check Google Sheet for expiring VPS / domains (within 7 days)
-    logger.info("Checking Google Sheet for expiring VPS / domains")
-    subs = await check_expiring_subscriptions()
-    if not subs["ok"]:
-        message_lines.append(
-            f"⚠️ Не удалось проверить VPS/домены: {subs['error']}"
-        )
-        message_lines.append("")
-    if subs["warnings"]:
-        message_lines.append("🔔 Скоро истекает оплата (продли!):")
-        message_lines.extend(subs["warnings"])
-        message_lines.append("")
-    elif subs["ok"]:
-        logger.info("No expiring VPS / domains in the next 7 days")
+    # Check Google Sheet for expiring VPS / domains (within 7 days) — main user only
+    if user_id in SERVER_SUBSCRIPTIONS_USERS:
+        logger.info("Checking Google Sheet for expiring VPS / domains")
+        subs = await check_expiring_subscriptions()
+        if not subs["ok"]:
+            message_lines.append(
+                f"⚠️ Не удалось проверить VPS/домены: {subs['error']}"
+            )
+            message_lines.append("")
+        if subs["warnings"]:
+            message_lines.append("🔔 Скоро истекает оплата (продли!):")
+            message_lines.extend(subs["warnings"])
+            message_lines.append("")
+        elif subs["ok"]:
+            logger.info("No expiring VPS / domains in the next 7 days")
+    else:
+        logger.info(f"Skipping VPS/domain expiry section for user {user_id}")
 
     # Fetch news from 5 specialized pools in parallel
     logger.info(
@@ -488,6 +517,16 @@ async def _morning_digest_impl(
     logger.info(
         f"✓ News fetched: {total_news} items total | politics: {len(politics_news)}, sports: {len(sports_news)}, tech: {len(technology_news)}, culture: {len(culture_news)}, good: {len(goodness_news)}"
     )
+
+    # Extra crypto news pool — main user only
+    crypto_news = []
+    if user_id in CRYPTO_NEWS_USERS:
+        try:
+            crypto_news = await get_crypto_news(hours=24)
+            logger.info(f"✓ Crypto news fetched: {len(crypto_news)} items")
+        except Exception as e:
+            logger.warning(f"Failed to fetch crypto news: {type(e).__name__}: {str(e)[:100]}")
+            crypto_news = []
 
     # Users who get ONLY good news (5-6 items), no politics/economics/sports/tech
     use_good_news_only = user_id in GOOD_NEWS_ONLY_USERS
@@ -539,7 +578,10 @@ async def _morning_digest_impl(
             message_lines.append("Новости:")
             message_lines.append("")
 
-            for i, item in enumerate(selected_with_indices, 1):
+            # Running counter so skipped items don't leave gaps, and so the extra
+            # crypto item (if any) continues the same numbering.
+            news_num = 0
+            for item in selected_with_indices:
                 idx = item["index"]
                 category = item["category"]
                 description_ru = item.get("description_ru", "")
@@ -556,21 +598,48 @@ async def _morning_digest_impl(
                     source = original_news.get("source", "Unknown")
                     url = original_news.get("url", "")
 
+                    news_num += 1
+
                     # Format: <a href="url">Source</a>: description_ru (full, complete text)
                     news_text = (
-                        f'{i}. <a href="{url}">{source}</a>: {description_ru}'
+                        f'{news_num}. <a href="{url}">{source}</a>: {description_ru}'
                         if url
-                        else f"{i}. {source}: {description_ru}"
+                        else f"{news_num}. {source}: {description_ru}"
                     )
 
                     message_lines.append(news_text)
                     message_lines.append("")
 
                     logger.info(
-                        f"  [{i}] {category}: {description_ru[:60]}... | {source}"
+                        f"  [{news_num}] {category}: {description_ru[:60]}... | {source}"
                     )
                 else:
                     logger.warning(f"Invalid index {combined_idx} for news selection, skipping")
+
+            # Extra crypto news item (main user only). Skipped if nothing suitable
+            # or ChatGPT returns ❌.
+            if user_id in CRYPTO_NEWS_USERS and crypto_news:
+                logger.info("Selecting crypto news item via ChatGPT")
+                crypto_selected = await select_crypto_news_with_summaries(crypto_news)
+                if crypto_selected:
+                    citem = crypto_selected[0]
+                    cidx = citem.get("index", -1)
+                    cdesc = citem.get("description_ru", "")
+                    if 0 <= cidx < len(crypto_news):
+                        c_news = crypto_news[cidx]
+                        c_source = c_news.get("source", "Crypto")
+                        c_url = c_news.get("url", "")
+                        news_num += 1
+                        crypto_text = (
+                            f'{news_num}. 🪙 <a href="{c_url}">{c_source}</a>: {cdesc}'
+                            if c_url
+                            else f"{news_num}. 🪙 {c_source}: {cdesc}"
+                        )
+                        message_lines.append(crypto_text)
+                        message_lines.append("")
+                        logger.info(f"  [{news_num}] crypto: {cdesc[:60]}... | {c_source}")
+                else:
+                    logger.info("No crypto news item to show (skipped)")
 
         else:
             logger.warning("⚠️  ChatGPT news selection failed, showing placeholder")
@@ -582,6 +651,30 @@ async def _morning_digest_impl(
         message_lines.append("Новости:")
         message_lines.append("(новости недоступны)")
         message_lines.append("")
+
+    # r/tbilisi city highlight (selected users only)
+    if user_id in TBILISI_REDDIT_USERS:
+        logger.info("Fetching r/tbilisi city highlight")
+        try:
+            highlight = await get_tbilisi_reddit_highlight()
+        except Exception as e:
+            logger.warning(f"r/tbilisi highlight failed: {type(e).__name__}: {str(e)[:100]}")
+            highlight = None
+
+        if highlight:
+            message_lines.append("🏙️ <b>Тбилиси на Reddit:</b>")
+            title = highlight.get("title", "")
+            url = highlight.get("url", "")
+            desc = highlight.get("description", "")
+            if url:
+                message_lines.append(f'<a href="{url}">{title}</a>')
+            else:
+                message_lines.append(title)
+            if desc:
+                message_lines.append(desc)
+            message_lines.append("")
+        else:
+            logger.info("No r/tbilisi highlight (section skipped)")
 
     # Tasks section (only if include_tasks=True)
     if include_tasks:
@@ -823,23 +916,23 @@ async def _morning_digest_impl(
         else:
             logger.debug("No sports news available for fallback")
 
-        # Always show Product Hunt
-        logger.info("Fetching Product Hunt")
-        try:
-            product = await get_top_product()
+    # Always show Product Hunt (independent of sports — shown even when skip_sports=True)
+    logger.info("Fetching Product Hunt")
+    try:
+        product = await get_top_product()
 
-            if product:
-                message_lines.append("🚀 Product Hunt (новое на рынке):")
-                message_lines.append(
-                    f"<a href=\"{product['url']}\">{product['name']}</a>"
-                )
-                message_lines.append(product["description"][:150])
-                message_lines.append("")
-                logger.info(f"✓ Product Hunt shown: {product['name']}")
-            else:
-                logger.warning("Product Hunt fetch returned None")
-        except Exception as e:
-            logger.error(f"Failed to fetch Product Hunt: {e}")
+        if product:
+            message_lines.append("🚀 Product Hunt (новое на рынке):")
+            message_lines.append(
+                f"<a href=\"{product['url']}\">{product['name']}</a>"
+            )
+            message_lines.append(product["description"][:150])
+            message_lines.append("")
+            logger.info(f"✓ Product Hunt shown: {product['name']}")
+        else:
+            logger.warning("Product Hunt fetch returned None")
+    except Exception as e:
+        logger.error(f"Failed to fetch Product Hunt: {e}")
 
     # Add Content recommendation (with timeout to prevent digest delays)
     logger.info("Fetching content recommendation (max 10s)")
@@ -847,9 +940,9 @@ async def _morning_digest_impl(
     try:
         if hasattr(asyncio, "timeout"):  # Python 3.11+
             async with asyncio.timeout(20):
-                content = await get_content_recommendation()
+                content = await get_content_recommendation(user_id=user_id)
         else:  # Python 3.10 and earlier
-            content = await asyncio.wait_for(get_content_recommendation(), timeout=20.0)
+            content = await asyncio.wait_for(get_content_recommendation(user_id=user_id), timeout=20.0)
     except asyncio.TimeoutError:
         logger.warning("Content recommendation timed out (20s), skipping this section")
     except Exception as e:
@@ -994,7 +1087,7 @@ async def _morning_digest_impl(
     logger.info(f"✓✓ Morning digest sent successfully for user {user_id}")
 
 
-def _format_weather(weather: dict) -> str:
+def _format_weather(weather: dict, city_prep: str = "Тбилиси") -> str:
     """Format weather data by periods (morning/day/evening/night) with emojis."""
     if not weather:
         return "неизвестная погода"
@@ -1016,7 +1109,7 @@ def _format_weather(weather: dict) -> str:
         return f"{condition_str}, {temp}°C"
 
     # New format: by periods (with emojis)
-    lines = ["Погода в Тбилиси:"]
+    lines = [f"Погода в {city_prep}:"]
 
     periods = {
         "morning": "Утро",
@@ -1061,7 +1154,6 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
         message = f"{emoji} Через ~{hours_from_now} ч. ожидается {condition}"
         if time_str:
             message += f" (около {time_str})"
-        message += f"\n💧 {condition}"
 
         await bot.send_message(
             chat_id=chat_id,
@@ -1185,11 +1277,11 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         scheduler.add_job(
             morning_digest,
             CronTrigger(hour=8, minute=0, timezone=tbilisi_tz),
-            args=[bot, secondary_user_id, secondary_chat_id, False, True],  # skip_sports=False, skip_tasks=True
+            args=[bot, secondary_user_id, secondary_chat_id, True, True],  # skip_sports=True, skip_tasks=True
             id=f"morning_digest_secondary_{secondary_user_id}",
             name=f"Morning digest (secondary user {secondary_user_id})",
         )
-        logger.info(f"  ✓ Secondary digest scheduled for user {secondary_user_id} (without tasks)")
+        logger.info(f"  ✓ Secondary digest scheduled for user {secondary_user_id} (without tasks/sports)")
 
     # Update historical forex rates every 1 hour (for digest)
     from apscheduler.triggers.interval import IntervalTrigger

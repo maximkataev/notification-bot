@@ -267,8 +267,13 @@ TEAM_FLAGS = {
     "ПСЖ": "🇫🇷",
 }
 
-# National team flags for World Cup matches
+# National team flags for World Cup matches.
+# Comprehensive coverage of WC 2026-eligible nations across all confederations.
+# Lookup is done via _get_national_flag() (longest substring match), so the order
+# here does not matter and collisions (e.g. "Гвинея" vs "Экваториальная Гвинея")
+# are resolved by preferring the longest matching country name.
 NATIONAL_FLAGS = {
+    # UEFA (Europe)
     "Испания": "🇪🇸",
     "Франция": "🇫🇷",
     "Англия": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
@@ -276,53 +281,149 @@ NATIONAL_FLAGS = {
     "Нидерланды": "🇳🇱",
     "Португалия": "🇵🇹",
     "Бельгия": "🇧🇪",
-    "Бразилия": "🇧🇷",
-    "Аргентина": "🇦🇷",
-    "Мексика": "🇲🇽",
-    "Канада": "🇨🇦",
-    "США": "🇺🇸",
-    "Япония": "🇯🇵",
-    "Австралия": "🇦🇺",
-    "Южная Корея": "🇰🇷",
-    "Марокко": "🇲🇦",
-    "Англия": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-    "Уэльс": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
-    "Шотландия": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "Италия": "🇮🇹",
+    "Хорватия": "🇭🇷",
+    "Сербия": "🇷🇸",
     "Швейцария": "🇨🇭",
     "Дания": "🇩🇰",
     "Норвегия": "🇳🇴",
     "Швеция": "🇸🇪",
-    "Греция": "🇬🇷",
-    "Чехия": "🇨🇿",
-    "Венгрия": "🇭🇺",
     "Польша": "🇵🇱",
     "Украина": "🇺🇦",
-    "Турция": "🇹🇷",
-    "Иран": "🇮🇷",
-    "Саудовская Аравия": "🇸🇦",
-    "Ирак": "🇮🇶",
-    "Катар": "🇶🇦",
-    "ОАЭ": "🇦🇪",
+    "Уэльс": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+    "Шотландия": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "Северная Ирландия": "🇬🇧",
+    "Ирландия": "🇮🇪",
     "Австрия": "🇦🇹",
-    "Хорватия": "🇭🇷",
-    "Сербия": "🇷🇸",
+    "Чехия": "🇨🇿",
+    "Венгрия": "🇭🇺",
+    "Греция": "🇬🇷",
+    "Турция": "🇹🇷",
+    "Румыния": "🇷🇴",
+    "Словакия": "🇸🇰",
+    "Словения": "🇸🇮",
     "Россия": "🇷🇺",
-    "Новая Зеландия": "🇳🇿",
+    "Исландия": "🇮🇸",
+    "Финляндия": "🇫🇮",
     "Косово": "🇽🇰",
+    "Албания": "🇦🇱",
+    "Босния": "🇧🇦",
+    "Македония": "🇲🇰",
+    "Черногория": "🇲🇪",
+    "Болгария": "🇧🇬",
     "Грузия": "🇬🇪",
-    "Киргизия": "🇰🇬",
-    "Узбекистан": "🇺🇿",
-    "Казахстан": "🇰🇿",
-    "Монголия": "🇲🇳",
-    "Таиланд": "🇹🇭",
-    "Вьетнам": "🇻🇳",
-    "Индия": "🇮🇳",
+    "Армения": "🇦🇲",
+    "Азербайджан": "🇦🇿",
+    "Беларусь": "🇧🇾",
+    "Молдова": "🇲🇩",
+    "Люксембург": "🇱🇺",
+    "Эстония": "🇪🇪",
+    "Латвия": "🇱🇻",
+    "Литва": "🇱🇹",
+    "Кипр": "🇨🇾",
+    "Мальта": "🇲🇹",
+    # CONMEBOL (South America)
+    "Бразилия": "🇧🇷",
+    "Аргентина": "🇦🇷",
+    "Уругвай": "🇺🇾",
+    "Колумбия": "🇨🇴",
     "Чили": "🇨🇱",
+    "Перу": "🇵🇪",
+    "Эквадор": "🇪🇨",
     "Парагвай": "🇵🇾",
+    "Венесуэла": "🇻🇪",
+    "Боливия": "🇧🇴",
+    # CONCACAF (North/Central America & Caribbean)
+    "США": "🇺🇸",
+    "Мексика": "🇲🇽",
+    "Канада": "🇨🇦",
     "Коста-Рика": "🇨🇷",
     "Панама": "🇵🇦",
+    "Ямайка": "🇯🇲",
     "Гондурас": "🇭🇳",
     "Сальвадор": "🇸🇻",
+    "Гватемала": "🇬🇹",
+    "Гаити": "🇭🇹",
+    "Тринидад": "🇹🇹",
+    "Кюрасао": "🇨🇼",
+    "Суринам": "🇸🇷",
+    "Никарагуа": "🇳🇮",
+    # CAF (Africa)
+    "Марокко": "🇲🇦",
+    "Сенегал": "🇸🇳",
+    "Тунис": "🇹🇳",
+    "Алжир": "🇩🇿",
+    "Египет": "🇪🇬",
+    "Нигерия": "🇳🇬",
+    "Гана": "🇬🇭",
+    "Камерун": "🇨🇲",
+    "Кот-д'Ивуар": "🇨🇮",
+    "Мали": "🇲🇱",
+    "ЮАР": "🇿🇦",
+    "Буркина-Фасо": "🇧🇫",
+    "ДР Конго": "🇨🇩",
+    "Конго": "🇨🇬",
+    "Кабо-Верде": "🇨🇻",
+    "Ангола": "🇦🇴",
+    "Замбия": "🇿🇲",
+    "Экваториальная Гвинея": "🇬🇶",
+    "Гвинея-Бисау": "🇬🇼",
+    "Гвинея": "🇬🇳",
+    "Габон": "🇬🇦",
+    "Бенин": "🇧🇯",
+    "Уганда": "🇺🇬",
+    "Кения": "🇰🇪",
+    "Эфиопия": "🇪🇹",
+    "Мозамбик": "🇲🇿",
+    "Намибия": "🇳🇦",
+    "Зимбабве": "🇿🇼",
+    "Танзания": "🇹🇿",
+    "Мадагаскар": "🇲🇬",
+    "Сьерра-Леоне": "🇸🇱",
+    "Того": "🇹🇬",
+    "Мавритания": "🇲🇷",
+    "Судан": "🇸🇩",
+    "Ливия": "🇱🇾",
+    "Сомали": "🇸🇴",
+    # AFC (Asia)
+    "Япония": "🇯🇵",
+    "Южная Корея": "🇰🇷",
+    "Северная Корея": "🇰🇵",
+    "КНДР": "🇰🇵",
+    "Иран": "🇮🇷",
+    "Австралия": "🇦🇺",
+    "Саудовская Аравия": "🇸🇦",
+    "Катар": "🇶🇦",
+    "Ирак": "🇮🇶",
+    "ОАЭ": "🇦🇪",
+    "Узбекистан": "🇺🇿",
+    "Иордания": "🇯🇴",
+    "Оман": "🇴🇲",
+    "Бахрейн": "🇧🇭",
+    "Китай": "🇨🇳",
+    "Индонезия": "🇮🇩",
+    "Вьетнам": "🇻🇳",
+    "Таиланд": "🇹🇭",
+    "Сирия": "🇸🇾",
+    "Палестина": "🇵🇸",
+    "Ливан": "🇱🇧",
+    "Кувейт": "🇰🇼",
+    "Индия": "🇮🇳",
+    "Малайзия": "🇲🇾",
+    "Киргизия": "🇰🇬",
+    "Казахстан": "🇰🇿",
+    "Туркменистан": "🇹🇲",
+    "Таджикистан": "🇹🇯",
+    "Йемен": "🇾🇪",
+    "Монголия": "🇲🇳",
+    # OFC (Oceania)
+    "Новая Каледония": "🇳🇨",
+    "Новая Зеландия": "🇳🇿",
+    "Фиджи": "🇫🇯",
+    "Новая Гвинея": "🇵🇬",
+    "Соломоновы Острова": "🇸🇧",
+    "Таити": "🇵🇫",
+    "Вануату": "🇻🇺",
 }
 
 # League to country flag mapping
@@ -331,6 +432,23 @@ LEAGUE_FLAGS = {
     "Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
     "Ligue 1": "🇫🇷",
 }
+
+
+def _get_national_flag(team_name: str, default: str = "⚽") -> str:
+    """Return the flag for a national team by longest-matching country name.
+
+    Uses substring matching so kulichki names like "Тунис" / "Сборная Туниса"
+    still resolve, and prefers the LONGEST matching country so collisions resolve
+    correctly (e.g. "Гвинея" vs "Экваториальная Гвинея", "Конго" vs "ДР Конго").
+    """
+    name = (team_name or "").lower()
+    best_country = None
+    best_flag = default
+    for country, flag in NATIONAL_FLAGS.items():
+        if country.lower() in name and (best_country is None or len(country) > len(best_country)):
+            best_country = country
+            best_flag = flag
+    return best_flag
 
 
 
@@ -420,13 +538,10 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
 
-    # For World Cup: check national flags first
+    # For World Cup: resolve national flags (longest-match handles all WC nations)
     if "World Cup" in league:
-        for country, flag in NATIONAL_FLAGS.items():
-            if country.lower() in home.lower():
-                home_flag = flag
-            if country.lower() in away.lower():
-                away_flag = flag
+        home_flag = _get_national_flag(home, home_flag)
+        away_flag = _get_national_flag(away, away_flag)
     else:
         # For regular leagues: check club team flags
         for team in PRIORITY_TEAMS:
@@ -593,6 +708,17 @@ async def get_yesterday_results() -> Optional[List[Dict[str, Any]]]:
 
         logger.info(f"[FOOTBALL] Found {len(all_results)} total results")
 
+        # Check if these are World Cup results (national teams, not club priority teams)
+        is_world_cup = any("World Cup" in m.get("league", "") for m in all_results)
+
+        if is_world_cup:
+            # For World Cup: return all results (already filtered by kulichki_parser),
+            # do NOT apply the club PRIORITY_TEAMS filter (it would drop national teams).
+            logger.info(f"[FOOTBALL] ✓ World Cup detected - returning all {len(all_results)} result(s)")
+            for m in all_results:
+                logger.debug(f"[FOOTBALL]   - {m['home']} vs {m['away']} ({m['score']})")
+            return all_results
+
         # Filter to only priority teams (already done in parser, but keep for safety)
         priority_results = []
 
@@ -648,11 +774,17 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
 
-    for team in PRIORITY_TEAMS:
-        if team.lower() in home.lower():
-            home_flag = TEAM_FLAGS.get(team, home_flag)
-        if team.lower() in away.lower():
-            away_flag = TEAM_FLAGS.get(team, away_flag)
+    if "World Cup" in league:
+        # World Cup results: resolve national-team flags (was previously missing,
+        # so both teams showed ⚽)
+        home_flag = _get_national_flag(home, home_flag)
+        away_flag = _get_national_flag(away, away_flag)
+    else:
+        for team in PRIORITY_TEAMS:
+            if team.lower() in home.lower():
+                home_flag = TEAM_FLAGS.get(team, home_flag)
+            if team.lower() in away.lower():
+                away_flag = TEAM_FLAGS.get(team, away_flag)
 
     # Format standings context from league table
     standings_str = ""

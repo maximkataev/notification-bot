@@ -18,6 +18,21 @@ from src.utils.doppler import get_secret
 
 logger = logging.getLogger(__name__)
 
+# Per-user content tuning for the "Для вас" recommendation.
+# Users listed here get a THEMED PODCAST matching their interests; everyone else
+# (incl. the main user 71488343) keeps the default analyst-oriented mixed content.
+CONTENT_PROFILES = {
+    184010236: {  # Маша
+        "podcast_only": True,
+        "interests": "что-нибудь доброе, хорошее, тёплое или творческое: искусство, креатив, вдохновляющие и душевные истории, рукоделие, культура",
+    },
+    498233237: {  # Юля
+        "podcast_only": True,
+        "interests": "художественное и культурное: искусство, скульптура, архитектура, культура и искусство Европы, Азии и арабских стран",
+    },
+}
+DEFAULT_CONTENT_INTERESTS = "интересный и полезный для бизнес- и системного аналитика (AI, технологии, наука, бизнес)"
+
 # Real content sources (channels, playlists, podcasts)
 # YouTube channels with both ID (for fetching) and channel URL (for display)
 YOUTUBE_CHANNELS = {
@@ -966,8 +981,11 @@ async def fetch_fresh_content(hours: int = 24) -> List[Dict[str, Any]]:
         return []
 
 
-async def _select_and_describe(items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Use GPT to select best item from list and write description."""
+async def _select_and_describe(
+    items: List[Dict[str, Any]],
+    interests: str = DEFAULT_CONTENT_INTERESTS,
+) -> Optional[Dict[str, Any]]:
+    """Use GPT to select the best item matching `interests` and write a description."""
     if not items:
         return None
 
@@ -987,7 +1005,7 @@ async def _select_and_describe(items: List[Dict[str, Any]]) -> Optional[Dict[str
 
     try:
         client = get_client()
-        prompt = f"""У тебя есть список свежего контента. Выбери ОДИН наиболее интересный и полезный для аналитика.
+        prompt = f"""У тебя есть список свежего контента. Выбери ОДИН, наиболее подходящий под интересы: {interests}.
 
 Контент:
 {json.dumps(content_list, ensure_ascii=False, indent=2)}
@@ -1221,10 +1239,44 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
         return None
 
 
+async def get_themed_podcast(interests: str, hours: int = 168) -> Optional[Dict[str, Any]]:
+    """Pick a podcast episode matching `interests` (EN + RU, last `hours`).
+
+    Used for users with a themed content profile (Маша/Юля). Uses a wider time
+    window than the default 24h since podcasts don't publish daily. Returns None
+    if no episodes are available so the caller can fall back to a music album.
+    """
+    try:
+        en, ru = await asyncio.gather(
+            get_podcasts(language="en", max_results=15, hours=hours),
+            get_russian_podcasts(max_results=15, hours=hours),
+            return_exceptions=True,
+        )
+        items: List[Dict[str, Any]] = []
+        if isinstance(ru, list):
+            items.extend(ru)
+        if isinstance(en, list):
+            items.extend(en)
+
+        if not items:
+            logger.info("No fresh podcasts available for themed selection")
+            return None
+
+        logger.info(f"Themed podcast pool: {len(items)} episodes; selecting for interests")
+        return await _select_and_describe(items, interests=interests)
+
+    except Exception as e:
+        logger.warning(f"Themed podcast selection failed: {type(e).__name__}: {e}")
+        return None
+
+
 async def get_content_recommendation_with_review(user_id: int = 71488343) -> Optional[Dict[str, Any]]:
     """
     Main function: fetch fresh content (last 24h), have GPT select it.
     Fallback to music album recommendation if no fresh content found.
+
+    Users with a themed content profile (CONTENT_PROFILES, e.g. Маша/Юля) get a
+    podcast matching their interests instead of the default analyst mix.
 
     Returns:
         {
@@ -1239,7 +1291,17 @@ async def get_content_recommendation_with_review(user_id: int = 71488343) -> Opt
         or None if unavailable
     """
     try:
-        # Try to fetch fresh content (last 24 hours)
+        # Themed-podcast users (e.g. Маша/Юля): pick a podcast on their topics
+        profile = CONTENT_PROFILES.get(user_id)
+        if profile and profile.get("podcast_only"):
+            logger.info(f"User {user_id}: themed podcast recommendation")
+            themed = await get_themed_podcast(profile["interests"])
+            if themed:
+                return themed
+            logger.info("No themed podcast found, falling back to music album")
+            return await _recommend_music_album(user_id=user_id)
+
+        # Default: fetch fresh content (last 24 hours)
         fresh_items = await fetch_fresh_content(hours=24)
 
         if fresh_items:
