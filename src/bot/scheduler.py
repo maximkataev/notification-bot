@@ -1181,6 +1181,10 @@ async def tbilisi_events_digest(bot: Bot, chat_id: int = None):
         if not events:
             message = "На следующую неделю в Тбилиси пока ничего интересного не найдено 🤔"
         else:
+            # Curate: pick the most interesting, category-balanced subset (≤10)
+            # instead of dumping every scraped event chronologically.
+            from src.ai.event_selector import select_events_with_gpt
+            events = await select_events_with_gpt(events, user_profile=None, max_events=10)
             message = format_events_for_telegram(events)
 
         if chat_id is None:

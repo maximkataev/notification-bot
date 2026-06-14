@@ -8,6 +8,7 @@ Aggregates events in Tbilisi from free sources:
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import httpx
@@ -16,6 +17,20 @@ import feedparser
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 logger = logging.getLogger(__name__)
+
+try:
+    from zoneinfo import ZoneInfo
+    _TBILISI_TZ = ZoneInfo("Asia/Tbilisi")
+except Exception:  # pragma: no cover - fallback if tzdata unavailable
+    _TBILISI_TZ = None
+
+
+def _tbilisi_today():
+    """Today's date in Tbilisi, independent of the (UTC) server clock."""
+    if _TBILISI_TZ is not None:
+        return datetime.now(_TBILISI_TZ).date()
+    return (datetime.utcnow() + timedelta(hours=4)).date()
+
 
 EVENT_CATEGORIES = {
     "concert": "🎵 Концерт",
@@ -149,15 +164,17 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
         if result:
             events.extend(result)
 
-    # Remove duplicates and sort by date
+    # Window first, THEN deduplicate. Doing it in this order ensures a recurring
+    # event's in-window occurrence is the one kept — deduping first could keep an
+    # out-of-window (e.g. past) occurrence and then the window filter would delete
+    # the event entirely.
     if events:
-        events = _deduplicate_events(events)
-
-        # Keep only events within the [today, today + days_ahead] window.
-        # Past events and events further out (e.g. next month) are dropped.
-        today = datetime.now().date()
-        cutoff = today + timedelta(days=days_ahead)
         before = len(events)
+
+        # Keep only events within the [today, today + days_ahead] window
+        # (anchored to Tbilisi local time, not the UTC server clock).
+        today = _tbilisi_today()
+        cutoff = today + timedelta(days=days_ahead)
         windowed = []
         for e in events:
             d = e.get("date")
@@ -174,9 +191,9 @@ async def get_tbilisi_events(days_ahead: int = 7) -> List[Dict]:
                 windowed.append(e)
             else:
                 logger.debug(f"⏭️  Outside {days_ahead}-day window ({d}): {e.get('title', 'Unknown')[:40]}")
-        events = windowed
 
-        # Sort by date, then by time
+        # Deduplicate the in-window events, then sort by date, then by time
+        events = _deduplicate_events(windowed)
         events.sort(key=lambda e: (e.get("date") or "9999-12-31", e.get("time") or "23:59"))
         logger.info(f"✅ Events within next {days_ahead} days: {len(events)} (filtered from {before})")
     else:
@@ -1415,43 +1432,48 @@ def _categorize_event(title: str, description: str) -> str:
 
 
 def _is_tbilisi_event(event: Dict) -> bool:
-    """Check if event is in Tbilisi (not Stockholm, Europe, etc.)"""
-    title = (event.get("title", "") + " " + event.get("description", "")).lower()
-    location = event.get("location", "").lower()
+    """Check if an event is actually held in Tbilisi (not another city / online-only).
 
-    # Exclude events explicitly in other cities/countries
-    excluded_keywords = [
-        # Cities
+    City/country names are matched against the LOCATION field ONLY. Matching them in
+    the title/description previously dropped real Tbilisi events that merely mention
+    another place (e.g. "Концерт французской музыки", "European Jazz Night in Tbilisi",
+    "Лекция про Париж" in a Tbilisi gallery). Inclusion (Tbilisi/Georgia) is checked
+    first so an explicit local venue can't be overridden by a topical keyword.
+    """
+    title_desc = (event.get("title", "") + " " + event.get("description", "")).lower()
+    location = event.get("location", "").lower()
+    source = event.get("source", "").lower()
+
+    # 1) Explicit Tbilisi / Georgia anywhere → always include
+    if any(k in location for k in ("tbilisi", "тбилиси", "თბილისი", "georgia", "грузия")) \
+            or "tbilisi" in title_desc or "тбилиси" in title_desc:
+        return True
+
+    # 2) LOCATION clearly points to another city/country / online-only → exclude.
+    #    (Matched against location only — NOT title/description.)
+    other_place_keywords = [
         "stockholm", "berlin", "amsterdam", "paris", "london", "madrid",
         "barcelona", "rome", "milan", "vienna", "prague", "warsaw", "munich",
         "dubai", "istanbul", "moscow", "kyiv", "kiev", "yerevan", "baku",
-        "new york", "san francisco", "los angeles", "online only",
-        # Countries / regions
+        "new york", "san francisco", "los angeles",
         "sweden", "germany", "france", "spain", "italy", "netherlands",
-        "europe", "european", "overseas", "abroad", "worldwide",
-        # Job/visa events (usually not Tbilisi-based)
-        "visa", "work abroad", "jobs in", "relocation to",
+        "online only", "online",
     ]
+    if any(k in location for k in other_place_keywords):
+        logger.debug(f"⏭️  Non-Tbilisi location: {event.get('title', 'Unknown')[:40]} ({location[:30]})")
+        return False
 
-    for keyword in excluded_keywords:
-        if keyword in title or keyword in location:
-            logger.debug(f"⏭️  Skipped non-Tbilisi event: {event.get('title', 'Unknown')[:40]} (keyword: {keyword})")
-            return False
+    # 3) Job/visa/relocation events — topical noise, drop regardless of source
+    if any(k in title_desc or k in location for k in ("visa", "work abroad", "jobs in", "relocation to")):
+        logger.debug(f"⏭️  Job/visa event: {event.get('title', 'Unknown')[:40]}")
+        return False
 
-    # Include if explicitly Tbilisi or Georgia
-    if "tbilisi" in title or "tbilisi" in location or "georgia" in title or "georgia" in location:
+    # 4) Known Tbilisi-scoped sources (their listing URLs are Tbilisi-only) → include
+    if source in ("meetup.com", "redevents.ge", "eventbrite.com"):
         return True
 
-    # For Meetup and redevents (known Tbilisi sources), include by default
-    source = event.get("source", "").lower()
-    if source in ["meetup.com", "redevents.ge"]:
-        return True
-
-    # For other sources, be cautious - check location
-    if "tbilisi" in location:
-        return True
-
-    logger.debug(f"⏭️  Skipped: unclear location for {event.get('title', 'Unknown')[:40]} from {source}")
+    # 5) Unknown / unclear location → cautious skip
+    logger.debug(f"⏭️  Unclear location: {event.get('title', 'Unknown')[:40]} from {source}")
     return False
 
 
@@ -1460,13 +1482,38 @@ def _is_tbilisi_event(event: Dict) -> bool:
 GENERIC_TITLES = {"event", "концерт в тбилиси", "киносеанс", "событие"}
 
 
-def _deduplicate_events(events: List[Dict]) -> List[Dict]:
-    """Remove duplicate events and recurring same-named events.
+_DEDUP_MONTHS_RU = (
+    "января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря"
+)
 
-    A specific event that recurs on multiple dates (e.g. "Фонари в Парке" today
-    and tomorrow) is shown only once — the earliest occurrence is kept. Generic
-    placeholder titles still keep date/time in the key so they aren't over-merged.
-    Non-Tbilisi events are filtered out.
+
+def _normalize_title(title: str) -> str:
+    """Normalize a title for duplicate detection.
+
+    Strips dates/times/parentheticals/punctuation so the SAME event listed on
+    different dates collapses to one key — e.g. "Дюна (20 июня)" and
+    "Дюна — 22 июня, 19:00" both reduce to "дюна". Falls back to the plain
+    lowercased title if normalization would empty it out.
+    """
+    t = (title or "").lower().strip()
+    t = re.sub(r"\([^)]*\)", " ", t)                                  # (parentheticals)
+    t = re.sub(r"\b\d{1,2}:\d{2}\b", " ", t)                          # 19:00
+    t = re.sub(rf"\b\d{{1,2}}\s+(?:{_DEDUP_MONTHS_RU})\b", " ", t)    # 20 июня
+    t = re.sub(rf"\b(?:{_DEDUP_MONTHS_RU})\s+\d{{1,2}}\b", " ", t)    # июня 20
+    t = re.sub(r"\b\d{1,4}[./-]\d{1,2}(?:[./-]\d{1,4})?\b", " ", t)   # 20.06 / 2026-06-20
+    t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)                  # punctuation
+    t = re.sub(r"\s+", " ", t).strip()
+    return t or (title or "").lower().strip()
+
+
+def _deduplicate_events(events: List[Dict]) -> List[Dict]:
+    """Remove duplicate events and recurring/multi-date same-named events.
+
+    A specific event that recurs on multiple dates (e.g. the same film screened
+    several days, "Дюна (20 июня)" / "Дюна (22 июня)") is shown only once — the
+    earliest occurrence is kept — via a normalized title that ignores embedded
+    dates/times. Generic placeholder titles still keep date/time in the key so
+    they aren't over-merged. Non-Tbilisi events are filtered out.
     """
 
     # Sort earliest-first so the kept occurrence of a recurring event is the soonest
@@ -1483,14 +1530,15 @@ def _deduplicate_events(events: List[Dict]) -> List[Dict]:
         if not _is_tbilisi_event(event):
             continue
 
-        title_norm = event.get("title", "").lower().strip()
+        title_raw = event.get("title", "").lower().strip()
+        title_norm = _normalize_title(event.get("title", ""))
         location_norm = event.get("location", "").lower().strip()
 
-        if title_norm in GENERIC_TITLES:
+        if title_raw in GENERIC_TITLES:
             # Keep distinct generic-titled events apart by date/time
-            key = (title_norm, location_norm, event.get("date", ""), event.get("time", ""))
+            key = (title_raw, location_norm, event.get("date", ""), event.get("time", ""))
         else:
-            # Same specific title (+location) = same event, even on a different date
+            # Same normalized title (+location) = same event, even on a different date
             key = (title_norm, location_norm)
 
         if key not in seen:
