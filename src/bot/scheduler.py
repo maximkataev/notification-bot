@@ -21,10 +21,14 @@ from src.workers.news_fetcher import (
     get_culture_science_news,
     get_good_news,
     get_crypto_news,
+    get_business_news,
+    get_art_news,
+    get_fashion_news,
 )
 from src.ai.news_processor import (
     select_and_summarize_news_with_gpt,
     select_good_news_with_summaries,
+    select_themed_news_with_summaries,
     select_crypto_news_with_summaries,
 )
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
@@ -57,6 +61,8 @@ PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
 # Per-user digest tuning
 # Users who receive ONLY good news (5-6 items) — no politics/economics/sports/tech
 GOOD_NEWS_ONLY_USERS = {184010236}
+# Users who receive THEMED news only: business / art / fashion / good news (Юля)
+THEMED_NEWS_USERS = {498233237}
 # Users for whom the GWP water-cut section (Vazha Iverieli) is suppressed
 SKIP_WATER_CUTS_USERS = {498233237}
 # Users who get the server/VPS-and-domain expiry section (main user only)
@@ -530,9 +536,38 @@ async def _morning_digest_impl(
 
     # Users who get ONLY good news (5-6 items), no politics/economics/sports/tech
     use_good_news_only = user_id in GOOD_NEWS_ONLY_USERS
+    # User who gets THEMED news only: business / art / fashion / good news (Юля)
+    use_themed_news = user_id in THEMED_NEWS_USERS
 
-    if total_news > 0:
-        if use_good_news_only:
+    # Lookup list used to resolve selected indices back to source/url. For the
+    # themed user it becomes her own combined pool (set below); otherwise the
+    # standard 5 pools concatenated further down.
+    themed_all = None
+
+    if total_news > 0 or use_themed_news:
+        if use_themed_news:
+            # Юля: business / art / fashion / good news. Fetch her dedicated pools
+            # (good news reuses the already-fetched goodness_news pool).
+            logger.info(f"User {user_id}: themed news selection (business/art/fashion/good)")
+            business_news, art_news, fashion_news = await asyncio.gather(
+                get_business_news(hours=24),
+                get_art_news(hours=24),
+                get_fashion_news(hours=24),
+                return_exceptions=True,
+            )
+            business_news = business_news if isinstance(business_news, list) else []
+            art_news = art_news if isinstance(art_news, list) else []
+            fashion_news = fashion_news if isinstance(fashion_news, list) else []
+            logger.info(
+                f"✓ Themed pools: business {len(business_news)}, art {len(art_news)}, "
+                f"fashion {len(fashion_news)}, good {len(goodness_news)}"
+            )
+            # MUST match the concatenation order inside select_themed_news_with_summaries.
+            themed_all = business_news + art_news + fashion_news + goodness_news
+            selected_with_indices = await select_themed_news_with_summaries(
+                business_news, art_news, fashion_news, goodness_news
+            )
+        elif use_good_news_only:
             # Good-news-only users: show up to 6 good news with summaries
             if goodness_news:
                 logger.info(f"User {user_id}: good-news-only selection ({len(goodness_news)} items)")
@@ -562,14 +597,19 @@ async def _morning_digest_impl(
         if selected_with_indices:
             logger.info(f"✓ ChatGPT selected {len(selected_with_indices)} news items")
 
-            # Build combined news list for index matching
-            all_news = (
-                politics_news
-                + sports_news
-                + technology_news
-                + culture_news
-                + goodness_news
-            )
+            # Build combined news list for index matching. The themed user (Юля)
+            # uses her own pool (business+art+fashion+good) with GLOBAL indices, so
+            # no offset is applied for her.
+            if use_themed_news and themed_all is not None:
+                all_news = themed_all
+            else:
+                all_news = (
+                    politics_news
+                    + sports_news
+                    + technology_news
+                    + culture_news
+                    + goodness_news
+                )
 
             # Calculate offset for good news indices (only used in good news selection)
             goodness_offset = len(politics_news) + len(sports_news) + len(technology_news) + len(culture_news)

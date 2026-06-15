@@ -65,6 +65,24 @@ GOOD_NEWS_FEEDS = [
     "https://www.theguardian.com/world/series/the-upside/rss",  # Guardian "The Upside"
 ]
 
+# POOL 7-9: themed pools for the business/art/fashion/good-news user (Юля)
+BUSINESS_FEEDS = [
+    "https://feeds.bloomberg.com/markets/news.rss",  # Bloomberg Markets
+    "https://www.theguardian.com/uk/business/rss",  # Guardian Business
+    "https://feeds.bbci.co.uk/news/business/rss.xml",  # BBC Business
+]
+
+ART_FEEDS = [
+    "https://www.theguardian.com/artanddesign/rss",  # Guardian Art & Design
+    "https://hyperallergic.com/feed/",  # Hyperallergic (contemporary art)
+]
+
+FASHION_FEEDS = [
+    "https://www.theguardian.com/fashion/rss",  # Guardian Fashion
+    "https://www.vogue.com/feed/rss",  # Vogue
+    "https://www.businessoffashion.com/arc/outboundfeeds/rss/",  # Business of Fashion
+]
+
 # POOL 6: Crypto (BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies)
 CRYPTO_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk
@@ -222,3 +240,18 @@ async def get_good_news(hours: int = 24) -> List[Dict[str, Any]]:
 async def get_crypto_news(hours: int = 24) -> List[Dict[str, Any]]:
     """Fetch cryptocurrency news (BTC, ETH, SOL, SUI, UNI and other major coins)."""
     return await _fetch_from_feeds(CRYPTO_FEEDS, hours, "crypto")
+
+
+async def get_business_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch business & economy news (themed user Юля)."""
+    return await _fetch_from_feeds(BUSINESS_FEEDS, hours, "business")
+
+
+async def get_art_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch art & culture news (themed user Юля)."""
+    return await _fetch_from_feeds(ART_FEEDS, hours, "art")
+
+
+async def get_fashion_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch fashion news (themed user Юля)."""
+    return await _fetch_from_feeds(FASHION_FEEDS, hours, "fashion")

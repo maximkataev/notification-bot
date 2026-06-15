@@ -101,6 +101,161 @@ def _is_rejected_description(desc: str) -> bool:
     return any(marker in d for marker in _REFUSAL_MARKERS)
 
 
+async def select_themed_news_with_summaries(
+    business_news: List[Dict[str, Any]],
+    art_news: List[Dict[str, Any]],
+    fashion_news: List[Dict[str, Any]],
+    good_news: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Themed news for Юля: business / art / fashion / good news only.
+
+    The four pools are concatenated in this exact order (business + art + fashion +
+    good) and each item gets a GLOBAL index into that combined list, so the caller
+    must rebuild the combined list the same way to resolve source/url.
+
+    Returns:
+        [{"index": <global>, "category": "business|art|fashion|goodness",
+          "description_ru": "..."}, ...]
+        or None if the ChatGPT call fails / nothing suitable.
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    pools = [
+        ("business", business_news),
+        ("art", art_news),
+        ("fashion", fashion_news),
+        ("goodness", good_news),
+    ]
+    if not any(news for _, news in pools):
+        logger.warning("No themed news items to process")
+        return None
+
+    try:
+        # Build a single indexed list with global indices + a category tag.
+        indexed_news = []
+        idx = 0
+        for category_name, news_list in pools:
+            for item in news_list:
+                description = _clean_html(item.get("description", ""))[:500]
+                indexed_news.append({
+                    "index": idx,
+                    "title": item.get("title", ""),
+                    "description": description,
+                    "source": item.get("source", ""),
+                    "available_in": category_name,
+                })
+                idx += 1
+
+        logger.info(f"Themed news pool: {len(indexed_news)} items "
+                    f"(business {len(business_news)}, art {len(art_news)}, "
+                    f"fashion {len(fashion_news)}, good {len(good_news)})")
+
+        system_prompt = """You are an editor of a personal digest for a reader who only wants:
+business & economy, art & culture, fashion, and genuinely good/uplifting news.
+You STRICTLY REJECT politics, war, conflict, crime, sports, and technology/gadgets.
+Pick ONLY from the pool indicated by each item's "available_in" tag.
+For each chosen item write a summary in Russian (40-60 words). Return ONLY a valid JSON array."""
+
+        user_prompt = f"""ВЫБЕРИ ДО 6 НОВОСТЕЙ по темам пользователя: бизнес, искусство, мода, добрые новости.
+
+РАСПРЕДЕЛЕНИЕ (старайся охватить все 4 темы, можно меньше если в пуле пусто):
+- 2 новости бизнес/экономика (из пула "business")
+- 1 новость искусство/культура (из пула "art")
+- 2 новости мода (из пула "fashion")
+- 1 ДОБРАЯ новость (из пула "goodness": животные, доброта, спасения, вдохновляющее)
+
+СТРОГО ЗАПРЕЩЕНО: политика, война, конфликты, преступления, спорт, технологии/гаджеты.
+
+NEWS:
+{json.dumps(indexed_news, ensure_ascii=False, indent=2)}
+
+ТРЕБОВАНИЯ:
+- Выбирай ТОЛЬКО из пула, указанного в "available_in" для нужной темы
+- description_ru: ОДНО ПОЛНОЕ описание (40-60 слов на русском)
+  * начинается с НОВОЙ информации (не пересказ title)
+  * включает детали, факты, контекст
+  * заканчивается точкой, грамотный русский
+- ⚠️ Если новость не подходит по теме или ты не можешь составить описание —
+  верни в "description_ru" РОВНО символ ❌ (скрипт уберёт её из дайджеста)
+- Только JSON-массив, без другого текста
+
+ПРИМЕР ВЫВОДА:
+[
+  {{"index": 0, "category": "business", "description_ru": "Европейские фондовые рынки обновили исторический максимум после соглашения о снижении пошлин. Инвесторы ждут смягчения политики ЦБ, акции технологического и банковского секторов выросли на 2%."}},
+  {{"index": 5, "category": "art", "description_ru": "В Лондоне открылась ретроспектива фотографа Дона Маккаллина с работами о войне и человеческой стойкости. Выставка собрала более 200 снимков и продлится полгода."}},
+  {{"index": 9, "category": "fashion", "description_ru": "Дом моды представил коллекцию resort 2027, вдохновлённую японским минимализмом. Дизайнеры сделали ставку на природные ткани и спокойную палитру, показ прошёл в Токио."}},
+  {{"index": 14, "category": "goodness", "description_ru": "Волонтёры спасли 500 бездомных собак и открыли новый приют с современными условиями. Проект получил грант, все животные здоровы и получат заботу."}}
+]
+"""
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.5,
+                    "max_completion_tokens": 900,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        try:
+            if "```json" in gpt_response:
+                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in gpt_response:
+                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
+            selected_news = json.loads(gpt_response)
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
+            if not match:
+                logger.error(f"No JSON array in themed response: {gpt_response[:100]}")
+                return None
+            try:
+                selected_news = json.loads(match.group())
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse themed JSON: {gpt_response[:100]}")
+                return None
+
+        valid_news = []
+        seen_indices = set()
+        for item in selected_news:
+            if not isinstance(item, dict):
+                continue
+            i = item.get("index", -1)
+            if not (0 <= i < len(indexed_news)) or i in seen_indices:
+                continue
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped themed news (reject marker ❌): index {i}")
+                continue
+            seen_indices.add(i)
+            valid_news.append(item)
+
+        if not valid_news:
+            logger.warning("No valid themed news items selected")
+            return None
+
+        logger.info(f"✓ ChatGPT selected {len(valid_news)} themed news items")
+        return valid_news
+
+    except Exception as e:
+        logger.error(f"Failed to process themed news with ChatGPT: {type(e).__name__}: {e}")
+        return None
+
+
 async def select_good_news_with_summaries(
     goodness_news: List[Dict[str, Any]],
 ) -> Optional[List[Dict[str, Any]]]:
