@@ -34,8 +34,13 @@ SPORTS_FEEDS = [
     "https://www.football-esp.com/feed",  # Spanish football focus
 ]
 
-# Country translations: Russian name → English name for World Cup matches
+# Country translations: Russian name → English name for World Cup RSS news search.
+# MUST stay as complete as NATIONAL_FLAGS below — if a team is missing here it keeps
+# its Russian name and we end up searching English-language feeds with a mixed
+# "Germany vs Кюрасао" query that never matches. Lookup is substring-based via
+# _translate_country() so "Сборная Германии"/"Германия" both resolve.
 COUNTRY_TRANSLATIONS = {
+    # UEFA (Europe)
     "Испания": "Spain",
     "Франция": "France",
     "Англия": "England",
@@ -43,53 +48,168 @@ COUNTRY_TRANSLATIONS = {
     "Нидерланды": "Netherlands",
     "Португалия": "Portugal",
     "Бельгия": "Belgium",
-    "Бразилия": "Brazil",
-    "Аргентина": "Argentina",
-    "Мексика": "Mexico",
-    "Канада": "Canada",
-    "США": "USA",
-    "Япония": "Japan",
-    "Австралия": "Australia",
-    "Южная Корея": "South Korea",
-    "Марокко": "Morocco",
-    "Уэльс": "Wales",
-    "Шотландия": "Scotland",
+    "Италия": "Italy",
+    "Хорватия": "Croatia",
+    "Сербия": "Serbia",
     "Швейцария": "Switzerland",
     "Дания": "Denmark",
     "Норвегия": "Norway",
     "Швеция": "Sweden",
-    "Греция": "Greece",
-    "Чехия": "Czech Republic",
-    "Венгрия": "Hungary",
     "Польша": "Poland",
     "Украина": "Ukraine",
-    "Турция": "Turkey",
-    "Иран": "Iran",
-    "Саудовская Аравия": "Saudi Arabia",
-    "Ирак": "Iraq",
-    "Катар": "Qatar",
-    "ОАЭ": "UAE",
+    "Уэльс": "Wales",
+    "Шотландия": "Scotland",
+    "Северная Ирландия": "Northern Ireland",
+    "Ирландия": "Ireland",
     "Австрия": "Austria",
-    "Хорватия": "Croatia",
-    "Сербия": "Serbia",
+    "Чехия": "Czech Republic",
+    "Венгрия": "Hungary",
+    "Греция": "Greece",
+    "Турция": "Turkey",
+    "Румыния": "Romania",
+    "Словакия": "Slovakia",
+    "Словения": "Slovenia",
     "Россия": "Russia",
-    "Новая Зеландия": "New Zealand",
+    "Исландия": "Iceland",
+    "Финляндия": "Finland",
     "Косово": "Kosovo",
+    "Албания": "Albania",
+    "Босния": "Bosnia",
+    "Македония": "North Macedonia",
+    "Черногория": "Montenegro",
+    "Болгария": "Bulgaria",
     "Грузия": "Georgia",
-    "Киргизия": "Kyrgyzstan",
-    "Узбекистан": "Uzbekistan",
-    "Казахстан": "Kazakhstan",
-    "Монголия": "Mongolia",
-    "Таиланд": "Thailand",
-    "Вьетнам": "Vietnam",
-    "Индия": "India",
+    "Армения": "Armenia",
+    "Азербайджан": "Azerbaijan",
+    "Беларусь": "Belarus",
+    "Молдова": "Moldova",
+    "Люксембург": "Luxembourg",
+    "Эстония": "Estonia",
+    "Латвия": "Latvia",
+    "Литва": "Lithuania",
+    "Кипр": "Cyprus",
+    "Мальта": "Malta",
+    # CONMEBOL (South America)
+    "Бразилия": "Brazil",
+    "Аргентина": "Argentina",
+    "Уругвай": "Uruguay",
+    "Колумбия": "Colombia",
     "Чили": "Chile",
+    "Перу": "Peru",
+    "Эквадор": "Ecuador",
     "Парагвай": "Paraguay",
+    "Венесуэла": "Venezuela",
+    "Боливия": "Bolivia",
+    # CONCACAF (North/Central America & Caribbean)
+    "США": "USA",
+    "Мексика": "Mexico",
+    "Канада": "Canada",
     "Коста-Рика": "Costa Rica",
     "Панама": "Panama",
+    "Ямайка": "Jamaica",
     "Гондурас": "Honduras",
     "Сальвадор": "El Salvador",
+    "Гватемала": "Guatemala",
+    "Гаити": "Haiti",
+    "Тринидад": "Trinidad and Tobago",
+    "Кюрасао": "Curacao",
+    "Суринам": "Suriname",
+    "Никарагуа": "Nicaragua",
+    # CAF (Africa)
+    "Марокко": "Morocco",
+    "Сенегал": "Senegal",
+    "Тунис": "Tunisia",
+    "Алжир": "Algeria",
+    "Египет": "Egypt",
+    "Нигерия": "Nigeria",
+    "Гана": "Ghana",
+    "Камерун": "Cameroon",
+    "Кот-д'Ивуар": "Ivory Coast",
+    "Мали": "Mali",
+    "ЮАР": "South Africa",
+    "Буркина-Фасо": "Burkina Faso",
+    "ДР Конго": "DR Congo",
+    "Конго": "Congo",
+    "Кабо-Верде": "Cape Verde",
+    "Ангола": "Angola",
+    "Замбия": "Zambia",
+    "Экваториальная Гвинея": "Equatorial Guinea",
+    "Гвинея-Бисау": "Guinea-Bissau",
+    "Гвинея": "Guinea",
+    "Габон": "Gabon",
+    "Бенин": "Benin",
+    "Уганда": "Uganda",
+    "Кения": "Kenya",
+    "Эфиопия": "Ethiopia",
+    "Мозамбик": "Mozambique",
+    "Намибия": "Namibia",
+    "Зимбабве": "Zimbabwe",
+    "Танзания": "Tanzania",
+    "Мадагаскар": "Madagascar",
+    "Сьерра-Леоне": "Sierra Leone",
+    "Того": "Togo",
+    "Мавритания": "Mauritania",
+    "Судан": "Sudan",
+    "Ливия": "Libya",
+    "Сомали": "Somalia",
+    # AFC (Asia)
+    "Япония": "Japan",
+    "Южная Корея": "South Korea",
+    "Северная Корея": "North Korea",
+    "КНДР": "North Korea",
+    "Иран": "Iran",
+    "Австралия": "Australia",
+    "Саудовская Аравия": "Saudi Arabia",
+    "Катар": "Qatar",
+    "Ирак": "Iraq",
+    "ОАЭ": "UAE",
+    "Узбекистан": "Uzbekistan",
+    "Иордания": "Jordan",
+    "Оман": "Oman",
+    "Бахрейн": "Bahrain",
+    "Китай": "China",
+    "Индонезия": "Indonesia",
+    "Вьетнам": "Vietnam",
+    "Таиланд": "Thailand",
+    "Сирия": "Syria",
+    "Палестина": "Palestine",
+    "Ливан": "Lebanon",
+    "Кувейт": "Kuwait",
+    "Индия": "India",
+    "Малайзия": "Malaysia",
+    "Киргизия": "Kyrgyzstan",
+    "Казахстан": "Kazakhstan",
+    "Туркменистан": "Turkmenistan",
+    "Таджикистан": "Tajikistan",
+    "Йемен": "Yemen",
+    "Монголия": "Mongolia",
+    # OFC (Oceania)
+    "Новая Каледония": "New Caledonia",
+    "Новая Зеландия": "New Zealand",
+    "Фиджи": "Fiji",
+    "Новая Гвинея": "Papua New Guinea",
+    "Соломоновы Острова": "Solomon Islands",
+    "Таити": "Tahiti",
+    "Вануату": "Vanuatu",
 }
+
+
+def _translate_country(name: str) -> str:
+    """Translate a Russian national-team name to English via longest substring match.
+
+    Mirrors _get_national_flag (kulichki gives plain nominative names like "Кюрасао",
+    "ДР Конго"); longest-match disambiguates collisions such as "Конго" vs "ДР Конго".
+    Returns the original name unchanged if no country matches (rare, since
+    COUNTRY_TRANSLATIONS covers all WC-eligible nations).
+    """
+    n = (name or "").lower()
+    best_ru = None
+    best_en = name
+    for ru, en in COUNTRY_TRANSLATIONS.items():
+        if ru.lower() in n and (best_ru is None or len(ru) > len(best_ru)):
+            best_ru = ru
+            best_en = en
+    return best_en
 
 
 def _clean_html(text: str) -> str:
@@ -158,9 +278,14 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
     search_away = away
 
     if is_world_cup:
-        search_home = COUNTRY_TRANSLATIONS.get(home, home)
-        search_away = COUNTRY_TRANSLATIONS.get(away, away)
+        search_home = _translate_country(home)
+        search_away = _translate_country(away)
         logger.debug(f"World Cup match: translating {home} → {search_home}, {away} → {search_away}")
+        # If a name didn't translate it stays Russian — searching English feeds with a
+        # mixed-language query is pointless, so skip the RSS lookup (standings-only report).
+        if search_home == home or search_away == away:
+            logger.info(f"[RSS] Skipping news search — unresolved country name(s): '{search_home}' vs '{search_away}'")
+            return None
 
     # Build search alternatives
     home_alts = TEAM_MAPPINGS.get(search_home, [])

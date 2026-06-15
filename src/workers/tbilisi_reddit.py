@@ -77,12 +77,45 @@ async def _fetch_recent_posts(hours: int = 36, timeout: float = 10.0) -> List[Di
     return posts
 
 
+# Daily shared cache so every user gets the SAME highlight (or the same "no
+# highlight" result) instead of each digest re-fetching and re-asking GPT, which
+# is non-deterministic — one user could get a post while another gets nothing.
+# Keyed by date so it refreshes naturally every day. The lock serialises the
+# concurrent 08:00 digest jobs so only the first one actually computes.
+_highlight_cache: Dict[str, Optional[Dict[str, str]]] = {}
+_highlight_lock = asyncio.Lock()
+
+
 async def get_tbilisi_reddit_highlight() -> Optional[Dict[str, str]]:
     """Return one curated r/tbilisi highlight or None if nothing suitable.
+
+    The result is computed once per day and shared across all users (cached,
+    including a None result) so every digest shows the same highlight.
 
     Returns:
         {"title": str, "url": str, "description": str} or None
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    async with _highlight_lock:
+        if today in _highlight_cache:
+            cached = _highlight_cache[today]
+            logger.info(
+                "✓ r/tbilisi highlight: reusing today's cached result "
+                f"({'highlight' if cached else 'none'})"
+            )
+            return cached
+
+        result = await _compute_tbilisi_reddit_highlight()
+
+        # Keep only today's entry to avoid unbounded growth.
+        _highlight_cache.clear()
+        _highlight_cache[today] = result
+        return result
+
+
+async def _compute_tbilisi_reddit_highlight() -> Optional[Dict[str, str]]:
+    """Fetch r/tbilisi posts and pick one highlight via GPT (uncached)."""
     posts = await _fetch_recent_posts(hours=36)
     if not posts:
         return None

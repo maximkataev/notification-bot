@@ -157,37 +157,51 @@ async def select_good_news_with_summaries(
 
         logger.info(f"Processing {len(indexed_news)} unique good news items (deduplicated)")
 
-        # Build prompt for ChatGPT
-        system_prompt = """You are a news editor who selects the most positive and uplifting news stories.
-Select exactly 6 news items that are genuinely positive, heartwarming, or inspiring.
-For each, write a summary in Russian (50-70 words) that captures the essence of the good news.
-Ensure no duplicates by checking titles and descriptions.
-Return ONLY valid JSON array."""
+        # Build prompt for ChatGPT.
+        # This path serves the "good-news-only" user (Маша): NO politics, economics,
+        # finance, markets, war or sports — ONLY warm, uplifting, heartwarming stories
+        # (animals, zoos, wildlife, rescues, kindness, generosity, human-interest,
+        # nature, helpful science). Quality over quantity: returning 2-3 genuinely
+        # uplifting items is far better than padding to 6 with hard news.
+        system_prompt = """You are an editor of a "good news only" digest for a kind, animal-loving reader.
+You select ONLY genuinely warm, uplifting, heartwarming stories: animals, zoos, wildlife,
+rescues, acts of kindness and generosity, touching human-interest stories, nature, and
+science/medicine breakthroughs that help people or animals.
+You STRICTLY REJECT anything about politics, government, elections, economics, finance,
+markets, oil/energy, business, war, conflict, crime, disasters, diseases, deaths, and ALL
+sports. When in doubt, reject.
+Quality over quantity: pick FEWER items rather than including anything that is not clearly uplifting.
+For each chosen item write a summary in Russian (50-70 words). Return ONLY a valid JSON array."""
 
-        user_prompt = f"""SELECT EXACTLY 6 GOOD NEWS ITEMS from this list (or fewer if not enough).
-For each, provide a summary in Russian.
-Ensure they are truly positive (animals, volunteering, achievements, rescues, breakthroughs).
-BAN: deaths, diseases, tragedies, wars, negative events.
+        user_prompt = f"""ВЫБЕРИ ДО 6 ПО-НАСТОЯЩЕМУ ДОБРЫХ, ТЁПЛЫХ И ВДОХНОВЛЯЮЩИХ НОВОСТЕЙ из списка (можно МЕНЬШЕ — лучше 2-3 отличных, чем 6 с натяжкой).
+
+РАЗРЕШЕНО (только такое): животные, зоопарки, дикая природа, спасение животных и людей,
+доброта, забота, щедрость, волонтёрство, трогательные человеческие истории, природа,
+достижения и открытия в науке/медицине, которые помогают людям или животным.
+
+СТРОГО ЗАПРЕЩЕНО (никогда не включай, даже если новость нейтральная или «не негативная»):
+политика, власть, выборы, экономика, финансы, рынки, нефть, энергетика, бизнес, санкции,
+войны, конфликты, геополитика, преступления, катастрофы, болезни, смерти и ЛЮБОЙ спорт.
+Если новость про политику/экономику/спорт — она ЗАПРЕЩЕНА, даже если выглядит позитивной.
 
 NEWS:
 {json.dumps(indexed_news, ensure_ascii=False, indent=2)}
 
-REQUIREMENTS:
-- Select UP TO 6 news items (can be fewer if not enough positive stories)
-- description_ru: ONE COMPLETE SUMMARY (50-70 words in Russian)
-  * Starts with NEW information (not just title rewrite)
-  * Includes details, facts, context
-  * Ends with period
-  * Grammatically correct Russian
-- ⚠️ Если ты НЕ можешь составить описание или хочешь ОТКЛОНИТЬ новость (она не позитивная,
-  не можешь её оценить и т.п.) — верни в "description_ru" РОВНО символ ❌ (не пиши
-  "я не могу оценить эту новость"). Скрипт сам уберёт такие новости из дайджеста.
-- Return ONLY JSON array, no other text
+ТРЕБОВАНИЯ:
+- Выбери ДО 6 новостей (можно меньше, если по-настоящему добрых мало)
+- description_ru: ОДНО ПОЛНОЕ описание (50-70 слов на русском)
+  * Начинается с НОВОЙ информации (не пересказ title)
+  * Включает детали, факты, контекст
+  * Заканчивается точкой, грамотный русский
+- ⚠️ Если новость НЕ подходит (политика/экономика/спорт/негатив) или ты не можешь составить
+  описание — верни в "description_ru" РОВНО символ ❌ (не пиши «я не могу оценить эту новость»).
+  Скрипт сам уберёт такие новости из дайджеста.
+- Только JSON-массив, без другого текста
 
-EXAMPLE OUTPUT:
+ПРИМЕР ВЫВОДА:
 [
   {{"index": 0, "category": "goodness", "description_ru": "Волонтеры спасли 500 бездомных собак и открыли новый приют. Проект получил грант, все животные здоровы и получат заботу."}},
-  {{"index": 2, "category": "goodness", "description_ru": "Ученые разработали новый метод лечения рака. Испытания показали 85% эффективность при минимальных побочных эффектах."}}
+  {{"index": 2, "category": "goodness", "description_ru": "В зоопарке родился редкий детёныш панды — первый за десять лет. Сотрудники круглосуточно выхаживают малыша, посетители смогут увидеть его весной."}}
 ]
 """
 

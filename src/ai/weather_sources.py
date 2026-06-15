@@ -88,36 +88,79 @@ def _map_gismeteo_condition(text: str) -> str:
     return "облачно"
 
 
-# ============ GISMETEO (PRIMARY) ============
+# ============ SHARED PLAYWRIGHT FETCH ============
 
-async def _fetch_gismeteo_html(url: str) -> Optional[str]:
-    """Fetch a Gismeteo city page with Playwright (renders the forecast widget)."""
+async def _fetch_rendered_html(
+    url: str,
+    label: str,
+    wait_selector: Optional[str] = None,
+    settle_ms: int = 2500,
+    nav_timeout_ms: int = 45000,
+) -> Optional[str]:
+    """Render a JS page with Playwright and return its HTML.
+
+    Hardened against the 15s timeouts we were hitting on slow days even though the
+    sites load fine in a browser:
+      - blocks images / fonts / media / stylesheets (we never parse them) so the
+        navigation completes much faster
+      - uses a generous navigation timeout instead of 15s
+      - waits for a specific data selector when given, rather than a blind sleep
+      - returns whatever HTML did load even if navigation or the selector wait
+        times out, so a partially-loaded-but-parseable page still gets a chance
+    """
+    browser = None
     try:
-        logger.info("[GISMETEO] Launching browser...")
+        logger.info(f"[{label}] Launching browser...")
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
             )
+
+            # Abort heavy resource requests we never read. We still parse <img src>
+            # attributes / JSON script tags from the DOM, which remain intact.
+            async def _block(route):
+                if route.request.resource_type in ("image", "media", "font", "stylesheet"):
+                    await route.abort()
+                else:
+                    await route.continue_()
+
+            await context.route("**/*", _block)
             page = await context.new_page()
 
-            logger.info(f"[GISMETEO] Loading {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(3000)
+            logger.info(f"[{label}] Loading {url}")
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+            except PlaywrightTimeoutError:
+                logger.warning(f"[{label}] navigation timeout — parsing whatever loaded")
 
+            if wait_selector:
+                try:
+                    await page.wait_for_selector(wait_selector, timeout=15000)
+                except PlaywrightTimeoutError:
+                    logger.warning(f"[{label}] selector '{wait_selector}' not ready — parsing current DOM")
+
+            await page.wait_for_timeout(settle_ms)
             html = await page.content()
-            logger.info(f"[GISMETEO] ✓ HTML fetched: {len(html)} bytes")
-
-            await context.close()
-            await browser.close()
+            logger.info(f"[{label}] ✓ HTML fetched: {len(html)} bytes")
             return html
 
-    except PlaywrightTimeoutError:
-        logger.error("[GISMETEO] ❌ Timeout")
-        return None
     except Exception as e:
-        logger.error(f"[GISMETEO] ❌ Fetch error: {type(e).__name__}: {str(e)[:100]}")
+        logger.error(f"[{label}] ❌ Fetch error: {type(e).__name__}: {str(e)[:100]}")
         return None
+    finally:
+        if browser:
+            try:
+                await browser.close()
+            except Exception:
+                pass
+
+
+# ============ GISMETEO (PRIMARY) ============
+
+async def _fetch_gismeteo_html(url: str) -> Optional[str]:
+    """Fetch a Gismeteo city page with Playwright (renders the forecast widget)."""
+    return await _fetch_rendered_html(url, "GISMETEO", wait_selector=".widget-row-datetime-time")
 
 
 def _parse_gismeteo(html: str) -> Optional[Dict[str, Dict]]:
@@ -225,32 +268,7 @@ def _parse_gismeteo(html: str) -> Optional[Dict[str, Dict]]:
 
 async def _fetch_bbc_html(url: str) -> Optional[str]:
     """Fetch a BBC Weather city page with Playwright."""
-    try:
-        logger.info("[BBC] Launching browser...")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
-            page = await context.new_page()
-
-            logger.info(f"[BBC] Loading {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(3000)
-
-            html = await page.content()
-            logger.info(f"[BBC] ✓ HTML fetched: {len(html)} bytes")
-
-            await context.close()
-            await browser.close()
-            return html
-
-    except PlaywrightTimeoutError:
-        logger.error("[BBC] ❌ Timeout")
-        return None
-    except Exception as e:
-        logger.error(f"[BBC] ❌ Fetch error: {type(e).__name__}: {str(e)[:100]}")
-        return None
+    return await _fetch_rendered_html(url, "BBC", wait_selector="script[type='application/json']")
 
 
 def _parse_bbc(html: str) -> Optional[Dict[str, Dict]]:
@@ -571,33 +589,8 @@ def _parse_worldweather(html: str) -> Optional[Dict[str, Dict]]:
 
 async def _fetch_georgian_weather_html() -> Optional[str]:
     """Fetch weather from xn--lodgobmh.com (Georgian weather service)."""
-    try:
-        logger.info("[GEORGIAN] Launching browser...")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            )
-            page = await context.new_page()
-
-            url = "https://weather.xn--lodgobmh.com/Tbilisi"
-            logger.info(f"[GEORGIAN] Loading {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)
-
-            html = await page.content()
-            logger.info(f"[GEORGIAN] ✓ HTML fetched: {len(html)} bytes")
-
-            await context.close()
-            await browser.close()
-            return html
-
-    except PlaywrightTimeoutError:
-        logger.error("[GEORGIAN] ❌ Timeout")
-        return None
-    except Exception as e:
-        logger.error(f"[GEORGIAN] ❌ Fetch error: {type(e).__name__}: {str(e)[:100]}")
-        return None
+    url = "https://weather.xn--lodgobmh.com/Tbilisi"
+    return await _fetch_rendered_html(url, "GEORGIAN", wait_selector="table.table", settle_ms=2000)
 
 
 def _parse_georgian_weather(html: str) -> Optional[Dict[str, Dict]]:

@@ -17,6 +17,13 @@ from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
 
+# Reddit blocks the default httpx User-Agent with HTTP 429. A browser-like UA fixes
+# it (same trick as src/workers/tbilisi_reddit.py, which fetches Reddit reliably).
+REDDIT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
+
 # Meme sources (primary: Reddit RSS)
 MEME_SOURCES = [
     {
@@ -96,7 +103,7 @@ async def _fetch_from_rss(url: str, source_title: str, timeout: float = 10.0, ma
 
     for attempt in range(max_retries):
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=REDDIT_HEADERS) as client:
                 try:
                     response = await client.get(url)
                     response.raise_for_status()

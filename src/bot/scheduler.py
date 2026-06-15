@@ -304,10 +304,10 @@ async def _morning_digest_impl(
 - Обязательно обратись по имени: {user_name or 'друг'}
 - Дружелюбно, живо, с лёгкой искрой — как сообщение от хорошего друга
 - Естественно упомяни день недели и/или погоду
-- Заверши фразой-подводкой к дайджесту (типа «Вот что я для тебя подготовил этим утром:»)
+- Заверши короткой подводкой к дайджесту по смыслу «вот что я для тебя собрал на сегодня» — но обязательно СВОИМИ словами, каждый раз формулируй по-новому. НЕ копируй эту фразу дословно.
 - Без клише («начни день с улыбки», «ты можешь всё», «заряд энергии») и без официоза
 
-Пример тона: "Доброе утро{name_part}! Наконец-то начинается этот солнечный (должно соответствовать реальной погоды, солнечный необязательно) {weekday_ru} день. Вот что я для тебя подготовил этим утром:"
+Пример ТОЛЬКО для тона (не повторяй его дословно, придумай свой вариант подводки): "Доброе утро{name_part}! Наконец-то начинается этот солнечный (должно соответствовать реальной погоде, солнечный необязательно) {weekday_ru} день."
 
 Ответ — только текст приветствия, строго 1-2 предложения."""  # noqa: E501
 
@@ -335,11 +335,11 @@ async def _morning_digest_impl(
     logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
 
     # Use the entire response as the greeting
-    simple_greeting = response_text.strip() if response_text else f"Доброе утро{name_part}! Вот что я для тебя подготовил этим утром:"
+    simple_greeting = response_text.strip() if response_text else f"Доброе утро{name_part}! Лови утреннюю сводку:"
 
     if not simple_greeting or len(simple_greeting) < 10:
         logger.error("❌ AI returned incomplete response, using fallback")
-        simple_greeting = f"Доброе утро{name_part}! Вот что я для тебя подготовил этим утром:"
+        simple_greeting = f"Доброе утро{name_part}! Лови утреннюю сводку:"
 
     # AI-based clothing recommendation with jacket validation
     # (Replaces old rule-based logic that didn't account for temperature < 10°C)
@@ -916,23 +916,27 @@ async def _morning_digest_impl(
         else:
             logger.debug("No sports news available for fallback")
 
-    # Always show Product Hunt (independent of sports — shown even when skip_sports=True)
-    logger.info("Fetching Product Hunt")
-    try:
-        product = await get_top_product()
+    # Product Hunt — primary user only. Secondary users (skip_tasks=True) don't get
+    # this section. Shown regardless of sports for the primary user.
+    if skip_tasks:
+        logger.info("Skipping Product Hunt for secondary user")
+    else:
+        logger.info("Fetching Product Hunt")
+        try:
+            product = await get_top_product()
 
-        if product:
-            message_lines.append("🚀 Product Hunt (новое на рынке):")
-            message_lines.append(
-                f"<a href=\"{product['url']}\">{product['name']}</a>"
-            )
-            message_lines.append(product["description"][:150])
-            message_lines.append("")
-            logger.info(f"✓ Product Hunt shown: {product['name']}")
-        else:
-            logger.warning("Product Hunt fetch returned None")
-    except Exception as e:
-        logger.error(f"Failed to fetch Product Hunt: {e}")
+            if product:
+                message_lines.append("🚀 Product Hunt (новое на рынке):")
+                message_lines.append(
+                    f"<a href=\"{product['url']}\">{product['name']}</a>"
+                )
+                message_lines.append(product["description"][:150])
+                message_lines.append("")
+                logger.info(f"✓ Product Hunt shown: {product['name']}")
+            else:
+                logger.warning("Product Hunt fetch returned None")
+        except Exception as e:
+            logger.error(f"Failed to fetch Product Hunt: {e}")
 
     # Add Content recommendation (with timeout to prevent digest delays)
     logger.info("Fetching content recommendation (max 10s)")

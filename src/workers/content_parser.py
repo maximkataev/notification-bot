@@ -33,6 +33,13 @@ CONTENT_PROFILES = {
 }
 DEFAULT_CONTENT_INTERESTS = "интересный и полезный для бизнес- и системного аналитика (AI, технологии, наука, бизнес)"
 
+# Anti-repeat memory for the themed podcast: the last few podcasts shown per user.
+# GPT otherwise keeps picking the single best thematic match (e.g. Arzamas) every day;
+# we exclude recently-shown podcasts from the pool so the recommendation rotates.
+# In-memory (resets on restart) — fine for a long-running webhook process.
+_recent_themed_creators: Dict[int, List[str]] = {}
+_RECENT_THEMED_KEEP = 10
+
 # Real content sources (channels, playlists, podcasts)
 # YouTube channels with both ID (for fetching) and channel URL (for display)
 YOUTUBE_CHANNELS = {
@@ -562,6 +569,27 @@ async def get_youtube_videos(
         return []
 
 
+def _best_episode_url(entry: Any, source: Dict) -> str:
+    """Pick the best usable absolute URL for a podcast episode.
+
+    Some feeds (e.g. Arzamas) put a non-URL slug in <link> ("podcast-other-149")
+    and the real address only in the <enclosure> audio href — the old code used the
+    slug verbatim, so the digest podcast had a broken/relative link. We now require
+    an absolute http(s) URL, trying in order: <link> → enclosure → links → channel page.
+    """
+    def _abs(u: str) -> bool:
+        return u.startswith("http://") or u.startswith("https://")
+
+    candidates = [(entry.get("link") or "").strip()]
+    candidates += [(enc.get("href") or "").strip() for enc in (entry.get("enclosures") or [])]
+    candidates += [(link.get("href") or "").strip() for link in (entry.get("links") or [])]
+
+    for url in candidates:
+        if _abs(url):
+            return url
+    return (source.get("channel_url") or "").strip()
+
+
 async def _fetch_single_podcast(
     source: Dict, hours: int = 24
 ) -> Optional[Dict[str, Any]]:
@@ -591,7 +619,7 @@ async def _fetch_single_podcast(
                 if pub_time < cutoff:
                     continue  # Too old
 
-                episode_url = entry.get("link", "")
+                episode_url = _best_episode_url(entry, source)
                 if not episode_url:
                     continue
 
@@ -1239,12 +1267,18 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
         return None
 
 
-async def get_themed_podcast(interests: str, hours: int = 168) -> Optional[Dict[str, Any]]:
+async def get_themed_podcast(
+    interests: str, hours: int = 168, user_id: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     """Pick a podcast episode matching `interests` (EN + RU, last `hours`).
 
     Used for users with a themed content profile (Маша/Юля). Uses a wider time
     window than the default 24h since podcasts don't publish daily. Returns None
     if no episodes are available so the caller can fall back to a music album.
+
+    To avoid always recommending the same best-matching podcast (e.g. Arzamas),
+    podcasts shown to this user in the last few runs are excluded from the pool
+    when other options exist.
     """
     try:
         en, ru = await asyncio.gather(
@@ -1262,8 +1296,25 @@ async def get_themed_podcast(interests: str, hours: int = 168) -> Optional[Dict[
             logger.info("No fresh podcasts available for themed selection")
             return None
 
-        logger.info(f"Themed podcast pool: {len(items)} episodes; selecting for interests")
-        return await _select_and_describe(items, interests=interests)
+        # Drop recently-shown podcasts so the recommendation rotates day to day.
+        # Fall back to the full pool if exclusion would leave nothing.
+        recent = _recent_themed_creators.get(user_id, []) if user_id else []
+        pool = [it for it in items if it.get("creator") not in recent] or items
+        if recent and len(pool) < len(items):
+            logger.info(f"Themed podcast: excluded {len(items) - len(pool)} recently-shown ({recent})")
+
+        logger.info(f"Themed podcast pool: {len(pool)} episodes; selecting for interests")
+        result = await _select_and_describe(pool, interests=interests)
+
+        # Remember what we showed so it's skipped next time.
+        if result and user_id:
+            creator = result.get("creator", "")
+            if creator:
+                history = _recent_themed_creators.setdefault(user_id, [])
+                history.append(creator)
+                del history[:-_RECENT_THEMED_KEEP]  # keep only the last N
+
+        return result
 
     except Exception as e:
         logger.warning(f"Themed podcast selection failed: {type(e).__name__}: {e}")
@@ -1295,7 +1346,7 @@ async def get_content_recommendation_with_review(user_id: int = 71488343) -> Opt
         profile = CONTENT_PROFILES.get(user_id)
         if profile and profile.get("podcast_only"):
             logger.info(f"User {user_id}: themed podcast recommendation")
-            themed = await get_themed_podcast(profile["interests"])
+            themed = await get_themed_podcast(profile["interests"], user_id=user_id)
             if themed:
                 return themed
             logger.info("No themed podcast found, falling back to music album")

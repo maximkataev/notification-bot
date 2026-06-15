@@ -54,11 +54,15 @@ CULTURE_SCIENCE_FEEDS = [
     "https://feeds.bbci.co.uk/news/rss.xml",  # BBC News (also has culture)
 ]
 
-# POOL 5: Good News (positive, inspiring stories)
+# POOL 5: Good News (positive, inspiring stories — animals, kindness, rescues).
+# Dedicated good-news / animal feeds so the pool is full of genuinely uplifting
+# content instead of general hard-news where political/economic stories dominate
+# (this pool feeds the "good-news-only" user, who must NOT get politics/economy/sports).
 GOOD_NEWS_FEEDS = [
-    "https://feeds.npr.org/1001/rss.xml",  # NPR (has uplifting stories)
-    "https://www.theguardian.com/world/rss",  # Guardian World (good news section)
-    "https://feeds.bbci.co.uk/news/rss.xml",  # BBC (uplifting human interest)
+    "https://www.goodnewsnetwork.org/feed/",  # Good News Network (positive only)
+    "https://www.positive.news/feed/",  # Positive News (positive only)
+    "https://www.theguardian.com/world/animals/rss",  # Guardian Animals
+    "https://www.theguardian.com/world/series/the-upside/rss",  # Guardian "The Upside"
 ]
 
 # POOL 6: Crypto (BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies)

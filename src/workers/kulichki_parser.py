@@ -316,13 +316,19 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
             logger.info(f"[KULICHKI] Deduplicated: {len(all_matches)} → {len(unique_matches)}")
             all_matches = unique_matches
 
-        # Apply display window: all of today's matches + tomorrow's night matches
-        # strictly BEFORE 08:00 Tbilisi. The cutoff is EXCLUSIVE: the digest is sent
-        # at 08:00, so a match at exactly 08:00 belongs to its OWN day's digest
-        # (shown as "today"), not to the previous day's digest as "tomorrow night".
+        # Apply display window: UPCOMING matches only — today's matches that have
+        # NOT kicked off yet + tomorrow's night matches strictly BEFORE 08:00 Tbilisi.
+        #
+        # All times here are already Tbilisi (UTC+4); kulichki is Moscow (UTC+3) and
+        # was converted in _parse_league_page. "now" is anchored to Tbilisi via
+        # _tbilisi_now() so the server's UTC clock never leaks in. A match whose
+        # kickoff is already in the past (e.g. a 06:00 night game when the digest is
+        # built at 08:00) must NOT appear in the "upcoming matches" section.
         from datetime import timedelta as _timedelta
-        today_iso = _tbilisi_now().date().isoformat()
-        tomorrow_iso = (_tbilisi_now().date() + _timedelta(days=1)).isoformat()
+        now = _tbilisi_now()
+        now_hhmm = now.strftime("%H:%M")
+        today_iso = now.date().isoformat()
+        tomorrow_iso = (now.date() + _timedelta(days=1)).isoformat()
         NIGHT_CUTOFF = "08:00"
 
         windowed_matches = []
@@ -331,7 +337,12 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
             time_str = match.get("time", "TBD")
 
             if md == today_iso:
-                windowed_matches.append(match)
+                # Drop matches that have already started today. Keep TBD (unknown
+                # time) so we never silently lose a match with no listed time.
+                if time_str == "TBD" or time_str >= now_hhmm:
+                    windowed_matches.append(match)
+                else:
+                    logger.debug(f"[KULICHKI] Today match already kicked off (skip): {match['home']} vs {match['away']} at {time_str} (now {now_hhmm})")
             elif md == tomorrow_iso:
                 # Only night games strictly before 08:00; skip TBD (unknown if night)
                 if time_str != "TBD" and time_str < NIGHT_CUTOFF:
