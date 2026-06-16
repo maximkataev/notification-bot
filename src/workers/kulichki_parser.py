@@ -84,119 +84,6 @@ def _get_league_urls() -> Dict[str, str]:
 LEAGUE_URLS = _get_league_urls()
 
 
-def _is_today(date_cell: str) -> bool:
-    """
-    Check if date_cell contains today's date in various formats:
-    - "14 мая" (day month in Russian)
-    - "14.05" (DD.MM format)
-    - "30 мая" with teams/time mixed in
-
-    Returns True only if date matches today's date (day and month).
-    """
-    try:
-        today = _tbilisi_now()
-        today_day = today.day
-        today_month = today.month
-
-        date_text = date_cell.strip().lower()
-        logger.debug(f"[KULICHKI] Parsing date: '{date_text}' (today: {today_day}.{today_month:02d})")
-
-        # Format 1: "DD.MM" (e.g., "05.05" or "30.05")
-        dot_match = re.search(r"(\d{1,2})\.(\d{1,2})", date_text)
-        if dot_match:
-            day = int(dot_match.group(1))
-            month = int(dot_match.group(2))
-            is_match = day == today_day and month == today_month
-            logger.debug(f"[KULICHKI]   Format DD.MM: day={day}, month={month} → {is_match}")
-            return is_match
-
-        # Format 2: "DD месяц" (e.g., "14 мая", "30 мая")
-        parts = date_text.split()
-        if len(parts) >= 1:
-            try:
-                day = int(parts[0])
-
-                # Look for Russian month name in the entire text
-                month = None
-                for month_name, month_num in RUSSIAN_MONTHS.items():
-                    if month_name in date_text:
-                        month = month_num
-                        break
-
-                if month is not None:
-                    is_match = day == today_day and month == today_month
-                    logger.debug(f"[KULICHKI]   Format DD месяц: day={day}, month={month} → {is_match}")
-                    return is_match
-                else:
-                    # Only day found, no month - can't determine
-                    logger.debug(f"[KULICHKI]   No month found, only day={day}")
-                    return False
-
-            except ValueError:
-                pass
-
-        logger.debug(f"[KULICHKI]   Could not parse date from: '{date_text}'")
-        return False
-
-    except Exception as e:
-        logger.debug(f"[KULICHKI] Error parsing date '{date_cell}': {e}")
-        return False
-
-
-def _is_yesterday(date_cell: str) -> bool:
-    """
-    Check if date_cell contains yesterday's date in various formats.
-    Returns True only if date matches yesterday's date (day and month).
-    """
-    try:
-        yesterday = _tbilisi_now() - timedelta(days=1)
-        yesterday_day = yesterday.day
-        yesterday_month = yesterday.month
-
-        date_text = date_cell.strip().lower()
-        logger.debug(f"[KULICHKI] Parsing yesterday date: '{date_text}' (yesterday: {yesterday_day}.{yesterday_month:02d})")
-
-        # Format 1: "DD.MM" (e.g., "05.05" or "30.05")
-        dot_match = re.search(r"(\d{1,2})\.(\d{1,2})", date_text)
-        if dot_match:
-            day = int(dot_match.group(1))
-            month = int(dot_match.group(2))
-            is_match = day == yesterday_day and month == yesterday_month
-            logger.debug(f"[KULICHKI]   Format DD.MM: day={day}, month={month} → {is_match}")
-            return is_match
-
-        # Format 2: "DD месяц" (e.g., "14 мая", "30 мая")
-        parts = date_text.split()
-        if len(parts) >= 1:
-            try:
-                day = int(parts[0])
-
-                # Look for Russian month name in the entire text
-                month = None
-                for month_name, month_num in RUSSIAN_MONTHS.items():
-                    if month_name in date_text:
-                        month = month_num
-                        break
-
-                if month is not None:
-                    is_match = day == yesterday_day and month == yesterday_month
-                    logger.debug(f"[KULICHKI]   Format DD месяц: day={day}, month={month} → {is_match}")
-                    return is_match
-                else:
-                    logger.debug(f"[KULICHKI]   No month found, only day={day}")
-                    return False
-
-            except ValueError:
-                pass
-
-        logger.debug(f"[KULICHKI]   Could not parse yesterday date from: '{date_text}'")
-        return False
-
-    except Exception as e:
-        logger.debug(f"[KULICHKI] Error parsing yesterday date '{date_cell}': {e}")
-        return False
-
-
 def _parse_match_date(date_cell: str):
     """
     Parse a kulichki date cell into a datetime.date (current year).
@@ -246,16 +133,35 @@ def _parse_match_date(date_cell: str):
         return None
 
 
-def _convert_msk_to_tbilisi(time_str: str) -> str:
-    """Convert HH:MM from Moscow time (UTC+3) to Tbilisi time (UTC+4, +1h)."""
-    if time_str == "TBD":
-        return time_str
+def _tbilisi_kickoff(match_date, msk_time_str: str):
+    """Build the full Tbilisi kickoff datetime from a match date + Moscow time.
+
+    kulichki lists Moscow time (UTC+3); Tbilisi is UTC+4. Adding the hour can roll
+    the date over (e.g. 23:30 MSK → 00:30 next day Tbilisi), which a plain HH:MM
+    string conversion silently loses — that is why a "tomorrow 00:00" game was really
+    the night *after* tomorrow. Returning a real datetime lets the caller apply an
+    exact rolling 24h window and sort chronologically across the midnight boundary.
+
+    Returns a naive Tbilisi datetime, or None when the time is unknown (TBD).
+    """
+    if not match_date or not msk_time_str or msk_time_str == "TBD":
+        return None
     try:
-        msk_hour, msk_minute = map(int, time_str.split(":"))
-        tbilisi_hour = (msk_hour + 1) % 24
-        return f"{tbilisi_hour:02d}:{msk_minute:02d}"
+        hour, minute = map(int, msk_time_str.split(":"))
     except (ValueError, AttributeError):
-        return time_str
+        return None
+    msk_dt = dt(match_date.year, match_date.month, match_date.day, hour, minute)
+    return msk_dt + timedelta(hours=1)
+
+
+def _kickoff_sort_key(match: Dict[str, Any]) -> str:
+    """Sort key for chronological (earliest-first) match ordering.
+
+    Uses the ISO kickoff datetime so a 00:30 game tomorrow correctly sorts AFTER a
+    23:00 game today (a plain HH:MM compare would wrongly put 00:30 first). Matches
+    with an unknown kickoff (TBD) sort last.
+    """
+    return match.get("kickoff") or "9999-12-31T23:59"
 
 
 async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
@@ -316,42 +222,37 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
             logger.info(f"[KULICHKI] Deduplicated: {len(all_matches)} → {len(unique_matches)}")
             all_matches = unique_matches
 
-        # Apply display window: UPCOMING matches only — today's matches that have
-        # NOT kicked off yet + tomorrow's night matches strictly BEFORE 08:00 Tbilisi.
+        # Apply the UPCOMING window: kickoff in the next 24h from the digest prep time.
         #
-        # All times here are already Tbilisi (UTC+4); kulichki is Moscow (UTC+3) and
-        # was converted in _parse_league_page. "now" is anchored to Tbilisi via
-        # _tbilisi_now() so the server's UTC clock never leaks in. A match whose
-        # kickoff is already in the past (e.g. a 06:00 night game when the digest is
-        # built at 08:00) must NOT appear in the "upcoming matches" section.
+        # "now" is anchored to Tbilisi via _tbilisi_now() (the server runs UTC), and
+        # every match carries a real Tbilisi "kickoff" datetime (rolled across midnight
+        # in _parse_league_page). So:
+        #   - a game that already started (e.g. 06:00 night game, prep at 08:00) → past → skip
+        #   - a genuine "day after next" 00:00 game (a 23:xx MSK game that rolled past
+        #     midnight) has kickoff > now+24h → skip; it belongs in tomorrow's digest
+        # A TBD (unknown time) match is kept only if it is listed for today, so we never
+        # silently lose a match that simply has no published kickoff time.
         from datetime import timedelta as _timedelta
         now = _tbilisi_now()
-        now_hhmm = now.strftime("%H:%M")
+        window_end = now + _timedelta(hours=24)
         today_iso = now.date().isoformat()
-        tomorrow_iso = (now.date() + _timedelta(days=1)).isoformat()
-        NIGHT_CUTOFF = "08:00"
 
         windowed_matches = []
         for match in all_matches:
-            md = match.get("match_date")
-            time_str = match.get("time", "TBD")
-
-            if md == today_iso:
-                # Drop matches that have already started today. Keep TBD (unknown
-                # time) so we never silently lose a match with no listed time.
-                if time_str == "TBD" or time_str >= now_hhmm:
+            kickoff_iso = match.get("kickoff")
+            if kickoff_iso:
+                kickoff = dt.fromisoformat(kickoff_iso)
+                if now <= kickoff < window_end:
                     windowed_matches.append(match)
                 else:
-                    logger.debug(f"[KULICHKI] Today match already kicked off (skip): {match['home']} vs {match['away']} at {time_str} (now {now_hhmm})")
-            elif md == tomorrow_iso:
-                # Only night games strictly before 08:00; skip TBD (unknown if night)
-                if time_str != "TBD" and time_str < NIGHT_CUTOFF:
-                    windowed_matches.append(match)
-                else:
-                    logger.debug(f"[KULICHKI] Tomorrow match outside night window: {match['home']} vs {match['away']} at {time_str}")
+                    logger.debug(f"[KULICHKI] Match outside next-24h window (skip): {match['home']} vs {match['away']} at {kickoff} (now {now})")
+            elif match.get("match_date") == today_iso:
+                windowed_matches.append(match)
+            else:
+                logger.debug(f"[KULICHKI] TBD match not today (skip): {match['home']} vs {match['away']}")
 
         if len(windowed_matches) < len(all_matches):
-            logger.info(f"[KULICHKI] Window filter (today + tomorrow night <{NIGHT_CUTOFF}): {len(all_matches)} → {len(windowed_matches)}")
+            logger.info(f"[KULICHKI] Window filter (next 24h from {now:%Y-%m-%d %H:%M}): {len(all_matches)} → {len(windowed_matches)}")
         all_matches = windowed_matches
 
         if not all_matches:
@@ -364,8 +265,9 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
 
         logger.info(f"[KULICHKI] World Cup matches: {len(world_cup_matches)}, League matches: {len(league_matches)}")
 
-        # For World Cup: return all matches (no priority filter)
+        # For World Cup: return all matches (no priority filter), earliest kickoff first
         if world_cup_matches:
+            world_cup_matches.sort(key=_kickoff_sort_key)
             logger.info(f"[KULICHKI] ✓ Returning all {len(world_cup_matches)} World Cup match(es)")
             for m in world_cup_matches:
                 logger.debug(f"[KULICHKI]   - {m['home']} vs {m['away']}")
@@ -391,10 +293,12 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
 
         logger.info(f"[KULICHKI] League priority matches: {len(priority_matches)}")
 
-        # Sort by priority and take top 3
+        # Pick the 3 most important by priority, then display them earliest-first.
         priority_matches.sort(key=lambda m: m.get("priority_idx", 999))
+        top = priority_matches[:3]
+        top.sort(key=_kickoff_sort_key)
 
-        return priority_matches[:3] if priority_matches else None
+        return top if top else None
 
     except Exception as e:
         logger.warning(f"[KULICHKI] Failed: {type(e).__name__}: {e}")
@@ -460,6 +364,31 @@ async def get_yesterday_results_from_kulichki() -> Optional[List[Dict[str, Any]]
         if len(unique_matches) < len(all_matches):
             logger.info(f"[KULICHKI] Deduplicated results: {len(all_matches)} → {len(unique_matches)}")
             all_matches = unique_matches
+
+        # Trailing 24h window: keep matches that kicked off within the last 24h from the
+        # digest prep time. When a kickoff time is known (World Cup results carry one) we
+        # apply the cutoff exactly; league results have no published time, so we keep them
+        # (they are already constrained to yesterday/today by the parser).
+        now = _tbilisi_now()
+        window_start = now - timedelta(hours=24)
+        windowed = []
+        for match in all_matches:
+            kickoff_iso = match.get("kickoff")
+            if kickoff_iso:
+                kickoff = dt.fromisoformat(kickoff_iso)
+                if window_start <= kickoff < now:
+                    windowed.append(match)
+                else:
+                    logger.debug(f"[KULICHKI] Result outside last-24h window (skip): {match['home']} vs {match['away']} at {kickoff}")
+            else:
+                windowed.append(match)
+        if len(windowed) < len(all_matches):
+            logger.info(f"[KULICHKI] Result window filter (last 24h from {now:%Y-%m-%d %H:%M}): {len(all_matches)} → {len(windowed)}")
+        all_matches = windowed
+
+        if not all_matches:
+            logger.info("[KULICHKI] No results in last-24h window")
+            return None
 
         # Separate World Cup matches from regular league matches
         world_cup_matches = [m for m in all_matches if "World Cup" in m.get("league", "")]
@@ -592,13 +521,21 @@ def _parse_standings_table(html: str, league_name: str) -> Optional[List[Dict[st
 
 def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str, Any]]:
     """
-    Parse completed matches from yesterday from kulichki.net league page HTML.
+    Parse recently-completed matches from kulichki.net league page HTML.
     Structure: [Date] [Home - Away] [Score] [Status]
-    Returns only completed matches from yesterday (score in X:Y format)
+
+    Returns completed matches (score in X:Y) dated YESTERDAY or TODAY. Today's already
+    finished games (e.g. a 02:00 night match) must be included so the "past results"
+    section covers the full trailing 24h, not just the calendar yesterday — the caller
+    applies the precise 24h cutoff using each match's kickoff (when a time is available).
     """
     soup = BeautifulSoup(html, "html.parser")
     matches = []
     is_world_cup = "World Cup" in league_name
+
+    from datetime import timedelta as _timedelta
+    today = _tbilisi_now().date()
+    yesterday = today - _timedelta(days=1)
 
     try:
         tables = soup.find_all("table")
@@ -617,12 +554,21 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
                 try:
                     date_cell = cells[0].get_text().strip()
 
-                    # Filter by yesterday's date
-                    if not _is_yesterday(date_cell):
+                    # Keep yesterday's and today's matches (trailing 24h candidates)
+                    match_date = _parse_match_date(date_cell)
+                    if match_date not in (yesterday, today):
                         continue
 
+                    kickoff = None
                     if is_world_cup:
                         # World Cup layout: [Date] [Time] [Teams - Score] [Group]
+                        time_cell = cells[1].get_text().strip()
+                        time_match = re.match(r"^(\d{1,2}):(\d{2})$", time_cell)
+                        if time_match:
+                            kickoff = _tbilisi_kickoff(
+                                match_date, f"{time_match.group(1)}:{time_match.group(2)}"
+                            )
+
                         teams_cell = " ".join(cells[2].get_text().split())
 
                         # Must contain a final score
@@ -690,6 +636,8 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
                         "score": score,
                         "halftime_score": halftime_score,
                         "league": league_name,
+                        "match_date": match_date.isoformat(),
+                        "kickoff": kickoff.isoformat() if kickoff else None,
                         "home_flag": "⚽",
                         "away_flag": "⚽",
                     }
@@ -819,14 +767,23 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                     if not home or not away or len(home) < 3 or len(away) < 3:
                         continue
 
-                    # Convert Moscow Time (UTC+3) to Tbilisi Time (UTC+4)
-                    time_str = _convert_msk_to_tbilisi(time_str)
+                    # Build the full Tbilisi kickoff datetime from the Moscow date+time.
+                    # This rolls the date across midnight (23:xx MSK → 00:xx next day),
+                    # so match_date/time below are the real Tbilisi values, not the
+                    # Moscow-day label. kickoff drives the 24h window and time sort.
+                    kickoff = _tbilisi_kickoff(match_date, time_str)
+                    if kickoff is not None:
+                        tb_date = kickoff.date()
+                        time_str = kickoff.strftime("%H:%M")
+                    else:
+                        tb_date = match_date  # unknown time (TBD), keep the listed date
 
                     match = {
                         "home": home,
                         "away": away,
                         "time": time_str,
-                        "match_date": match_date.isoformat(),
+                        "match_date": tb_date.isoformat(),
+                        "kickoff": kickoff.isoformat() if kickoff else None,
                         "league": league_name,
                         "home_flag": "⚽",
                         "away_flag": "⚽",

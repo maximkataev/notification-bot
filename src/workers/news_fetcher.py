@@ -63,6 +63,10 @@ GOOD_NEWS_FEEDS = [
     "https://www.positive.news/feed/",  # Positive News (positive only)
     "https://www.theguardian.com/world/animals/rss",  # Guardian Animals
     "https://www.theguardian.com/world/series/the-upside/rss",  # Guardian "The Upside"
+    "https://reasonstobecheerful.world/feed/",  # Reasons to be Cheerful (solutions journalism)
+    "https://www.optimistdaily.com/feed/",  # The Optimist Daily (positive only)
+    "https://www.sunnyskyz.com/rss_tebow.php",  # Sunnyskyz (good news, feel-good stories)
+    "https://www.theguardian.com/science/rss",  # Guardian Science (discoveries, breakthroughs)
 ]
 
 # POOL 7-9: themed pools for the business/art/fashion/good-news user (Юля)

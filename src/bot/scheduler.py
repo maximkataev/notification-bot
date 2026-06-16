@@ -1,6 +1,7 @@
 """APScheduler setup for morning digest."""
 
 import asyncio
+import html
 import logging
 import json
 from datetime import datetime, timedelta
@@ -43,6 +44,7 @@ from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.content_parser import get_album_of_day
 from src.workers.quote_of_day import get_quote_of_day
+from src.workers.idiom_of_day import get_idiom_of_day
 from src.workers.football_matches import get_today_matches, get_formatted_matches, get_yesterday_results, get_formatted_results
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
@@ -71,6 +73,28 @@ SERVER_SUBSCRIPTIONS_USERS = {71488343}
 TBILISI_REDDIT_USERS = {71488343, 184010236}
 # Users who get an extra crypto news item (main user only)
 CRYPTO_NEWS_USERS = {71488343}
+# Users who get the English idiom/euphemism of the day (Маша и Максим)
+IDIOM_OF_DAY_USERS = {184010236, 71488343}
+
+def _esc(text) -> str:
+    """Escape text destined for a parse_mode=HTML message.
+
+    The whole digest is sent as HTML, so any raw <, >, & from GPT output or RSS
+    titles (e.g. "AT&T", "a < b") breaks entity parsing and Telegram drops the
+    ENTIRE message. Escape every dynamic text fragment we interpolate; do NOT run
+    this over markup we add ourselves (tags) or over href values (use _esc_attr).
+    """
+    return html.escape(str(text or ""), quote=False)
+
+
+def _esc_attr(url) -> str:
+    """Escape a URL for use inside an HTML attribute (href).
+
+    RSS links routinely carry & in query strings (?a=1&b=2); unescaped they break
+    HTML entity parsing the same way. quote=True also escapes any stray quotes.
+    """
+    return html.escape(str(url or ""), quote=True)
+
 
 # Per-user weather location: (location key for get_aggregated_weather, prepositional label).
 # Everyone defaults to Tbilisi; user 498233237 (Юля) gets Vienna.
@@ -382,8 +406,8 @@ async def _morning_digest_impl(
     logger.info("Fetching quote of the day")
     quote = await get_quote_of_day()
     if quote:
-        message_lines.append(f"✨ <i>\"{quote['text']}\"</i>")
-        message_lines.append(f"<i>— {quote['author']}</i>")
+        message_lines.append(f"✨ <i>\"{_esc(quote['text'])}\"</i>")
+        message_lines.append(f"<i>— {_esc(quote['author'])}</i>")
         message_lines.append("")
     else:
         logger.warning("Quote fetch failed")
@@ -642,9 +666,9 @@ async def _morning_digest_impl(
 
                     # Format: <a href="url">Source</a>: description_ru (full, complete text)
                     news_text = (
-                        f'{news_num}. <a href="{url}">{source}</a>: {description_ru}'
+                        f'{news_num}. <a href="{_esc_attr(url)}">{_esc(source)}</a>: {_esc(description_ru)}'
                         if url
-                        else f"{news_num}. {source}: {description_ru}"
+                        else f"{news_num}. {_esc(source)}: {_esc(description_ru)}"
                     )
 
                     message_lines.append(news_text)
@@ -671,9 +695,9 @@ async def _morning_digest_impl(
                         c_url = c_news.get("url", "")
                         news_num += 1
                         crypto_text = (
-                            f'{news_num}. 🪙 <a href="{c_url}">{c_source}</a>: {cdesc}'
+                            f'{news_num}. 🪙 <a href="{_esc_attr(c_url)}">{_esc(c_source)}</a>: {_esc(cdesc)}'
                             if c_url
-                            else f"{news_num}. 🪙 {c_source}: {cdesc}"
+                            else f"{news_num}. 🪙 {_esc(c_source)}: {_esc(cdesc)}"
                         )
                         message_lines.append(crypto_text)
                         message_lines.append("")
@@ -715,6 +739,28 @@ async def _morning_digest_impl(
             message_lines.append("")
         else:
             logger.info("No r/tbilisi highlight (section skipped)")
+
+    # English idiom / euphemism of the day (Маша и Максим)
+    if user_id in IDIOM_OF_DAY_USERS:
+        logger.info("Fetching idiom of the day")
+        try:
+            idiom = await get_idiom_of_day()
+        except Exception as e:
+            logger.warning(f"Idiom of day failed: {type(e).__name__}: {str(e)[:100]}")
+            idiom = None
+
+        if idiom:
+            kind_label = "Эвфемизм дня" if "эвфемизм" in idiom.get("kind", "").lower() else "Идиома дня"
+            message_lines.append(f"🇬🇧 <b>{kind_label}:</b>")
+            message_lines.append(f'<b>«{_esc(idiom["phrase"])}»</b> — {_esc(idiom["meaning_ru"])}')
+            if idiom.get("example_en"):
+                example = f'<i>{_esc(idiom["example_en"])}</i>'
+                if idiom.get("example_ru"):
+                    example += f' — {_esc(idiom["example_ru"])}'
+                message_lines.append(example)
+            message_lines.append("")
+        else:
+            logger.info("No idiom of day (section skipped)")
 
     # Tasks section (only if include_tasks=True)
     if include_tasks:

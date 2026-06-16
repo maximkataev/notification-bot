@@ -634,9 +634,10 @@ async def get_today_matches() -> Optional[List[Dict[str, Any]]]:
 
             logger.info(f"[FOOTBALL] Priority matches found: {len(priority_matches)}")
 
-            # Sort by priority index and take top 3
+            # Pick top 3 by priority, then display earliest kickoff first (chronological).
             priority_matches.sort(key=lambda m: m["priority_idx"])
             result = priority_matches[:3]
+            result.sort(key=lambda m: m.get("kickoff") or "9999-12-31T23:59")
 
             if result:
                 logger.info(f"[FOOTBALL] ✓ Returning {len(result)} top priority match(es)")

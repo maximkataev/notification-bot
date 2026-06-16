@@ -872,7 +872,10 @@ async def _fetch_single_russian_podcast(
                     if pub_time < cutoff:
                         continue  # Too old
 
-                    episode_url = entry.get("link", "")
+                    # Some Russian feeds (e.g. Arzamas) put a non-URL slug in <link>
+                    # ("podcast-other-149"); _best_episode_url falls back to the
+                    # enclosure href, then the channel page, so we always get a real link.
+                    episode_url = _best_episode_url(entry, source)
                     if not episode_url:
                         continue
 
