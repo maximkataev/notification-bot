@@ -52,6 +52,22 @@ async def init_db():
             """
         )
 
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shown_content (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL,
+                content_type TEXT NOT NULL,
+                creator      TEXT NOT NULL,
+                shown_at     TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shown_content_lookup "
+            "ON shown_content (user_id, content_type, id)"
+        )
+
         await db.commit()
         logger.info("Database initialized")
 
@@ -209,6 +225,40 @@ async def set_news_prompt(user_id: int, prompt: str):
 
         await db.commit()
         logger.info(f"✓ News prompt updated for user {user_id}")
+
+
+# Shown content history (anti-repeat across restarts/redeploys).
+# History is permanent: once a creator has been shown it is excluded forever.
+async def get_shown_creators(
+    user_id: int, content_type: str = "podcast"
+) -> List[str]:
+    """Return every creator ever shown to the user for this content type."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT DISTINCT creator
+            FROM shown_content
+            WHERE user_id = ? AND content_type = ?
+            """,
+            (user_id, content_type),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+
+async def record_shown_content(
+    user_id: int, creator: str, content_type: str = "podcast"
+):
+    """Record a shown creator so it is excluded from future recommendations."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO shown_content (user_id, content_type, creator)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, content_type, creator),
+        )
+        await db.commit()
 
 
 async def reset_news_prompt(user_id: int):

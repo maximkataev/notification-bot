@@ -15,6 +15,7 @@ import feedparser
 import base64
 from src.utils.openai_client import get_client
 from src.utils.doppler import get_secret
+from src.db.database import get_shown_creators, record_shown_content
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +34,10 @@ CONTENT_PROFILES = {
 }
 DEFAULT_CONTENT_INTERESTS = "интересный и полезный для бизнес- и системного аналитика (AI, технологии, наука, бизнес)"
 
-# Anti-repeat memory for the themed podcast: the last few podcasts shown per user.
+# Anti-repeat memory for the themed podcast: every podcast creator ever shown per user.
 # GPT otherwise keeps picking the single best thematic match (e.g. Arzamas) every day;
-# we exclude recently-shown podcasts from the pool so the recommendation rotates.
-# In-memory (resets on restart) — fine for a long-running webhook process.
-_recent_themed_creators: Dict[int, List[str]] = {}
-_RECENT_THEMED_KEEP = 10
+# we permanently exclude already-shown creators from the pool so nothing repeats.
+# Persisted in SQLite (data/tasks.db) so it survives restarts/redeploys.
 
 # Real content sources (channels, playlists, podcasts)
 # YouTube channels with both ID (for fetching) and channel URL (for display)
@@ -1299,23 +1298,21 @@ async def get_themed_podcast(
             logger.info("No fresh podcasts available for themed selection")
             return None
 
-        # Drop recently-shown podcasts so the recommendation rotates day to day.
+        # Drop every already-shown podcast so nothing repeats.
         # Fall back to the full pool if exclusion would leave nothing.
-        recent = _recent_themed_creators.get(user_id, []) if user_id else []
-        pool = [it for it in items if it.get("creator") not in recent] or items
-        if recent and len(pool) < len(items):
-            logger.info(f"Themed podcast: excluded {len(items) - len(pool)} recently-shown ({recent})")
+        shown = await get_shown_creators(user_id, "podcast") if user_id else []
+        pool = [it for it in items if it.get("creator") not in shown] or items
+        if shown and len(pool) < len(items):
+            logger.info(f"Themed podcast: excluded {len(items) - len(pool)} already-shown ({shown})")
 
         logger.info(f"Themed podcast pool: {len(pool)} episodes; selecting for interests")
         result = await _select_and_describe(pool, interests=interests)
 
-        # Remember what we showed so it's skipped next time.
+        # Remember what we showed so it's permanently skipped next time.
         if result and user_id:
             creator = result.get("creator", "")
             if creator:
-                history = _recent_themed_creators.setdefault(user_id, [])
-                history.append(creator)
-                del history[:-_RECENT_THEMED_KEEP]  # keep only the last N
+                await record_shown_content(user_id, creator, "podcast")
 
         return result
 
