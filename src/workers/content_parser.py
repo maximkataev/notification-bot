@@ -1363,6 +1363,17 @@ async def get_content_recommendation_with_review(user_id: int = 71488343) -> Opt
             else:
                 logger.debug("No item selected by GPT")
 
+        # Nothing fresh in 24h: podcasts/channels rarely publish daily, so widen the
+        # window to a week and prefer a real podcast/video before dropping to a music
+        # album (the themed-podcast path already uses 168h for the same reason).
+        logger.info("No content in 24h window, widening to last 7 days for podcasts/videos...")
+        weekly_items = await fetch_fresh_content(hours=168)
+        if weekly_items:
+            logger.info(f"✓ Found {len(weekly_items)} items in 7-day window, selecting best...")
+            result = await _select_and_describe(weekly_items)
+            if result:
+                return result
+
         # Fallback: recommend music album
         logger.info("⚠️  No fresh content found, recommending music album...")
         result = await _recommend_music_album(user_id=user_id)

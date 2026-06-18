@@ -1,5 +1,6 @@
 """Parse football matches from football.kulichki.net."""
 
+import asyncio
 import logging
 from typing import Optional, List, Dict, Any
 from datetime import datetime as dt, timedelta
@@ -13,6 +14,57 @@ from bs4 import BeautifulSoup
 import re
 
 logger = logging.getLogger(__name__)
+
+# kulichki.net is the sole football source. Header-less requests from datacenter IPs
+# can get anti-bot / empty / stale responses (the parser then silently shows nothing),
+# so mirror content_parser.py and always send a real browser User-Agent. A single retry
+# absorbs transient hiccups before we give up on a league page.
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept-Language": "ru,en;q=0.9",
+}
+
+
+async def _fetch_league_page(client: "httpx.AsyncClient", url: str) -> "Optional[httpx.Response]":
+    """GET a kulichki league page with one retry. Returns None on 4xx or repeated failure.
+
+    Logs response diagnostics (status, byte size, detected encoding, retry attempts) so
+    production failures — where the server gets a different/empty page than we do locally —
+    are visible in the digest logs instead of silently parsing to zero matches.
+    """
+    last_exc = None
+    for attempt in range(2):
+        tag = f"attempt {attempt + 1}/2"
+        try:
+            response = await client.get(url)
+            size = len(response.content)
+            logger.info(
+                f"[KULICHKI] GET {url} → HTTP {response.status_code}, {size} bytes, "
+                f"encoding={response.encoding}, content-type={response.headers.get('content-type')} ({tag})"
+            )
+            # 4xx (not found, etc) won't change on retry — give up immediately.
+            if 400 <= response.status_code < 500:
+                return response
+            response.raise_for_status()
+            # A 200 that's suspiciously small is almost certainly an anti-bot / error
+            # interstitial rather than a real league page — flag it loudly.
+            if size < 2000:
+                logger.warning(
+                    f"[KULICHKI] ⚠️  Suspiciously small page from {url}: {size} bytes "
+                    f"(likely anti-bot/error page, not real content)"
+                )
+            return response
+        except Exception as e:  # noqa: BLE001 - transient network/5xx, retry once
+            last_exc = e
+            logger.warning(
+                f"[KULICHKI] GET {url} failed ({tag}): {type(e).__name__}: {str(e)[:120]}"
+            )
+            if attempt == 0:
+                await asyncio.sleep(1.0)
+    if last_exc is not None:
+        raise last_exc
+    return None
 
 
 def _tbilisi_now() -> dt:
@@ -174,19 +226,17 @@ async def get_today_matches_from_kulichki() -> Optional[List[Dict[str, Any]]]:
 
         all_matches = []
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=_BROWSER_HEADERS, follow_redirects=True) as client:
             for league_name, url in LEAGUE_URLS.items():
                 logger.info(f"[KULICHKI] Fetching {league_name} from {url}")
 
                 try:
-                    response = await client.get(url)
+                    response = await _fetch_league_page(client, url)
 
                     # Skip 4xx errors (not found, etc) without retry
-                    if 400 <= response.status_code < 500:
-                        logger.debug(f"[KULICHKI] {league_name}: {response.status_code} Not Found")
+                    if response is None or 400 <= response.status_code < 500:
+                        logger.debug(f"[KULICHKI] {league_name}: not available ({getattr(response, 'status_code', 'no response')})")
                         continue
-
-                    response.raise_for_status()
 
                     matches = _parse_league_page(response.text, league_name)
                     standings = _parse_standings_table(response.text, league_name)
@@ -317,19 +367,17 @@ async def get_yesterday_results_from_kulichki() -> Optional[List[Dict[str, Any]]
 
         all_matches = []
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=15.0, headers=_BROWSER_HEADERS, follow_redirects=True) as client:
             for league_name, url in LEAGUE_URLS.items():
                 logger.info(f"[KULICHKI] Fetching results {league_name} from {url}")
 
                 try:
-                    response = await client.get(url)
+                    response = await _fetch_league_page(client, url)
 
                     # Skip 4xx errors (not found, etc) without retry
-                    if 400 <= response.status_code < 500:
-                        logger.debug(f"[KULICHKI] {league_name}: {response.status_code} Not Found")
+                    if response is None or 400 <= response.status_code < 500:
+                        logger.debug(f"[KULICHKI] {league_name}: not available ({getattr(response, 'status_code', 'no response')})")
                         continue
-
-                    response.raise_for_status()
 
                     matches = _parse_league_page_for_results(response.text, league_name)
                     standings = _parse_standings_table(response.text, league_name)
@@ -537,27 +585,36 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
     today = _tbilisi_now().date()
     yesterday = today - _timedelta(days=1)
 
+    # Diagnostic counters (mirror _parse_league_page) so an empty results list can be
+    # traced to a stage rather than guessed at.
+    stats = {"rows": 0, "cells_ok": 0, "date_parsed": 0, "in_window": 0}
+
     try:
         tables = soup.find_all("table")
-        logger.debug(f"[KULICHKI] {league_name}: {len(tables)} tables for results parsing")
+        logger.info(f"[KULICHKI] {league_name}: parsing {len(tables)} tables for results (yesterday={yesterday}, today={today})")
 
         for table in tables:
             rows = table.find_all("tr")
 
             for row in rows:
+                stats["rows"] += 1
                 cells = row.find_all("td")
 
                 # Skip rows with too few cells (headers, spacers)
                 if len(cells) < 3:
                     continue
+                stats["cells_ok"] += 1
 
                 try:
                     date_cell = cells[0].get_text().strip()
 
                     # Keep yesterday's and today's matches (trailing 24h candidates)
                     match_date = _parse_match_date(date_cell)
+                    if match_date is not None:
+                        stats["date_parsed"] += 1
                     if match_date not in (yesterday, today):
                         continue
+                    stats["in_window"] += 1
 
                     kickoff = None
                     if is_world_cup:
@@ -652,6 +709,11 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
     except Exception as e:
         logger.warning(f"[KULICHKI] Error parsing {league_name} results: {e}")
 
+    logger.info(
+        f"[KULICHKI] {league_name} results funnel: rows={stats['rows']} → "
+        f"≥3cells={stats['cells_ok']} → date-parsed={stats['date_parsed']} → "
+        f"yesterday/today={stats['in_window']} → results={len(matches)}"
+    )
     return matches
 
 
@@ -675,27 +737,37 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
     today = _tbilisi_now().date()
     tomorrow = today + _timedelta(days=1)
 
+    # Diagnostic counters: trace how rows are filtered out so a "0 matches" result
+    # in production can be attributed to a stage (no tables / no dated rows / all
+    # outside today-tomorrow / all already-completed) rather than guessed at.
+    stats = {"rows": 0, "cells_ok": 0, "date_parsed": 0, "in_window": 0, "completed": 0}
+
     try:
         tables = soup.find_all("table")
-        logger.debug(f"[KULICHKI] {league_name}: {len(tables)} tables")
+        logger.info(f"[KULICHKI] {league_name}: parsing {len(tables)} tables for upcoming matches (today={today}, tomorrow={tomorrow})")
 
         for table in tables:
             rows = table.find_all("tr")
 
             for row in rows:
+                stats["rows"] += 1
                 cells = row.find_all("td")
 
                 # Skip rows with too few cells (headers, spacers)
                 if len(cells) < 3:
                     continue
+                stats["cells_ok"] += 1
 
                 try:
                     date_cell = cells[0].get_text().strip()
 
                     # Only keep today's and tomorrow's matches
                     match_date = _parse_match_date(date_cell)
+                    if match_date is not None:
+                        stats["date_parsed"] += 1
                     if match_date not in (today, tomorrow):
                         continue
+                    stats["in_window"] += 1
 
                     if is_world_cup:
                         # World Cup layout: [Date] [Time] [Teams (- Score)] [Group]
@@ -709,6 +781,7 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
 
                         # Skip completed matches (score appended after teams)
                         if re.search(r"-\s*\d{1,2}:\d{1,2}\s*$", teams_cell):
+                            stats["completed"] += 1
                             logger.debug(f"[KULICHKI] {league_name}: skipping completed WC match: {teams_cell}")
                             continue
 
@@ -750,6 +823,7 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
 
                         # Skip completed matches (score, not time)
                         if re.search(r"\d{1,2}:\d{1,2}", time_or_result) and not is_time_format:
+                            stats["completed"] += 1
                             logger.debug(f"[KULICHKI] {league_name}: skipping completed: {home} vs {away} ({time_or_result})")
                             continue
 
@@ -801,4 +875,11 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"[KULICHKI] Error parsing {league_name}: {e}")
 
+    # Funnel summary: when matches is empty this pinpoints WHERE rows were lost.
+    logger.info(
+        f"[KULICHKI] {league_name} upcoming funnel: rows={stats['rows']} → "
+        f"≥3cells={stats['cells_ok']} → date-parsed={stats['date_parsed']} → "
+        f"today/tomorrow={stats['in_window']} (completed-skipped={stats['completed']}) "
+        f"→ matches={len(matches)}"
+    )
     return matches
