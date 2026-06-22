@@ -4,31 +4,71 @@ Educational language content for the digest (users Маша and Максим). G
 gpt-5.4-mini — there is no reliable free "idiom of the day" API, and this is language
 learning content, not factual news, so model generation is appropriate here.
 
+Level: idioms are B2 (upper-intermediate) and above — no beginner phrases.
+
+History: the last 28 idioms are persisted to data/idiom_history.json and passed to
+the model as an exclusion list so the section does not repeat phrases day to day. The
+chosen idiom is cached per day, so all recipients get the same phrase on a given date.
+
 Per project rules: NO HARDCODED FALLBACKS — if generation fails, return None and the
 scheduler simply omits the section.
 """
 
 import json
 import logging
+import os
 import random
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
 
+# Keep the last N idioms so we never repeat them within a ~4-week window.
+_HISTORY_SIZE = 28
+_HISTORY_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+    "idiom_history.json",
+)
+
 # Rotate the kind of phrase day to day so the section stays varied.
 _PHRASE_KINDS = [
-    "распространённая английская идиома",
-    "менее очевидная, но употребимая английская идиома",
-    "английский эвфемизм (мягкая/деликатная формулировка)",
-    "разговорное английское выражение (phrasal idiom)",
+    "распространённая английская идиома уровня B2+",
+    "менее очевидная, но употребимая английская идиома уровня C1",
+    "английский эвфемизм (мягкая/деликатная формулировка) уровня B2+",
+    "разговорное английское выражение (phrasal idiom) уровня B2+",
 ]
 
 
+def _load_history() -> List[Dict[str, Any]]:
+    """Load the idiom history list (oldest → newest). Returns [] on any error."""
+    try:
+        with open(_HISTORY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"Could not read idiom history: {type(e).__name__}: {e}")
+    return []
+
+
+def _save_history(history: List[Dict[str, Any]]) -> None:
+    """Persist the idiom history (trimmed to the last _HISTORY_SIZE entries)."""
+    try:
+        os.makedirs(os.path.dirname(_HISTORY_PATH), exist_ok=True)
+        trimmed = history[-_HISTORY_SIZE:]
+        with open(_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(trimmed, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"Could not write idiom history: {type(e).__name__}: {e}")
+
+
 async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
-    """Generate an English idiom/euphemism of the day.
+    """Generate an English idiom/euphemism of the day (B2+), avoiding recent repeats.
 
     Returns:
         {
@@ -40,20 +80,37 @@ async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
         }
         or None if generation fails.
     """
+    today = datetime.now().strftime("%Y-%m-%d")
+    history = _load_history()
+
+    # Same day → return the already-chosen idiom so every recipient sees the same one.
+    if history and history[-1].get("date") == today:
+        cached = {k: v for k, v in history[-1].items() if k != "date"}
+        logger.info(f"Idiom of day (cached for {today}): {cached.get('phrase')}")
+        return cached
+
+    recent_phrases = [h.get("phrase", "") for h in history if h.get("phrase")]
+
     try:
-        # Seed the request with the date so reruns on the same day are stable-ish
-        # but different days get different phrases.
-        today = datetime.now().strftime("%Y-%m-%d")
         kind = random.choice(_PHRASE_KINDS)
+
+        avoid_block = ""
+        if recent_phrases:
+            joined = "\n".join(f"- {p}" for p in recent_phrases)
+            avoid_block = (
+                "\n\nНЕ используй эти выражения (они уже были недавно) и ничего синонимичного им:\n"
+                + joined
+            )
 
         prompt = f"""Подбери ОДНУ интересную английскую идиому или эвфемизм на сегодня ({today}).
 Тип на сегодня: {kind}.
 
 Требования:
+- Уровень B2 и выше (upper-intermediate / advanced). Никаких простых выражений для начинающих.
 - Выражение должно быть реальным и употребимым носителями (никаких выдуманных).
-- Желательно не самое заезженное (избегай "break a leg", "piece of cake", если можно).
+- Не самое заезженное (избегай "break a leg", "piece of cake", "spill the beans" и подобных).
 - Дай точный перевод/смысл на русском.
-- Приведи естественный пример употребления на английском и его перевод на русский.
+- Приведи естественный пример употребления на английском и его перевод на русский.{avoid_block}
 
 Верни СТРОГО JSON-объект без markdown и пояснений:
 {{
@@ -100,6 +157,11 @@ async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
             "example_en": (data.get("example_en") or "").strip(),
             "example_ru": (data.get("example_ru") or "").strip(),
         }
+
+        # Record in history (keyed by date) so it is not repeated for ~28 days.
+        history.append({"date": today, **result})
+        _save_history(history)
+
         logger.info(f"✓ Idiom of day: {phrase} — {meaning[:40]}")
         return result
 

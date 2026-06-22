@@ -49,7 +49,6 @@ from src.workers.football_matches import get_today_matches, get_formatted_matche
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
-from src.workers.tbilisi_events import get_tbilisi_events, format_events_for_telegram
 from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
 
 logger = logging.getLogger(__name__)
@@ -1260,50 +1259,6 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
 
 
 
-async def tbilisi_events_digest(bot: Bot, chat_id: int = None):
-    """Send weekly events digest for Tbilisi (Saturday 18:00)."""
-    try:
-        logger.info(f"📅 Starting Tbilisi events digest")
-
-        # Fetch events for next 7 days
-        events = await get_tbilisi_events(days_ahead=7)
-
-        if not events:
-            message = "На следующую неделю в Тбилиси пока ничего интересного не найдено 🤔"
-        else:
-            # Curate: pick the most interesting, category-balanced subset (≤10)
-            # instead of dumping every scraped event chronologically.
-            from src.ai.event_selector import select_events_with_gpt
-            events = await select_events_with_gpt(events, user_profile=None, max_events=10)
-            message = format_events_for_telegram(events)
-
-        if chat_id is None:
-            chat_id = int(get_secret("TELEGRAM_CHAT_ID"))
-
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            parse_mode="Markdown",
-            disable_web_page_preview=True,
-        )
-
-        logger.info(f"✓ Tbilisi events digest sent ({len(events)} events)")
-
-    except Exception as e:
-        logger.error(f"❌ Tbilisi events digest failed: {e}", exc_info=True)
-        try:
-            if chat_id is None:
-                chat_id = int(get_secret("TELEGRAM_CHAT_ID"))
-
-            await bot.send_message(
-                chat_id=chat_id,
-                text=f"❌ Ошибка при загрузке событий: {str(e)[:100]}",
-                disable_web_page_preview=True,
-            )
-        except Exception as inner_e:
-            logger.error(f"Failed to send error message: {inner_e}")
-
-
 def _get_secondary_users() -> list:
     """
     Get list of secondary users from TELEGRAM_SECONDARY_USERS env var (JSON format).
@@ -1396,19 +1351,10 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Hourly precipitation check",
     )
 
-    # Weekly Tbilisi events digest on Saturday at 18:00 Tbilisi time
-    scheduler.add_job(
-        tbilisi_events_digest,
-        CronTrigger(day_of_week=5, hour=18, minute=0, timezone=tbilisi_tz),  # Saturday 18:00
-        args=[bot, chat_id],
-        id="tbilisi_events_digest",
-        name="Tbilisi events digest",
-    )
-
     primary_digest = "primary user (with tasks)"
     secondary_count = len(secondary_users)
     secondary_str = f", {secondary_count} secondary user(s) (without tasks)" if secondary_count > 0 else ""
     logger.info(
-        f"Scheduler initialized with: morning digest (08:00 - {primary_digest}{secondary_str}), forex cache update (hourly), precipitation alerts (hourly), Tbilisi events (Sat 18:00)"
+        f"Scheduler initialized with: morning digest (08:00 - {primary_digest}{secondary_str}), forex cache update (hourly), precipitation alerts (hourly)"
     )
     return scheduler
