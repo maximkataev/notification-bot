@@ -1201,8 +1201,18 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
 
         logger.debug(f"🎲 Random selection: {random_genre} из {random_period}")
 
+        # Exclude albums already shown to this user so nothing repeats.
+        shown_albums = await get_shown_creators(user_id, "album")
+        avoid_block = ""
+        if shown_albums:
+            joined = "\n".join(f"- {a}" for a in shown_albums)
+            avoid_block = (
+                "\n\nНЕ рекомендуй эти альбомы (они уже были) и ничего из этого списка:\n"
+                + joined
+            )
+
         prompt = f"""Посоветуй один реальный и известный музыкальный альбом жанра {random_genre} из {random_period} для утренней концентрации.
-Не генерируй новые альбомы, рекомендуй только существующие произведения.
+Не генерируй новые альбомы, рекомендуй только существующие произведения.{avoid_block}
 
 Ответь только JSON без markdown:
 {{
@@ -1261,6 +1271,13 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
             "language": "ru",
             "platform": "spotify",
         }
+
+        # Record so this exact album is excluded from future recommendations.
+        try:
+            await record_shown_content(user_id, f"{artist} — {album}", "album")
+        except Exception as e:
+            logger.warning(f"Could not record shown album: {type(e).__name__}: {e}")
+
         logger.info(f"✓ Album of day: {album} by {artist} ({random_genre} из {random_period})")
         return result
 

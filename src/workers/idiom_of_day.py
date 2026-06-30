@@ -27,25 +27,57 @@ logger = logging.getLogger(__name__)
 
 # Keep the last N idioms so we never repeat them within a ~4-week window.
 _HISTORY_SIZE = 28
-_HISTORY_PATH = os.path.join(
+_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data",
-    "idiom_history.json",
 )
 
+
+def _history_path(language: str) -> str:
+    """History file per language (English keeps the original filename)."""
+    fname = "idiom_history.json" if language == "en" else f"idiom_history_{language}.json"
+    return os.path.join(_DATA_DIR, fname)
+
+
 # Rotate the kind of phrase day to day so the section stays varied.
-_PHRASE_KINDS = [
-    "распространённая английская идиома уровня B2+",
-    "менее очевидная, но употребимая английская идиома уровня C1",
-    "английский эвфемизм (мягкая/деликатная формулировка) уровня B2+",
-    "разговорное английское выражение (phrasal idiom) уровня B2+",
-]
+_PHRASE_KINDS = {
+    "en": [
+        "распространённая английская идиома уровня B2+",
+        "менее очевидная, но употребимая английская идиома уровня C1",
+        "английский эвфемизм (мягкая/деликатная формулировка) уровня B2+",
+        "разговорное английское выражение (phrasal idiom) уровня B2+",
+    ],
+    "es": [
+        "распространённая испанская идиома уровня B1+",
+        "менее очевидное, но употребимое испанское выражение уровня B2",
+        "испанский эвфемизм (мягкая/деликатная формулировка) уровня B1+",
+        "разговорное испанское выражение (modismo) уровня B1+",
+    ],
+}
+
+# Per-language wording for the generation prompt.
+_LANG_META = {
+    "en": {
+        "name": "английскую",
+        "speakers": "носителями",
+        "avoid_examples": '"break a leg", "piece of cake", "spill the beans"',
+        "example_field": "example_en",
+        "teacher": "You are an English teacher for Russian speakers. Reply with valid JSON only.",
+    },
+    "es": {
+        "name": "испанскую",
+        "speakers": "носителями испанского",
+        "avoid_examples": '"estar en las nubes", "tomar el pelo", "ser pan comido"',
+        "example_field": "example_es",
+        "teacher": "You are a Spanish teacher for Russian speakers. Reply with valid JSON only.",
+    },
+}
 
 
-def _load_history() -> List[Dict[str, Any]]:
+def _load_history(language: str) -> List[Dict[str, Any]]:
     """Load the idiom history list (oldest → newest). Returns [] on any error."""
     try:
-        with open(_HISTORY_PATH, "r", encoding="utf-8") as f:
+        with open(_history_path(language), "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
             return data
@@ -56,43 +88,50 @@ def _load_history() -> List[Dict[str, Any]]:
     return []
 
 
-def _save_history(history: List[Dict[str, Any]]) -> None:
+def _save_history(language: str, history: List[Dict[str, Any]]) -> None:
     """Persist the idiom history (trimmed to the last _HISTORY_SIZE entries)."""
     try:
-        os.makedirs(os.path.dirname(_HISTORY_PATH), exist_ok=True)
+        os.makedirs(_DATA_DIR, exist_ok=True)
         trimmed = history[-_HISTORY_SIZE:]
-        with open(_HISTORY_PATH, "w", encoding="utf-8") as f:
+        with open(_history_path(language), "w", encoding="utf-8") as f:
             json.dump(trimmed, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.warning(f"Could not write idiom history: {type(e).__name__}: {e}")
 
 
-async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
-    """Generate an English idiom/euphemism of the day (B2+), avoiding recent repeats.
+async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
+    """Generate an idiom/euphemism of the day, avoiding recent repeats.
+
+    Args:
+        language: "en" (English, B2+) or "es" (Spanish, B1+).
 
     Returns:
         {
-            "phrase": str,          # English idiom/euphemism
+            "phrase": str,          # idiom/euphemism in the target language
             "kind": str,            # "идиома" | "эвфемизм" | ...
             "meaning_ru": str,      # Russian translation / meaning
-            "example_en": str,      # usage example in English
+            "example": str,         # usage example in the target language
             "example_ru": str,      # translation of the example
         }
         or None if generation fails.
     """
+    if language not in _LANG_META:
+        language = "en"
+    meta = _LANG_META[language]
+
     today = datetime.now().strftime("%Y-%m-%d")
-    history = _load_history()
+    history = _load_history(language)
 
     # Same day → return the already-chosen idiom so every recipient sees the same one.
     if history and history[-1].get("date") == today:
         cached = {k: v for k, v in history[-1].items() if k != "date"}
-        logger.info(f"Idiom of day (cached for {today}): {cached.get('phrase')}")
+        logger.info(f"Idiom of day [{language}] (cached for {today}): {cached.get('phrase')}")
         return cached
 
     recent_phrases = [h.get("phrase", "") for h in history if h.get("phrase")]
 
     try:
-        kind = random.choice(_PHRASE_KINDS)
+        kind = random.choice(_PHRASE_KINDS[language])
 
         avoid_block = ""
         if recent_phrases:
@@ -102,22 +141,21 @@ async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
                 + joined
             )
 
-        prompt = f"""Подбери ОДНУ интересную английскую идиому или эвфемизм на сегодня ({today}).
+        prompt = f"""Подбери ОДНУ интересную {meta['name']} идиому или эвфемизм на сегодня ({today}).
 Тип на сегодня: {kind}.
 
 Требования:
-- Уровень B2 и выше (upper-intermediate / advanced). Никаких простых выражений для начинающих.
-- Выражение должно быть реальным и употребимым носителями (никаких выдуманных).
-- Не самое заезженное (избегай "break a leg", "piece of cake", "spill the beans" и подобных).
+- Выражение должно быть реальным и употребимым {meta['speakers']} (никаких выдуманных).
+- Не самое заезженное (избегай {meta['avoid_examples']} и подобных).
 - Дай точный перевод/смысл на русском.
-- Приведи естественный пример употребления на английском и его перевод на русский.{avoid_block}
+- Приведи естественный пример употребления и его перевод на русский.{avoid_block}
 
 Верни СТРОГО JSON-объект без markdown и пояснений:
 {{
-  "phrase": "английское выражение",
+  "phrase": "выражение в оригинале",
   "kind": "идиома" или "эвфемизм",
   "meaning_ru": "перевод/смысл на русском",
-  "example_en": "пример на английском",
+  "{meta['example_field']}": "пример в оригинале",
   "example_ru": "перевод примера на русский"
 }}"""
 
@@ -126,10 +164,7 @@ async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
             max_completion_tokens=300,
             temperature=1.0,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an English teacher for Russian speakers. Reply with valid JSON only.",
-                },
+                {"role": "system", "content": meta["teacher"]},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -147,24 +182,24 @@ async def get_idiom_of_day() -> Optional[Dict[str, Any]]:
         phrase = (data.get("phrase") or "").strip()
         meaning = (data.get("meaning_ru") or "").strip()
         if not phrase or not meaning:
-            logger.warning("Idiom of day: missing phrase or meaning, skipping")
+            logger.warning(f"Idiom of day [{language}]: missing phrase or meaning, skipping")
             return None
 
         result = {
             "phrase": phrase,
             "kind": (data.get("kind") or "идиома").strip(),
             "meaning_ru": meaning,
-            "example_en": (data.get("example_en") or "").strip(),
+            "example": (data.get(meta["example_field"]) or "").strip(),
             "example_ru": (data.get("example_ru") or "").strip(),
         }
 
         # Record in history (keyed by date) so it is not repeated for ~28 days.
         history.append({"date": today, **result})
-        _save_history(history)
+        _save_history(language, history)
 
-        logger.info(f"✓ Idiom of day: {phrase} — {meaning[:40]}")
+        logger.info(f"✓ Idiom of day [{language}]: {phrase} — {meaning[:40]}")
         return result
 
     except Exception as e:
-        logger.warning(f"Failed to get idiom of day: {type(e).__name__}: {e}")
+        logger.warning(f"Failed to get idiom of day [{language}]: {type(e).__name__}: {e}")
         return None

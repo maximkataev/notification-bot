@@ -739,27 +739,29 @@ async def _morning_digest_impl(
         else:
             logger.info("No r/tbilisi highlight (section skipped)")
 
-    # English idiom / euphemism of the day (Маша и Максим)
+    # Idiom / euphemism of the day — English + Spanish (Маша и Максим)
     if user_id in IDIOM_OF_DAY_USERS:
-        logger.info("Fetching idiom of the day")
-        try:
-            idiom = await get_idiom_of_day()
-        except Exception as e:
-            logger.warning(f"Idiom of day failed: {type(e).__name__}: {str(e)[:100]}")
-            idiom = None
+        for lang_code, flag in (("en", "🇬🇧"), ("es", "🇪🇸")):
+            logger.info(f"Fetching idiom of the day [{lang_code}]")
+            try:
+                idiom = await get_idiom_of_day(language=lang_code)
+            except Exception as e:
+                logger.warning(f"Idiom of day [{lang_code}] failed: {type(e).__name__}: {str(e)[:100]}")
+                idiom = None
 
-        if idiom:
-            kind_label = "Эвфемизм дня" if "эвфемизм" in idiom.get("kind", "").lower() else "Идиома дня"
-            message_lines.append(f"🇬🇧 <b>{kind_label}:</b>")
-            message_lines.append(f'<b>«{_esc(idiom["phrase"])}»</b> — {_esc(idiom["meaning_ru"])}')
-            if idiom.get("example_en"):
-                example = f'<i>{_esc(idiom["example_en"])}</i>'
-                if idiom.get("example_ru"):
-                    example += f' — {_esc(idiom["example_ru"])}'
-                message_lines.append(example)
-            message_lines.append("")
-        else:
-            logger.info("No idiom of day (section skipped)")
+            if idiom:
+                kind_label = "Эвфемизм дня" if "эвфемизм" in idiom.get("kind", "").lower() else "Идиома дня"
+                message_lines.append(f"{flag} <b>{kind_label}:</b>")
+                message_lines.append(f'<b>«{_esc(idiom["phrase"])}»</b> — {_esc(idiom["meaning_ru"])}')
+                example_text = idiom.get("example") or idiom.get("example_en")
+                if example_text:
+                    example = f'<i>{_esc(example_text)}</i>'
+                    if idiom.get("example_ru"):
+                        example += f' — {_esc(idiom["example_ru"])}'
+                    message_lines.append(example)
+                message_lines.append("")
+            else:
+                logger.info(f"No idiom of day [{lang_code}] (section skipped)")
 
     # Tasks section (only if include_tasks=True)
     if include_tasks:
