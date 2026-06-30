@@ -13,7 +13,7 @@ Returns both work types in one response:
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Optional, List, Dict
 
 import httpx
@@ -27,9 +27,7 @@ GWP_API_URL = "https://www.gwp.ge/api/Disconnect/ByCity?cityId=1"  # Tbilisi
 # distinctive surname stem "ივერიელი" / "iverieli" so we catch the street
 # regardless of how "ვაჟა" is written or whether "ქუჩა"/house number follows.
 WATCH_STREETS = [
-    "ივერიელი",  # Georgian surname stem (most reliable substring)
     "ვაჟა ივერიელი",  # Georgian full name
-    "iverieli",  # English transliteration stem
     "vazha iverieli",  # English full name
 ]
 
@@ -142,26 +140,49 @@ async def check_water_cuts() -> Optional[str]:
 
 
 async def check_water_cuts_today() -> Optional[str]:
-    """Return today's water-cut info for our street (used by hourly monitor).
+    """Return current/upcoming water-cut info for our street (hourly monitor).
 
-    Only reports works whose date matches today. None if nothing for today.
+    The GWP API only returns *active* disconnections (status "მიმდინარე"), so a
+    match on our street is relevant right now. We still drop entries whose date
+    is clearly in the past. Dates are compared in Tbilisi time (the server may
+    run in UTC, which would otherwise shift `today` and silently hide a cut).
     """
     items = await _fetch_disconnections()
-    today = date.today()
+    today = _tbilisi_today()
 
     for item in items:
         if not _match_street(item):
             continue
         result = _extract_water_cut_time(_item_blob(item), "iverieli")
         if not result:
-            continue
-        # Keep only if the extracted date is today
-        if result.startswith(today.isoformat()):
-            logger.info(f"Today's water cut on Vazha Iverieli: {result}")
+            # Street is listed but we couldn't parse a date — alert anyway,
+            # since the API only lists active works.
+            district = item.get("district") or ""
+            fallback = (
+                f"{district}: отключение воды на улице "
+                f"ვაჟა ივერიელი (Vazha Iverieli)"
+            ).strip()
+            logger.info(f"Water cut (no parsable date) on Vazha Iverieli: {fallback}")
+            return fallback
+
+        # Drop only entries that are strictly in the past (stale).
+        cut_date = result[:10]  # "YYYY-MM-DD"
+        if cut_date >= today.isoformat():
+            logger.info(f"Water cut on Vazha Iverieli: {result}")
             return result
-        logger.debug(f"Water cut found but not for today: {result}")
+        logger.debug(f"Water cut found but date is in the past, skipping: {result}")
 
     return None
+
+
+def _tbilisi_today() -> date:
+    """Today's date in Asia/Tbilisi (independent of server timezone)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return datetime.now(ZoneInfo("Asia/Tbilisi")).date()
+    except Exception:
+        return date.today()
 
 
 def _extract_water_cut_time(article_text: str, street: str) -> Optional[str]:
