@@ -50,6 +50,8 @@ from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
 from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
+from src.workers.place_recommender import get_place_of_day
+from src.workers.joke_of_day import get_joke_of_day
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,13 @@ TBILISI_REDDIT_USERS = {71488343, 184010236}
 CRYPTO_NEWS_USERS = {71488343}
 # Users who get the English idiom/euphemism of the day (Маша и Максим)
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
+# Users who get the place-of-the-day recommendation and their city:
+# Маша и Максим — Тбилиси, Юля — Вена
+PLACE_OF_DAY_CITIES = {
+    184010236: ("tbilisi", "Тбилиси"),
+    71488343: ("tbilisi", "Тбилиси"),
+    498233237: ("vienna", "Вене"),
+}
 
 def _esc(text) -> str:
     """Escape text destined for a parse_mode=HTML message.
@@ -763,6 +772,46 @@ async def _morning_digest_impl(
             else:
                 logger.info(f"No idiom of day [{lang_code}] (section skipped)")
 
+    # Place of the day — one place to visit, no repeats within 28 days
+    # (Маша и Максим — Тбилиси, Юля — Вена)
+    if user_id in PLACE_OF_DAY_CITIES:
+        place_city, place_city_prep = PLACE_OF_DAY_CITIES[user_id]
+        logger.info(f"Fetching place of the day [{place_city}]")
+        try:
+            place = await get_place_of_day(place_city)
+        except Exception as e:
+            logger.warning(f"Place of day failed: {type(e).__name__}: {str(e)[:100]}")
+            place = None
+
+        if place:
+            message_lines.append(f"📍 <b>Место дня в {place_city_prep}:</b>")
+            area_str = f" ({_esc(place['area'])})" if place.get("area") else ""
+            message_lines.append(f'<b>{_esc(place["name"])}</b>{area_str}')
+            message_lines.append(_esc(place["description"]))
+            message_lines.append("")
+        else:
+            logger.info("No place of day (section skipped)")
+
+    # Joke of the day, «категория Б» — from real sources, no repeats within 28 days.
+    # Sent to ALL digest recipients.
+    logger.info("Fetching joke of the day")
+    try:
+        joke = await get_joke_of_day()
+    except Exception as e:
+        logger.warning(f"Joke of day failed: {type(e).__name__}: {str(e)[:100]}")
+        joke = None
+
+    if joke:
+        message_lines.append("😄 <b>Анекдот дня:</b>")
+        message_lines.append(_esc(joke["text"]))
+        if joke.get("url"):
+            message_lines.append(f'<i><a href="{_esc_attr(joke["url"])}">{_esc(joke["source"])}</a></i>')
+        else:
+            message_lines.append(f'<i>{_esc(joke["source"])}</i>')
+        message_lines.append("")
+    else:
+        logger.info("No joke of day (section skipped)")
+
     # Tasks section (only if include_tasks=True)
     if include_tasks:
         # Tasks are already filtered by database to when_date <= today or NULL
@@ -1105,6 +1154,57 @@ async def _morning_digest_impl(
                 message_lines.append(f"{title} — {source}")
 
         message_lines.append("")
+
+    # Closing farewell line — AI-generated so it varies day to day (pairs with the greeting).
+    # A random style is injected so the line doesn't converge to one template.
+    logger.info("Generating farewell line")
+    farewell = None
+    try:
+        import random as _random
+
+        farewell_style = _random.choice([
+            "с лёгким юмором или самоиронией",
+            "с неожиданной метафорой (день как путешествие, кофе, плейлист, уровень в игре...)",
+            "в духе напутствия из фильма или песни, но без прямых цитат",
+            "как мини-афоризм, который хочется переслать другу",
+            "с игривой отсылкой к сегодняшнему дню недели",
+            "как будто прощается капитан корабля / пилот / бармен / диджей (выбери сам)",
+        ])
+
+        farewell_prompt = f"""Напиши ОДНО короткое, яркое и креативное прощальное предложение в конец утреннего дайджеста для человека по имени {user_name or 'друг'} ({user_gender} рода).
+
+Сегодня {weekday_ru}. Стиль на сегодня: {farewell_style}.
+
+Требования:
+- Пожелай хорошего дня нестандартно — так, чтобы вызвать улыбку, а не вежливый кивок
+- Можно обратиться по имени
+- Никаких клише («заряд энергии», «ты можешь всё», «пусть день принесёт») и никакого официоза
+- Не будь слащавым — лучше остроумно, чем умилительно
+- Можно добавить один подходящий эмодзи в конце
+
+Ответ — только текст прощания, строго одно предложение."""
+
+        response = await get_client().chat.completions.create(
+            model="gpt-5.4-mini",
+            max_completion_tokens=90,
+            temperature=1.0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a witty, warm morning assistant in Russian.",
+                },
+                {"role": "user", "content": farewell_prompt},
+            ],
+        )
+        farewell = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        logger.warning(f"Farewell generation failed: {type(e).__name__}: {str(e)[:100]}")
+
+    if not farewell or len(farewell) < 5:
+        farewell = f"Хорошего дня{name_part}! ✨"
+
+    message_lines.append(farewell)
+    message_lines.append("")
 
     final_message = "\n".join(message_lines)
     logger.info(
