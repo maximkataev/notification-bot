@@ -75,7 +75,7 @@ async def test_yesterday_results():
 
 
 async def test_rss_search():
-    """Test RSS feed search for match news (club and World Cup)."""
+    """Test RSS feed search for match news (club matches)."""
     logger.info("\n" + "=" * 80)
     logger.info("🔍 TESTING RSS FEED SEARCH FOR MATCH NEWS")
     logger.info("=" * 80)
@@ -84,29 +84,14 @@ async def test_rss_search():
 
     # Test club matches
     club_test_cases = [
-        ("Борнмут", "Манчестер Сити", "2026-05-19", False),
-        ("Барселона", "Атлетико", "2026-05-19", False),
+        ("Борнмут", "Манчестер Сити", "2026-05-19"),
+        ("Барселона", "Атлетико", "2026-05-19"),
     ]
 
     logger.info("\n🏟️  Club Matches:")
-    for home, away, date, is_wc in club_test_cases:
+    for home, away, date in club_test_cases:
         logger.info(f"\n🔎 Testing: {home} vs {away} on {date}")
-        news = await _find_match_news_from_rss(home, away, date, is_world_cup=is_wc)
-        if news:
-            logger.info(f"✅ Found: {news[:150]}...")
-        else:
-            logger.info(f"⚠️  No news found (expected if match didn't happen)")
-
-    # Test World Cup matches (sample)
-    world_cup_cases = [
-        ("Испания", "Франция", "2026-05-20", True),
-        ("Англия", "Германия", "2026-05-20", True),
-    ]
-
-    logger.info("\n🌍 World Cup Matches:")
-    for home, away, date, is_wc in world_cup_cases:
-        logger.info(f"\n🔎 Testing: {home} vs {away} on {date} (World Cup)")
-        news = await _find_match_news_from_rss(home, away, date, is_world_cup=is_wc)
+        news = await _find_match_news_from_rss(home, away, date)
         if news:
             logger.info(f"✅ Found: {news[:150]}...")
         else:

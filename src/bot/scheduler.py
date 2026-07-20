@@ -51,7 +51,6 @@ from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
 from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
 from src.workers.place_recommender import get_place_of_day
-from src.workers.joke_of_day import get_joke_of_day
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,6 @@ logger = logging.getLogger(__name__)
 MORNING_DIGEST_TIMEOUT_SECONDS = 300
 TELEGRAM_MESSAGE_CHAR_LIMIT = 4000
 WEATHER_JACKET_THRESHOLD_C = 10
-PRECIPITATION_ALERT_COOLDOWN_HOURS = 3
 
 # Per-user digest tuning
 # Users who receive ONLY good news (5-6 items) — no politics/economics/sports/tech
@@ -328,56 +326,13 @@ async def _morning_digest_impl(
                 " (ожидаются осадки)" if weather_details else "Ожидаются осадки"
             )
 
-    # Personalize the greeting: name, grammatical gender, weekday
+    # Personalize the greeting: name, grammatical gender, weekday.
+    # The greeting itself is generated LATER — after news selection — so it can
+    # riff on today's headlines; here we only prepare the personalization vars.
     user_name = USER_NAMES.get(user_id, "")
     user_gender = USER_GENDER.get(user_id, "мужского")
     weekday_ru = WEEKDAYS_RU[datetime.now(timezone("Asia/Tbilisi")).weekday()]
     name_part = f", {user_name}" if user_name else ""
-
-    intro_prompt = f"""Напиши КОРОТКОЕ (1-2 предложения) тёплое и обаятельное утреннее приветствие для человека по имени {user_name or 'друг'} ({user_gender} рода).
-
-Сегодня {weekday_ru}. {weather_desc}. {weather_details}
-
-Требования:
-- Обязательно обратись по имени: {user_name or 'друг'}
-- Дружелюбно, живо, с лёгкой искрой — как сообщение от хорошего друга
-- Естественно упомяни день недели и/или погоду
-- Заверши короткой подводкой к дайджесту по смыслу «вот что я для тебя собрал на сегодня» — но обязательно СВОИМИ словами, каждый раз формулируй по-новому. НЕ копируй эту фразу дословно.
-- Без клише («начни день с улыбки», «ты можешь всё», «заряд энергии») и без официоза
-
-Пример ТОЛЬКО для тона (не повторяй его дословно, придумай свой вариант подводки): "Доброе утро{name_part}! Наконец-то начинается этот солнечный (должно соответствовать реальной погоде, солнечный необязательно) {weekday_ru} день."
-
-Ответ — только текст приветствия, строго 1-2 предложения."""  # noqa: E501
-
-    logger.info("🔄 Calling AI to generate morning greeting and weather advice")
-
-    response = await get_client().chat.completions.create(
-        model="gpt-5.4-mini",
-        max_completion_tokens=150,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a friendly morning assistant in Russian.",
-            },
-            {"role": "user", "content": intro_prompt},
-        ],
-    )
-
-    logger.info(f"✓ OpenAI response received:")
-    logger.info(f"  Model: {response.model}")
-    logger.info(
-        f"  Tokens: {response.usage.prompt_tokens}→{response.usage.completion_tokens}"
-    )
-
-    response_text = response.choices[0].message.content
-    logger.info(f"  Content length: {len(response_text) if response_text else 0} chars")
-
-    # Use the entire response as the greeting
-    simple_greeting = response_text.strip() if response_text else f"Доброе утро{name_part}! Лови утреннюю сводку:"
-
-    if not simple_greeting or len(simple_greeting) < 10:
-        logger.error("❌ AI returned incomplete response, using fallback")
-        simple_greeting = f"Доброе утро{name_part}! Лови утреннюю сводку:"
 
     # AI-based clothing recommendation with jacket validation
     # (Replaces old rule-based logic that didn't account for temperature < 10°C)
@@ -400,15 +355,14 @@ async def _morning_digest_impl(
         outer_layer = "куртка" if needs_jacket else ("худи" if day_temp is not None and day_temp < 15 else None)
         outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки" if outer_layer else "Штаны, кофта, кроссовки"
 
-    logger.info(
-        f"✓ Generated - greeting: {simple_greeting[:70]}... | outfit: {outfit_advice}"
-    )
+    logger.info(f"✓ Generated - outfit: {outfit_advice}")
 
-    # Build full message: greeting + quote + weather advice + weather + news + gwp + task list
+    # Build full message: quote + weather advice + weather + news + gwp + task list.
+    # The greeting is generated after news selection and inserted at the top.
     if chat_id is None:
         chat_id = get_secret("TELEGRAM_CHAT_ID")
 
-    message_lines = [simple_greeting, ""]
+    message_lines = []
 
     # Add quote of the day
     logger.info("Fetching quote of the day")
@@ -576,6 +530,10 @@ async def _morning_digest_impl(
     # standard 5 pools concatenated further down.
     themed_all = None
 
+    # Summaries of the news that made it into the digest — fed to the greeting
+    # generator so the intro can riff on today's headlines.
+    selected_news_for_intro = []
+
     if total_news > 0 or use_themed_news:
         if use_themed_news:
             # Юля: business / art / fashion / good news. Fetch her dedicated pools
@@ -681,6 +639,7 @@ async def _morning_digest_impl(
 
                     message_lines.append(news_text)
                     message_lines.append("")
+                    selected_news_for_intro.append(description_ru)
 
                     logger.info(
                         f"  [{news_num}] {category}: {description_ru[:60]}... | {source}"
@@ -709,6 +668,7 @@ async def _morning_digest_impl(
                         )
                         message_lines.append(crypto_text)
                         message_lines.append("")
+                        selected_news_for_intro.append(cdesc)
                         logger.info(f"  [{news_num}] crypto: {cdesc[:60]}... | {c_source}")
                 else:
                     logger.info("No crypto news item to show (skipped)")
@@ -723,6 +683,63 @@ async def _morning_digest_impl(
         message_lines.append("Новости:")
         message_lines.append("(новости недоступны)")
         message_lines.append("")
+
+    # Greeting — generated AFTER news selection so the intro can hook on the most
+    # striking headline of the day, then inserted at the very top of the digest.
+    news_context = ""
+    if selected_news_for_intro:
+        joined_news = "\n".join(f"- {n}" for n in selected_news_for_intro)
+        news_context = f"""
+
+Новости, которые попали в сегодняшний дайджест:
+{joined_news}
+
+Если среди новостей есть что-то яркое, забавное или эмоциональное — обыграй ОДНУ такую новость в подводке короткой энергичной фразой (пример тона: «ФЕРРАН СНОВА ЗАБИЛ!!! А теперь к дайджесту»). Не пересказывай новость целиком — только эмоциональный крючок. Если ничего цепляющего нет, сделай обычную подводку без упоминания новостей."""
+
+    intro_prompt = f"""Напиши КОРОТКОЕ (1-2 предложения) тёплое и обаятельное утреннее приветствие для человека по имени {user_name or 'друг'} ({user_gender} рода).
+
+Сегодня {weekday_ru}. {weather_desc}. {weather_details}
+
+Требования:
+- Обязательно обратись по имени: {user_name or 'друг'}
+- Дружелюбно, живо, с лёгкой искрой — как сообщение от хорошего друга
+- Естественно упомяни день недели и/или погоду
+- Заверши короткой подводкой к дайджесту по смыслу «вот что я для тебя собрал на сегодня» — но обязательно СВОИМИ словами, каждый раз формулируй по-новому. НЕ копируй эту фразу дословно.
+- Без клише («начни день с улыбки», «ты можешь всё», «заряд энергии») и без официоза{news_context}
+
+Пример ТОЛЬКО для тона (не повторяй его дословно, придумай свой вариант подводки): "Доброе утро{name_part}! Наконец-то начинается этот солнечный (должно соответствовать реальной погоде, солнечный необязательно) {weekday_ru} день."
+
+Ответ — только текст приветствия, строго 1-2 предложения."""  # noqa: E501
+
+    logger.info("🔄 Calling AI to generate morning greeting (with news context)")
+    simple_greeting = None
+    try:
+        response = await get_client().chat.completions.create(
+            model="gpt-5.4-mini",
+            max_completion_tokens=150,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are a friendly morning assistant in Russian.",
+                },
+                {"role": "user", "content": intro_prompt},
+            ],
+        )
+        logger.info(
+            f"✓ Greeting response: model={response.model}, "
+            f"tokens {response.usage.prompt_tokens}→{response.usage.completion_tokens}"
+        )
+        response_text = response.choices[0].message.content
+        simple_greeting = response_text.strip() if response_text else None
+    except Exception as e:
+        logger.warning(f"Greeting generation failed: {type(e).__name__}: {str(e)[:100]}")
+
+    if not simple_greeting or len(simple_greeting) < 10:
+        logger.error("❌ AI returned incomplete greeting, using fallback")
+        simple_greeting = f"Доброе утро{name_part}! Лови утреннюю сводку:"
+
+    logger.info(f"✓ Greeting: {simple_greeting[:70]}...")
+    message_lines[:0] = [simple_greeting, ""]
 
     # r/tbilisi city highlight (selected users only)
     if user_id in TBILISI_REDDIT_USERS:
@@ -759,7 +776,13 @@ async def _morning_digest_impl(
                 idiom = None
 
             if idiom:
-                kind_label = "Эвфемизм дня" if "эвфемизм" in idiom.get("kind", "").lower() else "Идиома дня"
+                idiom_kind = idiom.get("kind", "").lower()
+                if "эвфемизм" in idiom_kind:
+                    kind_label = "Эвфемизм дня"
+                elif "сленг" in idiom_kind:
+                    kind_label = "Сленг дня"
+                else:
+                    kind_label = "Идиома дня"
                 message_lines.append(f"{flag} <b>{kind_label}:</b>")
                 message_lines.append(f'<b>«{_esc(idiom["phrase"])}»</b> — {_esc(idiom["meaning_ru"])}')
                 example_text = idiom.get("example") or idiom.get("example_en")
@@ -791,26 +814,6 @@ async def _morning_digest_impl(
             message_lines.append("")
         else:
             logger.info("No place of day (section skipped)")
-
-    # Joke of the day, «категория Б» — from real sources, no repeats within 28 days.
-    # Sent to ALL digest recipients.
-    logger.info("Fetching joke of the day")
-    try:
-        joke = await get_joke_of_day()
-    except Exception as e:
-        logger.warning(f"Joke of day failed: {type(e).__name__}: {str(e)[:100]}")
-        joke = None
-
-    if joke:
-        message_lines.append("😄 <b>Анекдот дня:</b>")
-        message_lines.append(_esc(joke["text"]))
-        if joke.get("url"):
-            message_lines.append(f'<i><a href="{_esc_attr(joke["url"])}">{_esc(joke["source"])}</a></i>')
-        else:
-            message_lines.append(f'<i>{_esc(joke["source"])}</i>')
-        message_lines.append("")
-    else:
-        logger.info("No joke of day (section skipped)")
 
     # Tasks section (only if include_tasks=True)
     if include_tasks:
@@ -1155,57 +1158,6 @@ async def _morning_digest_impl(
 
         message_lines.append("")
 
-    # Closing farewell line — AI-generated so it varies day to day (pairs with the greeting).
-    # A random style is injected so the line doesn't converge to one template.
-    logger.info("Generating farewell line")
-    farewell = None
-    try:
-        import random as _random
-
-        farewell_style = _random.choice([
-            "с лёгким юмором или самоиронией",
-            "с неожиданной метафорой (день как путешествие, кофе, плейлист, уровень в игре...)",
-            "в духе напутствия из фильма или песни, но без прямых цитат",
-            "как мини-афоризм, который хочется переслать другу",
-            "с игривой отсылкой к сегодняшнему дню недели",
-            "как будто прощается капитан корабля / пилот / бармен / диджей (выбери сам)",
-        ])
-
-        farewell_prompt = f"""Напиши ОДНО короткое, яркое и креативное прощальное предложение в конец утреннего дайджеста для человека по имени {user_name or 'друг'} ({user_gender} рода).
-
-Сегодня {weekday_ru}. Стиль на сегодня: {farewell_style}.
-
-Требования:
-- Пожелай хорошего дня нестандартно — так, чтобы вызвать улыбку, а не вежливый кивок
-- Можно обратиться по имени
-- Никаких клише («заряд энергии», «ты можешь всё», «пусть день принесёт») и никакого официоза
-- Не будь слащавым — лучше остроумно, чем умилительно
-- Можно добавить один подходящий эмодзи в конце
-
-Ответ — только текст прощания, строго одно предложение."""
-
-        response = await get_client().chat.completions.create(
-            model="gpt-5.4-mini",
-            max_completion_tokens=90,
-            temperature=1.0,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a witty, warm morning assistant in Russian.",
-                },
-                {"role": "user", "content": farewell_prompt},
-            ],
-        )
-        farewell = (response.choices[0].message.content or "").strip()
-    except Exception as e:
-        logger.warning(f"Farewell generation failed: {type(e).__name__}: {str(e)[:100]}")
-
-    if not farewell or len(farewell) < 5:
-        farewell = f"Хорошего дня{name_part}! ✨"
-
-    message_lines.append(farewell)
-    message_lines.append("")
-
     final_message = "\n".join(message_lines)
     logger.info(
         f"Sending digest: {len(message_lines)} lines, {len(final_message)} chars to chat {chat_id}"
@@ -1321,7 +1273,7 @@ def _format_weather(weather: dict, city_prep: str = "Тбилиси") -> str:
 
 
 async def check_precipitation_alert(bot: Bot, chat_id: int):
-    """Check for upcoming precipitation in next 3 hours and send alert if found."""
+    """Check Open-Meteo for precipitation in the next 3 hours and alert if found."""
     global _last_precipitation_alert
 
     # Cooldown: don't send more than once per 3 hours
@@ -1335,16 +1287,21 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
         if not precip:
             return
 
-        # Precipitation detected
         condition = precip.get("condition", "осадки")
         emoji = precip.get("emoji", "🌧️")
-        hours_from_now = precip.get("hours_from_now", 0)
         time_str = precip.get("time", "")
+        probability = precip.get("probability")
+        intensity = precip.get("intensity_mm")
 
-        # Build message
-        message = f"{emoji} Через ~{hours_from_now} ч. ожидается {condition}"
-        if time_str:
-            message += f" (около {time_str})"
+        # Build message: onset time + confidence + intensity
+        message = f"{emoji} Около {time_str} ожидается {condition}"
+        details = []
+        if probability is not None:
+            details.append(f"вероятность {probability}%")
+        if intensity:
+            details.append(f"~{intensity} мм/ч")
+        if details:
+            message += f" ({', '.join(details)})"
 
         await bot.send_message(
             chat_id=chat_id,
@@ -1353,12 +1310,10 @@ async def check_precipitation_alert(bot: Bot, chat_id: int):
         )
 
         _last_precipitation_alert = datetime.now()
-        logger.info(f"✓ Precipitation alert sent: {condition} in ~{hours_from_now}h")
+        logger.info(f"✓ Precipitation alert sent: {condition} around {time_str}")
 
     except Exception as e:
         logger.warning(f"Precipitation alert failed: {e}")
-
-
 
 
 def _get_secondary_users() -> list:
@@ -1444,7 +1399,7 @@ def init_scheduler(bot: Bot, user_id: int, chat_id: int = None):
         name="Update historical forex rates",
     )
 
-    # Hourly precipitation alert check
+    # Hourly precipitation alert check (Open-Meteo hourly forecast)
     scheduler.add_job(
         check_precipitation_alert,
         CronTrigger(minute=0, timezone=tbilisi_tz),  # every hour at :00 Tbilisi time

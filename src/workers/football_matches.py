@@ -34,184 +34,6 @@ SPORTS_FEEDS = [
     "https://www.football-esp.com/feed",  # Spanish football focus
 ]
 
-# Country translations: Russian name → English name for World Cup RSS news search.
-# MUST stay as complete as NATIONAL_FLAGS below — if a team is missing here it keeps
-# its Russian name and we end up searching English-language feeds with a mixed
-# "Germany vs Кюрасао" query that never matches. Lookup is substring-based via
-# _translate_country() so "Сборная Германии"/"Германия" both resolve.
-COUNTRY_TRANSLATIONS = {
-    # UEFA (Europe)
-    "Испания": "Spain",
-    "Франция": "France",
-    "Англия": "England",
-    "Германия": "Germany",
-    "Нидерланды": "Netherlands",
-    "Португалия": "Portugal",
-    "Бельгия": "Belgium",
-    "Италия": "Italy",
-    "Хорватия": "Croatia",
-    "Сербия": "Serbia",
-    "Швейцария": "Switzerland",
-    "Дания": "Denmark",
-    "Норвегия": "Norway",
-    "Швеция": "Sweden",
-    "Польша": "Poland",
-    "Украина": "Ukraine",
-    "Уэльс": "Wales",
-    "Шотландия": "Scotland",
-    "Северная Ирландия": "Northern Ireland",
-    "Ирландия": "Ireland",
-    "Австрия": "Austria",
-    "Чехия": "Czech Republic",
-    "Венгрия": "Hungary",
-    "Греция": "Greece",
-    "Турция": "Turkey",
-    "Румыния": "Romania",
-    "Словакия": "Slovakia",
-    "Словения": "Slovenia",
-    "Россия": "Russia",
-    "Исландия": "Iceland",
-    "Финляндия": "Finland",
-    "Косово": "Kosovo",
-    "Албания": "Albania",
-    "Босния": "Bosnia",
-    "Македония": "North Macedonia",
-    "Черногория": "Montenegro",
-    "Болгария": "Bulgaria",
-    "Грузия": "Georgia",
-    "Армения": "Armenia",
-    "Азербайджан": "Azerbaijan",
-    "Беларусь": "Belarus",
-    "Молдова": "Moldova",
-    "Люксембург": "Luxembourg",
-    "Эстония": "Estonia",
-    "Латвия": "Latvia",
-    "Литва": "Lithuania",
-    "Кипр": "Cyprus",
-    "Мальта": "Malta",
-    # CONMEBOL (South America)
-    "Бразилия": "Brazil",
-    "Аргентина": "Argentina",
-    "Уругвай": "Uruguay",
-    "Колумбия": "Colombia",
-    "Чили": "Chile",
-    "Перу": "Peru",
-    "Эквадор": "Ecuador",
-    "Парагвай": "Paraguay",
-    "Венесуэла": "Venezuela",
-    "Боливия": "Bolivia",
-    # CONCACAF (North/Central America & Caribbean)
-    "США": "USA",
-    "Мексика": "Mexico",
-    "Канада": "Canada",
-    "Коста-Рика": "Costa Rica",
-    "Панама": "Panama",
-    "Ямайка": "Jamaica",
-    "Гондурас": "Honduras",
-    "Сальвадор": "El Salvador",
-    "Гватемала": "Guatemala",
-    "Гаити": "Haiti",
-    "Тринидад": "Trinidad and Tobago",
-    "Кюрасао": "Curacao",
-    "Суринам": "Suriname",
-    "Никарагуа": "Nicaragua",
-    # CAF (Africa)
-    "Марокко": "Morocco",
-    "Сенегал": "Senegal",
-    "Тунис": "Tunisia",
-    "Алжир": "Algeria",
-    "Египет": "Egypt",
-    "Нигерия": "Nigeria",
-    "Гана": "Ghana",
-    "Камерун": "Cameroon",
-    "Кот-д'Ивуар": "Ivory Coast",
-    "Мали": "Mali",
-    "ЮАР": "South Africa",
-    "Буркина-Фасо": "Burkina Faso",
-    "ДР Конго": "DR Congo",
-    "Конго": "Congo",
-    "Кабо-Верде": "Cape Verde",
-    "Ангола": "Angola",
-    "Замбия": "Zambia",
-    "Экваториальная Гвинея": "Equatorial Guinea",
-    "Гвинея-Бисау": "Guinea-Bissau",
-    "Гвинея": "Guinea",
-    "Габон": "Gabon",
-    "Бенин": "Benin",
-    "Уганда": "Uganda",
-    "Кения": "Kenya",
-    "Эфиопия": "Ethiopia",
-    "Мозамбик": "Mozambique",
-    "Намибия": "Namibia",
-    "Зимбабве": "Zimbabwe",
-    "Танзания": "Tanzania",
-    "Мадагаскар": "Madagascar",
-    "Сьерра-Леоне": "Sierra Leone",
-    "Того": "Togo",
-    "Мавритания": "Mauritania",
-    "Судан": "Sudan",
-    "Ливия": "Libya",
-    "Сомали": "Somalia",
-    # AFC (Asia)
-    "Япония": "Japan",
-    "Южная Корея": "South Korea",
-    "Северная Корея": "North Korea",
-    "КНДР": "North Korea",
-    "Иран": "Iran",
-    "Австралия": "Australia",
-    "Саудовская Аравия": "Saudi Arabia",
-    "Катар": "Qatar",
-    "Ирак": "Iraq",
-    "ОАЭ": "UAE",
-    "Узбекистан": "Uzbekistan",
-    "Иордания": "Jordan",
-    "Оман": "Oman",
-    "Бахрейн": "Bahrain",
-    "Китай": "China",
-    "Индонезия": "Indonesia",
-    "Вьетнам": "Vietnam",
-    "Таиланд": "Thailand",
-    "Сирия": "Syria",
-    "Палестина": "Palestine",
-    "Ливан": "Lebanon",
-    "Кувейт": "Kuwait",
-    "Индия": "India",
-    "Малайзия": "Malaysia",
-    "Киргизия": "Kyrgyzstan",
-    "Казахстан": "Kazakhstan",
-    "Туркменистан": "Turkmenistan",
-    "Таджикистан": "Tajikistan",
-    "Йемен": "Yemen",
-    "Монголия": "Mongolia",
-    # OFC (Oceania)
-    "Новая Каледония": "New Caledonia",
-    "Новая Зеландия": "New Zealand",
-    "Фиджи": "Fiji",
-    "Новая Гвинея": "Papua New Guinea",
-    "Соломоновы Острова": "Solomon Islands",
-    "Таити": "Tahiti",
-    "Вануату": "Vanuatu",
-}
-
-
-def _translate_country(name: str) -> str:
-    """Translate a Russian national-team name to English via longest substring match.
-
-    Mirrors _get_national_flag (kulichki gives plain nominative names like "Кюрасао",
-    "ДР Конго"); longest-match disambiguates collisions such as "Конго" vs "ДР Конго".
-    Returns the original name unchanged if no country matches (rare, since
-    COUNTRY_TRANSLATIONS covers all WC-eligible nations).
-    """
-    n = (name or "").lower()
-    best_ru = None
-    best_en = name
-    for ru, en in COUNTRY_TRANSLATIONS.items():
-        if ru.lower() in n and (best_ru is None or len(ru) > len(best_ru)):
-            best_ru = ru
-            best_en = en
-    return best_en
-
-
 def _clean_html(text: str) -> str:
     """Remove HTML tags and decode HTML entities."""
     text = re.sub(r"<[^>]+>", "", text)
@@ -246,7 +68,7 @@ def _is_football_article(title: str, description: str) -> bool:
     return False
 
 
-async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_world_cup: bool = False) -> Optional[str]:
+async def _find_match_news_from_rss(home: str, away: str, match_date: str) -> Optional[str]:
     """
     Find sport news article about a specific match from RSS feeds.
     Searches SPORTS_FEEDS for articles mentioning both teams.
@@ -255,7 +77,6 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
         home: Home team name (Russian or English)
         away: Away team name (Russian or English)
         match_date: Match date in YYYY-MM-DD format
-        is_world_cup: If True, translate Russian country names to English for RSS search
 
     Returns:
         Match news text or None if not found
@@ -273,19 +94,8 @@ async def _find_match_news_from_rss(home: str, away: str, match_date: str, is_wo
         "Манчестер Юнайтед": ["Manchester United", "Man Utd"],
     }
 
-    # For World Cup matches, translate Russian country names to English
     search_home = home
     search_away = away
-
-    if is_world_cup:
-        search_home = _translate_country(home)
-        search_away = _translate_country(away)
-        logger.debug(f"World Cup match: translating {home} → {search_home}, {away} → {search_away}")
-        # If a name didn't translate it stays Russian — searching English feeds with a
-        # mixed-language query is pointless, so skip the RSS lookup (standings-only report).
-        if search_home == home or search_away == away:
-            logger.info(f"[RSS] Skipping news search — unresolved country name(s): '{search_home}' vs '{search_away}'")
-            return None
 
     # Build search alternatives
     home_alts = TEAM_MAPPINGS.get(search_home, [])
@@ -392,191 +202,12 @@ TEAM_FLAGS = {
     "ПСЖ": "🇫🇷",
 }
 
-# National team flags for World Cup matches.
-# Comprehensive coverage of WC 2026-eligible nations across all confederations.
-# Lookup is done via _get_national_flag() (longest substring match), so the order
-# here does not matter and collisions (e.g. "Гвинея" vs "Экваториальная Гвинея")
-# are resolved by preferring the longest matching country name.
-NATIONAL_FLAGS = {
-    # UEFA (Europe)
-    "Испания": "🇪🇸",
-    "Франция": "🇫🇷",
-    "Англия": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
-    "Германия": "🇩🇪",
-    "Нидерланды": "🇳🇱",
-    "Португалия": "🇵🇹",
-    "Бельгия": "🇧🇪",
-    "Италия": "🇮🇹",
-    "Хорватия": "🇭🇷",
-    "Сербия": "🇷🇸",
-    "Швейцария": "🇨🇭",
-    "Дания": "🇩🇰",
-    "Норвегия": "🇳🇴",
-    "Швеция": "🇸🇪",
-    "Польша": "🇵🇱",
-    "Украина": "🇺🇦",
-    "Уэльс": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
-    "Шотландия": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
-    "Северная Ирландия": "🇬🇧",
-    "Ирландия": "🇮🇪",
-    "Австрия": "🇦🇹",
-    "Чехия": "🇨🇿",
-    "Венгрия": "🇭🇺",
-    "Греция": "🇬🇷",
-    "Турция": "🇹🇷",
-    "Румыния": "🇷🇴",
-    "Словакия": "🇸🇰",
-    "Словения": "🇸🇮",
-    "Россия": "🇷🇺",
-    "Исландия": "🇮🇸",
-    "Финляндия": "🇫🇮",
-    "Косово": "🇽🇰",
-    "Албания": "🇦🇱",
-    "Босния": "🇧🇦",
-    "Македония": "🇲🇰",
-    "Черногория": "🇲🇪",
-    "Болгария": "🇧🇬",
-    "Грузия": "🇬🇪",
-    "Армения": "🇦🇲",
-    "Азербайджан": "🇦🇿",
-    "Беларусь": "🇧🇾",
-    "Молдова": "🇲🇩",
-    "Люксембург": "🇱🇺",
-    "Эстония": "🇪🇪",
-    "Латвия": "🇱🇻",
-    "Литва": "🇱🇹",
-    "Кипр": "🇨🇾",
-    "Мальта": "🇲🇹",
-    # CONMEBOL (South America)
-    "Бразилия": "🇧🇷",
-    "Аргентина": "🇦🇷",
-    "Уругвай": "🇺🇾",
-    "Колумбия": "🇨🇴",
-    "Чили": "🇨🇱",
-    "Перу": "🇵🇪",
-    "Эквадор": "🇪🇨",
-    "Парагвай": "🇵🇾",
-    "Венесуэла": "🇻🇪",
-    "Боливия": "🇧🇴",
-    # CONCACAF (North/Central America & Caribbean)
-    "США": "🇺🇸",
-    "Мексика": "🇲🇽",
-    "Канада": "🇨🇦",
-    "Коста-Рика": "🇨🇷",
-    "Панама": "🇵🇦",
-    "Ямайка": "🇯🇲",
-    "Гондурас": "🇭🇳",
-    "Сальвадор": "🇸🇻",
-    "Гватемала": "🇬🇹",
-    "Гаити": "🇭🇹",
-    "Тринидад": "🇹🇹",
-    "Кюрасао": "🇨🇼",
-    "Суринам": "🇸🇷",
-    "Никарагуа": "🇳🇮",
-    # CAF (Africa)
-    "Марокко": "🇲🇦",
-    "Сенегал": "🇸🇳",
-    "Тунис": "🇹🇳",
-    "Алжир": "🇩🇿",
-    "Египет": "🇪🇬",
-    "Нигерия": "🇳🇬",
-    "Гана": "🇬🇭",
-    "Камерун": "🇨🇲",
-    "Кот-д'Ивуар": "🇨🇮",
-    "Мали": "🇲🇱",
-    "ЮАР": "🇿🇦",
-    "Буркина-Фасо": "🇧🇫",
-    "ДР Конго": "🇨🇩",
-    "Конго": "🇨🇬",
-    "Кабо-Верде": "🇨🇻",
-    "Ангола": "🇦🇴",
-    "Замбия": "🇿🇲",
-    "Экваториальная Гвинея": "🇬🇶",
-    "Гвинея-Бисау": "🇬🇼",
-    "Гвинея": "🇬🇳",
-    "Габон": "🇬🇦",
-    "Бенин": "🇧🇯",
-    "Уганда": "🇺🇬",
-    "Кения": "🇰🇪",
-    "Эфиопия": "🇪🇹",
-    "Мозамбик": "🇲🇿",
-    "Намибия": "🇳🇦",
-    "Зимбабве": "🇿🇼",
-    "Танзания": "🇹🇿",
-    "Мадагаскар": "🇲🇬",
-    "Сьерра-Леоне": "🇸🇱",
-    "Того": "🇹🇬",
-    "Мавритания": "🇲🇷",
-    "Судан": "🇸🇩",
-    "Ливия": "🇱🇾",
-    "Сомали": "🇸🇴",
-    # AFC (Asia)
-    "Япония": "🇯🇵",
-    "Южная Корея": "🇰🇷",
-    "Северная Корея": "🇰🇵",
-    "КНДР": "🇰🇵",
-    "Иран": "🇮🇷",
-    "Австралия": "🇦🇺",
-    "Саудовская Аравия": "🇸🇦",
-    "Катар": "🇶🇦",
-    "Ирак": "🇮🇶",
-    "ОАЭ": "🇦🇪",
-    "Узбекистан": "🇺🇿",
-    "Иордания": "🇯🇴",
-    "Оман": "🇴🇲",
-    "Бахрейн": "🇧🇭",
-    "Китай": "🇨🇳",
-    "Индонезия": "🇮🇩",
-    "Вьетнам": "🇻🇳",
-    "Таиланд": "🇹🇭",
-    "Сирия": "🇸🇾",
-    "Палестина": "🇵🇸",
-    "Ливан": "🇱🇧",
-    "Кувейт": "🇰🇼",
-    "Индия": "🇮🇳",
-    "Малайзия": "🇲🇾",
-    "Киргизия": "🇰🇬",
-    "Казахстан": "🇰🇿",
-    "Туркменистан": "🇹🇲",
-    "Таджикистан": "🇹🇯",
-    "Йемен": "🇾🇪",
-    "Монголия": "🇲🇳",
-    # OFC (Oceania)
-    "Новая Каледония": "🇳🇨",
-    "Новая Зеландия": "🇳🇿",
-    "Фиджи": "🇫🇯",
-    "Новая Гвинея": "🇵🇬",
-    "Соломоновы Острова": "🇸🇧",
-    "Таити": "🇵🇫",
-    "Вануату": "🇻🇺",
-}
-
 # League to country flag mapping
 LEAGUE_FLAGS = {
     "La Liga": "🇪🇸",
     "Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
     "Ligue 1": "🇫🇷",
 }
-
-
-def _get_national_flag(team_name: str, default: str = "⚽") -> str:
-    """Return the flag for a national team by longest-matching country name.
-
-    Uses substring matching so kulichki names like "Тунис" / "Сборная Туниса"
-    still resolve, and prefers the LONGEST matching country so collisions resolve
-    correctly (e.g. "Гвинея" vs "Экваториальная Гвинея", "Конго" vs "ДР Конго").
-    """
-    name = (team_name or "").lower()
-    best_country = None
-    best_flag = default
-    for country, flag in NATIONAL_FLAGS.items():
-        if country.lower() in name and (best_country is None or len(country) > len(best_country)):
-            best_country = country
-            best_flag = flag
-    return best_flag
-
-
-
 
 
 async def get_today_matches() -> Optional[List[Dict[str, Any]]]:
@@ -599,54 +230,44 @@ async def get_today_matches() -> Optional[List[Dict[str, Any]]]:
 
         logger.info(f"[FOOTBALL] Found {len(all_matches)} total matches")
 
-        # Check if these are World Cup matches
-        is_world_cup = any("World Cup" in m.get("league", "") for m in all_matches)
+        # Filter to only priority teams and sort by priority order
+        priority_matches = []
 
-        if is_world_cup:
-            # For World Cup: return all matches (already filtered by kulichki_parser)
-            logger.info(f"[FOOTBALL] ✓ World Cup detected - returning all {len(all_matches)} match(es)")
-            for m in all_matches:
+        for match in all_matches:
+            home = match["home"]
+            away = match["away"]
+
+            # Check if either team is in priority list (fuzzy matching)
+            priority_team = None
+            for team in PRIORITY_TEAMS:
+                if team.lower() in home.lower():
+                    priority_team = team
+                    break
+                elif team.lower() in away.lower():
+                    priority_team = team
+                    break
+
+            if priority_team:
+                priority_idx = PRIORITY_TEAMS.index(priority_team)
+                match["priority_idx"] = priority_idx
+                priority_matches.append(match)
+                logger.debug(f"[FOOTBALL] Found priority match: {home} vs {away}")
+
+        logger.info(f"[FOOTBALL] Priority matches found: {len(priority_matches)}")
+
+        # Pick top 3 by priority, then display earliest kickoff first (chronological).
+        priority_matches.sort(key=lambda m: m["priority_idx"])
+        result = priority_matches[:3]
+        result.sort(key=lambda m: m.get("kickoff") or "9999-12-31T23:59")
+
+        if result:
+            logger.info(f"[FOOTBALL] ✓ Returning {len(result)} top priority match(es)")
+            for m in result:
                 logger.debug(f"[FOOTBALL]   - {m['home']} vs {m['away']}")
-            return all_matches
         else:
-            # For regular leagues: filter to only priority teams and sort by priority order
-            priority_matches = []
+            logger.info(f"[FOOTBALL] No priority matches found for today")
 
-            for match in all_matches:
-                home = match["home"]
-                away = match["away"]
-
-                # Check if either team is in priority list (fuzzy matching)
-                priority_team = None
-                for team in PRIORITY_TEAMS:
-                    if team.lower() in home.lower():
-                        priority_team = team
-                        break
-                    elif team.lower() in away.lower():
-                        priority_team = team
-                        break
-
-                if priority_team:
-                    priority_idx = PRIORITY_TEAMS.index(priority_team)
-                    match["priority_idx"] = priority_idx
-                    priority_matches.append(match)
-                    logger.debug(f"[FOOTBALL] Found priority match: {home} vs {away}")
-
-            logger.info(f"[FOOTBALL] Priority matches found: {len(priority_matches)}")
-
-            # Pick top 3 by priority, then display earliest kickoff first (chronological).
-            priority_matches.sort(key=lambda m: m["priority_idx"])
-            result = priority_matches[:3]
-            result.sort(key=lambda m: m.get("kickoff") or "9999-12-31T23:59")
-
-            if result:
-                logger.info(f"[FOOTBALL] ✓ Returning {len(result)} top priority match(es)")
-                for m in result:
-                    logger.debug(f"[FOOTBALL]   - {m['home']} vs {m['away']}")
-            else:
-                logger.info(f"[FOOTBALL] No priority matches found for today")
-
-            return result if result else None
+        return result if result else None
 
     except Exception as e:
         logger.error(f"[FOOTBALL] Failed to get matches: {type(e).__name__}: {e}", exc_info=True)
@@ -660,77 +281,64 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     time_str = match.get("time", "TBD")
     league = match.get("league", "")
 
-    # Get flags: check for national teams (World Cup) first, then club teams, then league
+    # Get flags: club team flags first, fall back to league flag
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
 
-    # For World Cup: resolve national flags (longest-match handles all WC nations)
-    if "World Cup" in league:
-        home_flag = _get_national_flag(home, home_flag)
-        away_flag = _get_national_flag(away, away_flag)
-    else:
-        # For regular leagues: check club team flags
-        for team in PRIORITY_TEAMS:
-            if team.lower() in home.lower():
-                home_flag = TEAM_FLAGS.get(team, home_flag)
-            if team.lower() in away.lower():
-                away_flag = TEAM_FLAGS.get(team, away_flag)
+    for team in PRIORITY_TEAMS:
+        if team.lower() in home.lower():
+            home_flag = TEAM_FLAGS.get(team, home_flag)
+        if team.lower() in away.lower():
+            away_flag = TEAM_FLAGS.get(team, away_flag)
 
     # Time is already converted to Tbilisi in kulichki_parser (Moscow UTC+3 → Tbilisi UTC+4)
     tbilisi_time = time_str
 
-    # Format standings context from league table or group info (for World Cup)
+    # Format standings context from league table
     standings_str = ""
     standings_info = ""
-    group = match.get("group")
+    standings = match.get("standings")
 
-    # For World Cup matches: show group information
-    if "World Cup" in league and group:
-        standings_str = f"🏆 {group}"
-        standings_info = f"Матч чемпионата мира в {group}"
+    if standings and isinstance(standings, list) and len(standings) > 0:
+        # Find full information for home and away teams in standings
+        home_standing = None
+        away_standing = None
+
+        for standing in standings:
+            team_name = standing.get("team", "").lower()
+            if team_name and team_name in home.lower():
+                home_standing = standing
+            if team_name and team_name in away.lower():
+                away_standing = standing
+
+        # Build comprehensive standings context
+        if home_standing and away_standing:
+            home_pos = home_standing.get("position")
+            away_pos = away_standing.get("position")
+
+            # Get additional stats if available
+            home_played = home_standing.get("played")
+            away_played = away_standing.get("played")
+            home_points = home_standing.get("points")
+            away_points = away_standing.get("points")
+
+            standings_str = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
+
+            # Build detailed context for GPT
+            standings_parts = []
+            if home_pos and away_pos:
+                standings_parts.append(f"{home}: {home_pos} место")
+                if home_points:
+                    standings_parts.append(f"{away}: {away_pos} место с {away_points} очками")
+                else:
+                    standings_parts.append(f"{away}: {away_pos} место")
+
+            standings_info = " | ".join(standings_parts) if standings_parts else standings_str
     else:
-        standings = match.get("standings")
-
-        if standings and isinstance(standings, list) and len(standings) > 0:
-            # Find full information for home and away teams in standings
-            home_standing = None
-            away_standing = None
-
-            for standing in standings:
-                team_name = standing.get("team", "").lower()
-                if team_name and team_name in home.lower():
-                    home_standing = standing
-                if team_name and team_name in away.lower():
-                    away_standing = standing
-
-            # Build comprehensive standings context
-            if home_standing and away_standing:
-                home_pos = home_standing.get("position")
-                away_pos = away_standing.get("position")
-
-                # Get additional stats if available
-                home_played = home_standing.get("played")
-                away_played = away_standing.get("played")
-                home_points = home_standing.get("points")
-                away_points = away_standing.get("points")
-
-                standings_str = f"Таблица: {home} на месте {home_pos}, {away} на месте {away_pos}."
-
-                # Build detailed context for GPT
-                standings_parts = []
-                if home_pos and away_pos:
-                    standings_parts.append(f"{home}: {home_pos} место")
-                    if home_points:
-                        standings_parts.append(f"{away}: {away_pos} место с {away_points} очками")
-                    else:
-                        standings_parts.append(f"{away}: {away_pos} место")
-
-                standings_info = " | ".join(standings_parts) if standings_parts else standings_str
-        else:
-            # For playoff matches or tournaments without standings, show tournament name
-            if league and any(keyword in league.lower() for keyword in ["cup", "playoff", "champions", "europa", "final", "league"]):
-                standings_str = f"🏆 {league}"
-                standings_info = f"Матч турнира: {league}"
+        # For playoff matches or tournaments without standings, show tournament name
+        if league and any(keyword in league.lower() for keyword in ["cup", "playoff", "champions", "europa", "final", "league"]):
+            standings_str = f"🏆 {league}"
+            standings_info = f"Матч турнира: {league}"
 
     # Generate AI commentary (1-2 sentences with maximum context)
     prompt = f"""Напиши комментарий к предстоящему матчу футбола (1-2 предложения). Используй ВСЕ доступные данные для создания наиболее информативного описания.
@@ -759,7 +367,7 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
 
 ПРИМЕРЫ ХОРОШИХ КОММЕНТАРИЕВ:
 - "Лидер таблицы против 20-го места - явный фаворит. Реал Мадрид предпочитает контролировать мяч."
-- "Матч чемпионата мира: столкновение фаворитов. Обе команды в боевом настроении."
+- "Матч лидеров чемпионата: столкновение фаворитов. Обе команды в боевом настроении."
 - "Финал кубка сулит напряженную борьбу. Реал едет на выезд без особых преимуществ."
 - "Третий и четвертый в таблице - баланс сил примерно равен, матч обещает быть интересным."
 
@@ -834,17 +442,6 @@ async def get_yesterday_results() -> Optional[List[Dict[str, Any]]]:
 
         logger.info(f"[FOOTBALL] Found {len(all_results)} total results")
 
-        # Check if these are World Cup results (national teams, not club priority teams)
-        is_world_cup = any("World Cup" in m.get("league", "") for m in all_results)
-
-        if is_world_cup:
-            # For World Cup: return all results (already filtered by kulichki_parser),
-            # do NOT apply the club PRIORITY_TEAMS filter (it would drop national teams).
-            logger.info(f"[FOOTBALL] ✓ World Cup detected - returning all {len(all_results)} result(s)")
-            for m in all_results:
-                logger.debug(f"[FOOTBALL]   - {m['home']} vs {m['away']} ({m['score']})")
-            return all_results
-
         # Filter to only priority teams (already done in parser, but keep for safety)
         priority_results = []
 
@@ -900,17 +497,11 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
 
-    if "World Cup" in league:
-        # World Cup results: resolve national-team flags (was previously missing,
-        # so both teams showed ⚽)
-        home_flag = _get_national_flag(home, home_flag)
-        away_flag = _get_national_flag(away, away_flag)
-    else:
-        for team in PRIORITY_TEAMS:
-            if team.lower() in home.lower():
-                home_flag = TEAM_FLAGS.get(team, home_flag)
-            if team.lower() in away.lower():
-                away_flag = TEAM_FLAGS.get(team, away_flag)
+    for team in PRIORITY_TEAMS:
+        if team.lower() in home.lower():
+            home_flag = TEAM_FLAGS.get(team, home_flag)
+        if team.lower() in away.lower():
+            away_flag = TEAM_FLAGS.get(team, away_flag)
 
     # Format standings context from league table
     standings_str = ""
@@ -958,16 +549,15 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     match_report = ""
     try:
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        is_world_cup = "World Cup" in league
 
         # First try to find news on match date (yesterday)
-        news = await _find_match_news_from_rss(home, away, yesterday, is_world_cup=is_world_cup)
+        news = await _find_match_news_from_rss(home, away, yesterday)
 
         # Fallback: if no news found, try 2 days ago (in case of delay)
         if not news:
             two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
             logger.info(f"No match news on {yesterday}, trying {two_days_ago}...")
-            news = await _find_match_news_from_rss(home, away, two_days_ago, is_world_cup=is_world_cup)
+            news = await _find_match_news_from_rss(home, away, two_days_ago)
 
         if news:
             match_report = f"\nСПОРТИВНАЯ НОВОСТЬ О МАТЧЕ:\n{news}"

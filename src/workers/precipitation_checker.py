@@ -1,14 +1,18 @@
-"""Check for upcoming precipitation in Tbilisi.
+"""Check for upcoming precipitation in Tbilisi via Open-Meteo hourly forecast.
 
-Uses the SAME weather source as the morning digest (`get_aggregated_weather`:
-Gismeteo → BBC → Georgian Weather) so rain alerts and the digest never disagree.
-The aggregated weather is grouped into night/morning/day/evening periods; we look at
-the period(s) overlapping the next N hours and flag rain from the condition text.
+Previous implementation reused the digest weather source (Gismeteo/BBC), which only
+has 6-hour period granularity (night/morning/day/evening) — "rain sometime today"
+became a false "rain in the next hour" alert. Open-Meteo gives a real HOURLY
+precipitation forecast (mm + probability + weather code), free and keyless, so the
+alert now fires only when a specific upcoming hour actually has rain in it.
 """
 
 import logging
+import math
 from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
+
+import httpx
 
 try:
     from zoneinfo import ZoneInfo
@@ -16,28 +20,37 @@ try:
 except Exception:  # pragma: no cover - fallback if tzdata unavailable
     TBILISI_TZ = None
 
-from src.ai.weather_sources import get_aggregated_weather
+from src.ai.weather_sources import LOCATIONS
 
 logger = logging.getLogger(__name__)
 
-# Condition keywords that count as precipitation (match weather_sources condition keys)
-RAIN_KEYWORDS = [
-    "дождь", "снег", "гроза", "морось", "ливень", "ледяной дождь", "град",
+# Alert thresholds: skip drizzle-level noise and low-confidence forecasts.
+# The mm amount is the model's deterministic forecast and does the main filtering;
+# the probability cut only drops long-shot ensemble outliers (live data shows real
+# rain forecasts routinely carry ~30-40% stated probability).
+MIN_PRECIP_MM_PER_HOUR = 0.2
+MIN_PRECIP_PROBABILITY = 30  # %
+
+# WMO weather codes → human-readable condition + emoji
+# https://open-meteo.com/en/docs (WMO Weather interpretation codes)
+_WMO_CONDITIONS = [
+    (range(51, 58), ("морось", "🌦️")),
+    (range(61, 66), ("дождь", "🌧️")),
+    (range(66, 68), ("ледяной дождь", "🌧️")),
+    (range(71, 78), ("снег", "❄️")),
+    (range(80, 83), ("ливень", "🌧️")),
+    (range(85, 87), ("снегопад", "❄️")),
+    (range(95, 100), ("гроза", "⛈️")),
 ]
 
-# Period boundaries (hour ranges) — must mirror weather_sources period grouping
-PERIODS = {
-    "night": (0, 6),
-    "morning": (6, 12),
-    "day": (12, 18),
-    "evening": (18, 24),
-}
 
-# Default emoji per condition keyword (for alert message)
-CONDITION_EMOJI = {
-    "дождь": "🌧️", "ливень": "🌧️", "морось": "🌦️", "ледяной дождь": "🌧️",
-    "снег": "❄️", "гроза": "⛈️", "град": "🌨️",
-}
+def _condition_from_wmo(code: Optional[int]) -> tuple:
+    """Map a WMO weather code to (condition, emoji); generic rain if unknown."""
+    if code is not None:
+        for code_range, result in _WMO_CONDITIONS:
+            if code in code_range:
+                return result
+    return ("осадки", "🌧️")
 
 
 def _tbilisi_now() -> datetime:
@@ -49,51 +62,90 @@ def _tbilisi_now() -> datetime:
 
 
 async def get_upcoming_precipitation(hours: int = 3) -> Optional[Dict[str, Any]]:
-    """Check the digest weather source for precipitation in the next N hours.
+    """Check Open-Meteo hourly forecast for precipitation in the next N hours.
 
     Returns dict with precipitation details if found, None otherwise:
     {
-        "time": "15:00",        # approximate onset (start of the rainy period)
+        "time": "15:00",        # onset hour (Tbilisi)
         "hours_from_now": 2,
         "condition": "дождь",
         "emoji": "🌧️",
+        "probability": 70,      # % (None if API omitted it)
+        "intensity_mm": 1.2,    # forecast mm for that hour
     }
     """
     try:
-        weather = await get_aggregated_weather()
-        if not weather or not isinstance(weather, dict):
+        cfg = LOCATIONS["tbilisi"]
+        params = {
+            "latitude": cfg["lat"],
+            "longitude": cfg["lon"],
+            "hourly": "precipitation,precipitation_probability,weather_code",
+            "timezone": "Asia/Tbilisi",
+            # current hour + lookahead window (a couple extra hours costs nothing)
+            "forecast_hours": hours + 3,
+        }
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
+            response.raise_for_status()
+            data = response.json()
+
+        hourly = data.get("hourly") or {}
+        times = hourly.get("time") or []
+        precip = hourly.get("precipitation") or []
+        probs = hourly.get("precipitation_probability") or []
+        codes = hourly.get("weather_code") or []
+
+        if not times or not precip:
+            logger.warning("[PRECIP] Open-Meteo returned no hourly data")
             return None
 
         now = _tbilisi_now()
-        cur_hour = now.hour
-        window_end = cur_hour + hours
+        window_end = now + timedelta(hours=hours)
 
-        # Walk periods in chronological order; flag the first overlapping rainy one
-        for period_name, (start, end) in PERIODS.items():
-            # Does this period overlap [cur_hour, cur_hour + hours)?
-            if start < window_end and end > cur_hour:
-                period = weather.get(period_name)
-                if not isinstance(period, dict):
-                    continue
+        for i, time_iso in enumerate(times):
+            try:
+                slot = datetime.fromisoformat(time_iso)
+            except ValueError:
+                continue
 
-                condition = (period.get("condition") or "").lower()
-                matched = next((kw for kw in RAIN_KEYWORDS if kw in condition), None)
-                if not matched:
-                    continue
+            # Keep slots overlapping [now, now + hours): the current (already started)
+            # hour still counts — rain at :40 of this hour is an upcoming event.
+            if slot + timedelta(hours=1) <= now or slot >= window_end:
+                continue
 
-                onset_hour = max(start, cur_hour)
-                hours_from_now = max(0, onset_hour - cur_hour)
-                emoji = period.get("emoji") or CONDITION_EMOJI.get(matched, "🌧️")
+            amount = precip[i] if i < len(precip) and precip[i] is not None else 0.0
+            probability = probs[i] if i < len(probs) else None
+            code = codes[i] if i < len(codes) else None
 
-                return {
-                    "time": f"{onset_hour:02d}:00",
-                    "hours_from_now": hours_from_now,
-                    "condition": condition,
-                    "emoji": emoji,
-                }
+            if amount < MIN_PRECIP_MM_PER_HOUR:
+                continue
+            if probability is not None and probability < MIN_PRECIP_PROBABILITY:
+                logger.info(
+                    f"[PRECIP] {time_iso}: {amount} mm but probability {probability}% "
+                    f"< {MIN_PRECIP_PROBABILITY}% — skipping"
+                )
+                continue
 
+            condition, emoji = _condition_from_wmo(code)
+            hours_from_now = max(0, math.ceil((slot - now).total_seconds() / 3600))
+
+            result = {
+                "time": slot.strftime("%H:%M"),
+                "hours_from_now": hours_from_now,
+                "condition": condition,
+                "emoji": emoji,
+                "probability": probability,
+                "intensity_mm": round(float(amount), 1),
+            }
+            logger.info(
+                f"[PRECIP] ✓ {condition} around {result['time']} "
+                f"({amount} mm, prob={probability}%)"
+            )
+            return result
+
+        logger.info(f"[PRECIP] No precipitation ≥{MIN_PRECIP_MM_PER_HOUR} mm in next {hours}h")
         return None
 
     except Exception as e:
-        logger.warning(f"Precipitation check failed: {e}")
+        logger.warning(f"Precipitation check failed: {type(e).__name__}: {e}")
         return None
