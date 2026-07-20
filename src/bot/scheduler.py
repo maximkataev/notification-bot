@@ -46,6 +46,7 @@ from src.workers.content_parser import get_album_of_day
 from src.workers.quote_of_day import get_quote_of_day
 from src.workers.idiom_of_day import get_idiom_of_day
 from src.workers.football_matches import get_today_matches, get_formatted_matches, get_yesterday_results, get_formatted_results
+from src.workers.national_teams import get_national_team_events
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
@@ -969,6 +970,16 @@ async def _morning_digest_impl(
             logger.info("No water cuts found on Vazha Ivereli street")
         message_lines.append("")
 
+    # National team matches (Россия/Грузия/Испания/Аргентина): qualifiers, Nations
+    # League, friendlies. Merged into the same football sections below.
+    national_upcoming, national_results = [], []
+    if not skip_sports:
+        logger.info("Checking national team matches (TheSportsDB)")
+        try:
+            national_upcoming, national_results = await get_national_team_events()
+        except Exception as e:
+            logger.warning(f"National team events failed: {type(e).__name__}: {str(e)[:100]}")
+
     # Check yesterday's football results (Barcelona/Real Madrid/Arsenal/PSG/Atletico/Man City priority)
     if not skip_sports:
         logger.info("Checking yesterday's football results")
@@ -976,6 +987,10 @@ async def _morning_digest_impl(
     else:
         logger.info("⏭️  Skipping sports section")
         yesterday_results = None
+
+    # Club results + national-team results in one section
+    yesterday_results = (yesterday_results or []) + national_results
+    yesterday_results = yesterday_results or None
 
     if yesterday_results and not skip_sports:
         # Show yesterday's results
@@ -991,6 +1006,9 @@ async def _morning_digest_impl(
     if not skip_sports:
         logger.info("Checking for football matches today")
         matches = await get_today_matches()
+        # Club matches + national-team matches in one section
+        matches = (matches or []) + national_upcoming
+        matches = matches or None
     else:
         matches = None
 

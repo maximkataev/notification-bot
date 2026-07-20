@@ -281,9 +281,14 @@ async def format_match_with_ai(match: Dict[str, Any]) -> str:
     time_str = match.get("time", "TBD")
     league = match.get("league", "")
 
-    # Get flags: club team flags first, fall back to league flag
+    # Get flags: explicit flags on the match dict win (national-team matches carry
+    # their own), then club team flags, then league flag
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
+    if match.get("home_flag") not in (None, "⚽"):
+        home_flag = match["home_flag"]
+    if match.get("away_flag") not in (None, "⚽"):
+        away_flag = match["away_flag"]
 
     for team in PRIORITY_TEAMS:
         if team.lower() in home.lower():
@@ -493,9 +498,14 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     halftime_score = result.get("halftime_score")
     league = result.get("league", "")
 
-    # Get flags with fuzzy matching, fallback to league flag
+    # Get flags: explicit flags on the result dict win (national-team matches carry
+    # their own), then club team flags, then league flag
     home_flag = LEAGUE_FLAGS.get(league, "⚽")
     away_flag = LEAGUE_FLAGS.get(league, "⚽")
+    if result.get("home_flag") not in (None, "⚽"):
+        home_flag = result["home_flag"]
+    if result.get("away_flag") not in (None, "⚽"):
+        away_flag = result["away_flag"]
 
     for team in PRIORITY_TEAMS:
         if team.lower() in home.lower():
@@ -550,14 +560,19 @@ async def format_result_with_ai(result: Dict[str, Any]) -> str:
     try:
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
+        # English feeds need English team names; national-team results carry them
+        # (home_en/away_en from TheSportsDB), club names pass through unchanged.
+        search_home = result.get("home_en") or home
+        search_away = result.get("away_en") or away
+
         # First try to find news on match date (yesterday)
-        news = await _find_match_news_from_rss(home, away, yesterday)
+        news = await _find_match_news_from_rss(search_home, search_away, yesterday)
 
         # Fallback: if no news found, try 2 days ago (in case of delay)
         if not news:
             two_days_ago = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
             logger.info(f"No match news on {yesterday}, trying {two_days_ago}...")
-            news = await _find_match_news_from_rss(home, away, two_days_ago)
+            news = await _find_match_news_from_rss(search_home, search_away, two_days_ago)
 
         if news:
             match_report = f"\nСПОРТИВНАЯ НОВОСТЬ О МАТЧЕ:\n{news}"
