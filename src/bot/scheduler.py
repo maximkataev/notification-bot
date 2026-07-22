@@ -52,6 +52,7 @@ from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
 from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
 from src.workers.place_recommender import get_place_of_day
+from src.workers.joke_of_day import get_joke_of_day
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,8 @@ TBILISI_REDDIT_USERS = {71488343, 184010236}
 CRYPTO_NEWS_USERS = {71488343}
 # Users who get the English idiom/euphemism of the day (Маша и Максим)
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
+# Users who get the joke of the day (только Юля)
+JOKE_OF_DAY_USERS = {498233237}
 # Users who get the place-of-the-day recommendation and their city:
 # Маша и Максим — Тбилиси, Юля — Вена
 PLACE_OF_DAY_CITIES = {
@@ -614,7 +617,7 @@ async def _morning_digest_impl(
             news_num = 0
             for item in selected_with_indices:
                 idx = item["index"]
-                category = item["category"]
+                category = item.get("category", "unknown")
                 description_ru = item.get("description_ru", "")
 
                 # For good news selection, adjust index to combined array offset
@@ -815,6 +818,27 @@ async def _morning_digest_impl(
             message_lines.append("")
         else:
             logger.info("No place of day (section skipped)")
+
+    # Joke of the day, «категория Б» — from real sources, no repeats within 28 days.
+    # Только для Юли.
+    if user_id in JOKE_OF_DAY_USERS:
+        logger.info("Fetching joke of the day")
+        try:
+            joke = await get_joke_of_day()
+        except Exception as e:
+            logger.warning(f"Joke of day failed: {type(e).__name__}: {str(e)[:100]}")
+            joke = None
+
+        if joke:
+            message_lines.append("😄 <b>Анекдот дня:</b>")
+            message_lines.append(_esc(joke["text"]))
+            if joke.get("url"):
+                message_lines.append(f'<i><a href="{_esc_attr(joke["url"])}">{_esc(joke["source"])}</a></i>')
+            else:
+                message_lines.append(f'<i>{_esc(joke["source"])}</i>')
+            message_lines.append("")
+        else:
+            logger.info("No joke of day (section skipped)")
 
     # Tasks section (only if include_tasks=True)
     if include_tasks:

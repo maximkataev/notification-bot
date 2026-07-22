@@ -871,6 +871,10 @@ FORMAT - ВАЖНО:
                     logger.warning(f"  ⚠️  Rejected by exclusions: {title[:50]}...")
                     continue
 
+                # Normalize category back onto the item so downstream consumers
+                # (this logger + scheduler) can rely on item["category"] existing
+                # even when ChatGPT omits the field for some items.
+                item["category"] = category
                 valid_news.append(item)
                 category_counts[category] = category_counts.get(category, 0) + 1
             else:
@@ -885,7 +889,7 @@ FORMAT - ВАЖНО:
         )
         for item in valid_news:
             desc = item.get("description_ru", "")[:50]
-            logger.info(f"  [{item['index']}] {item['category']}: {desc}...")
+            logger.info(f"  [{item.get('index')}] {item.get('category', 'unknown')}: {desc}...")
 
         return valid_news
 
