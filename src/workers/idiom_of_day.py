@@ -6,9 +6,11 @@ learning content, not factual news, so model generation is appropriate here.
 
 Level: idioms are B2 (upper-intermediate) and above — no beginner phrases.
 
-History: the last 28 idioms are persisted to data/idiom_history.json and passed to
-the model as an exclusion list so the section does not repeat phrases day to day. The
-chosen idiom is cached per day, so all recipients get the same phrase on a given date.
+History: every sent idiom is stored in the shared content history (SQLite, see
+src/db/database.py) for CONTENT_HISTORY_DAYS (90) days and passed to the model as an
+exclusion list, so a phrase is never repeated within that window. Entries from the old
+data/idiom_history*.json files are imported into the same store on startup. The chosen
+idiom is cached per day, so all recipients get the same phrase on a given date.
 
 Per project rules: NO HARDCODED FALLBACKS — if generation fails, return None and the
 scheduler simply omits the section.
@@ -16,27 +18,24 @@ scheduler simply omits the section.
 
 import json
 import logging
-import os
 import random
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 
+from src.db.database import (
+    GLOBAL_USER_ID,
+    get_item_shown_on,
+    get_shown_keys,
+    record_shown_item,
+)
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
 
-# Keep the last N idioms so we never repeat them within a ~4-week window.
-_HISTORY_SIZE = 28
-_DATA_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
-)
 
-
-def _history_path(language: str) -> str:
-    """History file per language (English keeps the original filename)."""
-    fname = "idiom_history.json" if language == "en" else f"idiom_history_{language}.json"
-    return os.path.join(_DATA_DIR, fname)
+def _content_type(language: str) -> str:
+    """History key for the language ("idiom_en" / "idiom_es")."""
+    return f"idiom_{language}"
 
 
 # Rotate the kind of phrase day to day so the section stays varied.
@@ -79,31 +78,6 @@ _LANG_META = {
 }
 
 
-def _load_history(language: str) -> List[Dict[str, Any]]:
-    """Load the idiom history list (oldest → newest). Returns [] on any error."""
-    try:
-        with open(_history_path(language), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"Could not read idiom history: {type(e).__name__}: {e}")
-    return []
-
-
-def _save_history(language: str, history: List[Dict[str, Any]]) -> None:
-    """Persist the idiom history (trimmed to the last _HISTORY_SIZE entries)."""
-    try:
-        os.makedirs(_DATA_DIR, exist_ok=True)
-        trimmed = history[-_HISTORY_SIZE:]
-        with open(_history_path(language), "w", encoding="utf-8") as f:
-            json.dump(trimmed, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not write idiom history: {type(e).__name__}: {e}")
-
-
 async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
     """Generate an idiom/euphemism of the day, avoiding recent repeats.
 
@@ -125,15 +99,16 @@ async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
     meta = _LANG_META[language]
 
     today = datetime.now().strftime("%Y-%m-%d")
-    history = _load_history(language)
+    content_type = _content_type(language)
 
     # Same day → return the already-chosen idiom so every recipient sees the same one.
-    if history and history[-1].get("date") == today:
-        cached = {k: v for k, v in history[-1].items() if k != "date"}
+    cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
+    if cached:
         logger.info(f"Idiom of day [{language}] (cached for {today}): {cached.get('phrase')}")
         return cached
 
-    recent_phrases = [h.get("phrase", "") for h in history if h.get("phrase")]
+    # Everything sent in the last 90 days is off limits.
+    recent_phrases = await get_shown_keys(GLOBAL_USER_ID, content_type)
 
     try:
         kind = random.choice(_PHRASE_KINDS[language])
@@ -142,8 +117,8 @@ async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
         if recent_phrases:
             joined = "\n".join(f"- {p}" for p in recent_phrases)
             avoid_block = (
-                "\n\nНЕ используй эти выражения (они уже были недавно) и ничего синонимичного им:\n"
-                + joined
+                "\n\nНЕ используй эти выражения (они уже были за последние 90 дней) "
+                "и ничего синонимичного им:\n" + joined
             )
 
         prompt = f"""Подбери ОДНУ интересную {meta['name']} идиому или эвфемизм на сегодня ({today}).
@@ -198,9 +173,16 @@ async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
             "example_ru": (data.get("example_ru") or "").strip(),
         }
 
-        # Record in history (keyed by date) so it is not repeated for ~28 days.
-        history.append({"date": today, **result})
-        _save_history(language, history)
+        # Record in history so it is not repeated for 90 days (and so every
+        # recipient of today's digest gets this same phrase).
+        await record_shown_item(
+            GLOBAL_USER_ID,
+            content_type,
+            phrase,
+            title=phrase,
+            payload=result,
+            shown_date=today,
+        )
 
         logger.info(f"✓ Idiom of day [{language}]: {phrase} — {meaning[:40]}")
         return result

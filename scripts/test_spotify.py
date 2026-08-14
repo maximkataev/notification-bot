@@ -59,10 +59,10 @@ async def test_spotify_search():
 
     logger.info(f"Searching for: '{test_album}' by {test_artist}")
 
-    url = await _spotify_search_album(test_album, test_artist, token)
+    found = await _spotify_search_album(test_album, test_artist, token)
 
-    if url:
-        logger.info(f"✓ Found on Spotify: {url}")
+    if found:
+        logger.info(f"✓ Found on Spotify: {found['album']} by {found['artist']} — {found['url']}")
         return True
     else:
         logger.error(f"✗ Album not found on Spotify")

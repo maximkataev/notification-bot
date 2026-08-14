@@ -1146,7 +1146,8 @@ async def _morning_digest_impl(
             f'<a href="{url}"><b>{title}</b></a>' if url else f"<b>{title}</b>"
         )
         message_lines.append(f"<i>{creator}</i>")
-        message_lines.append(review)
+        if review:
+            message_lines.append(review)
         message_lines.append("")
 
     # Add Album of the day (Spotify with AI recommendations)
@@ -1155,13 +1156,14 @@ async def _morning_digest_impl(
     if content_type != "music":
         logger.info("Fetching album of the day")
         try:
+            # Up to ALBUM_MAX_ATTEMPTS GPT+Spotify round trips, ~3s each.
             if hasattr(asyncio, "timeout"):  # Python 3.11+
-                async with asyncio.timeout(15):
+                async with asyncio.timeout(30):
                     album = await get_album_of_day(user_id=user_id)
             else:  # Python 3.10 and earlier
-                album = await asyncio.wait_for(get_album_of_day(user_id=user_id), timeout=15.0)
+                album = await asyncio.wait_for(get_album_of_day(user_id=user_id), timeout=30.0)
         except asyncio.TimeoutError:
-            logger.warning("Album of the day timed out (15s), skipping")
+            logger.warning("Album of the day timed out (30s), skipping")
         except Exception as e:
             logger.warning(f"Failed to get album of the day: {type(e).__name__}")
     else:
@@ -1183,7 +1185,7 @@ async def _morning_digest_impl(
 
     # Add fresh memes (1 per day, no AI summaries)
     logger.info("Fetching fresh memes")
-    memes = await get_fresh_memes_for_digest(max_results=1)
+    memes = await get_fresh_memes_for_digest(max_results=1, user_id=user_id)
 
     if memes:
         message_lines.append("<b>🎭 Мемы дня:</b>")

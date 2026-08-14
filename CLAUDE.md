@@ -745,6 +745,37 @@ async def delete_task(task_id: int) → None
 
 **Auto-Migration**: Database schema created on first run
 
+**Content History (anti-repeat, 90 days)** — table `shown_content`:
+
+Every content unit sent to a recipient is recorded and excluded from new
+recommendations for `CONTENT_HISTORY_DAYS = 90` days. Rows are NEVER deleted — the
+window is applied when reading, so already-sent history is never lost.
+
+```python
+async def record_shown_item(user_id, content_type, key, *, creator, title, url, payload, shown_date)
+async def get_shown_keys(user_id, content_type, days=90) → List[str]
+async def get_shown_items(user_id, content_type, days=90) → List[Dict]
+async def get_item_shown_on(user_id, content_type, date) → Optional[Dict]  # same-day cache
+async def get_shown_creators(user_id, content_type, days=90) → List[str]
+```
+
+| `content_type` | Key | Scope | Written by |
+|----------------|-----|-------|-----------|
+| `video_item` | video URL | per user | `content_parser.py` |
+| `podcast_item` | episode URL | per user | `content_parser.py` |
+| `podcast` | creator | per user | `content_parser.py` |
+| `album` | `artist — album` | per user | `content_parser.py` |
+| `meme_item` | meme URL (+ normalized title) | per user | `meme_fetcher.py` |
+| `place_tbilisi` / `place_vienna` | place name | global (`user_id=0`) | `place_recommender.py` |
+| `idiom_en` / `idiom_es` | phrase | global (`user_id=0`) | `idiom_of_day.py` |
+
+Global (`GLOBAL_USER_ID = 0`) content is shared: the payload is stored so every
+recipient gets the identical idiom/place on a given date.
+
+The old `data/idiom_history*.json` and `data/place_history*.json` files are imported
+into this table on startup (`import_legacy_json_histories()`, idempotent) so nothing
+sent before the migration is repeated. The files stay on disk untouched.
+
 ---
 
 ### 16. **Telegram Handlers** (`src/bot/handlers/`)
@@ -1118,7 +1149,16 @@ When working on this project:
 
 11. **Model Choice**: Use `gpt-5.4-mini` for all AI tasks (not gpt-5.4-mini)
 
-12. **Disable Link Previews**: All message sending methods must include `disable_web_page_preview=True`
+12. **No Repeats (90 days)**: Every content unit sent (video, podcast, album, meme,
+    place, idiom) must be recorded in `shown_content` and excluded for 90 days.
+    Never delete history rows — apply the window when reading.
+
+13. **No Dismissive Reviews**: AI descriptions accompany content that is ALREADY being
+    sent. Never let the model write "это тебе не подойдёт" / "не по теме" and similar.
+    `content_parser._sanitize_review()` drops such text and falls back to the item's
+    own description (empty section line if there is none).
+
+14. **Disable Link Previews**: All message sending methods must include `disable_web_page_preview=True`
     - Applies to: `send_message()`, `reply()`, `answer()`, `edit_text()`
     - Prevents Telegram from generating link previews in chat
     - Cleaner, faster message display

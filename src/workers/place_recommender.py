@@ -6,11 +6,12 @@ there is no reliable free "places to visit" API, and this is a recommendation of
 real well-known places, not factual news, so model generation is appropriate here
 (same reasoning as idiom_of_day.py).
 
-History: shown places are persisted per city to data/place_history*.json for 28
-days and passed to the model as an exclusion list, so a place is never repeated
-within a 28-day window. Entries older than 28 days are dropped on each run. The
-chosen place is cached per day, so all recipients of a city get the same place
-on a given date.
+History: every sent place is stored per city in the shared content history (SQLite,
+see src/db/database.py) for CONTENT_HISTORY_DAYS (90) days and passed to the model as
+an exclusion list, so a place is never repeated within that window. Entries from the
+old data/place_history*.json files are imported into the same store on startup. The
+chosen place is cached per day, so all recipients of a city get the same place on a
+given date.
 
 Per project rules: NO HARDCODED FALLBACKS — if generation fails, return None and
 the scheduler simply omits the section.
@@ -18,26 +19,24 @@ the scheduler simply omits the section.
 
 import json
 import logging
-import os
 import random
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, Dict, Any
 
+from src.db.database import (
+    GLOBAL_USER_ID,
+    get_item_shown_on,
+    get_shown_keys,
+    record_shown_item,
+)
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
 
-# Places shown within this window are excluded and never repeated.
-_HISTORY_DAYS = 28
-_DATA_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
-)
 
-def _history_path(city: str) -> str:
-    """History file per city (Tbilisi keeps the original filename)."""
-    fname = "place_history.json" if city == "tbilisi" else f"place_history_{city}.json"
-    return os.path.join(_DATA_DIR, fname)
+def _content_type(city: str) -> str:
+    """History key per city ("place_tbilisi" / "place_vienna")."""
+    return f"place_{city}"
 
 
 # Rotate the kind of place day to day so the section stays varied.
@@ -79,38 +78,8 @@ _CITY_META = {
 }
 
 
-def _load_history(city: str) -> List[Dict[str, Any]]:
-    """Load the place history list (oldest → newest). Returns [] on any error."""
-    try:
-        with open(_history_path(city), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        logger.warning(f"Could not read place history: {type(e).__name__}: {e}")
-    return []
-
-
-def _trim_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Keep only entries from the last _HISTORY_DAYS days."""
-    cutoff = (datetime.now() - timedelta(days=_HISTORY_DAYS)).strftime("%Y-%m-%d")
-    return [h for h in history if h.get("date", "") >= cutoff]
-
-
-def _save_history(city: str, history: List[Dict[str, Any]]) -> None:
-    """Persist the place history (trimmed to the last _HISTORY_DAYS days)."""
-    try:
-        os.makedirs(_DATA_DIR, exist_ok=True)
-        with open(_history_path(city), "w", encoding="utf-8") as f:
-            json.dump(_trim_history(history), f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.warning(f"Could not write place history: {type(e).__name__}: {e}")
-
-
 async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
-    """Recommend one place in the city to visit, avoiding repeats within 28 days.
+    """Recommend one place in the city to visit, avoiding repeats within 90 days.
 
     Args:
         city: "tbilisi" or "vienna".
@@ -129,15 +98,16 @@ async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
     meta = _CITY_META[city]
 
     today = datetime.now().strftime("%Y-%m-%d")
-    history = _trim_history(_load_history(city))
+    content_type = _content_type(city)
 
     # Same day → return the already-chosen place so every recipient sees the same one.
-    if history and history[-1].get("date") == today:
-        cached = {k: v for k, v in history[-1].items() if k != "date"}
+    cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
+    if cached:
         logger.info(f"Place of day [{city}] (cached for {today}): {cached.get('name')}")
         return cached
 
-    recent_places = [h.get("name", "") for h in history if h.get("name")]
+    # Everything sent in the last 90 days is off limits.
+    recent_places = await get_shown_keys(GLOBAL_USER_ID, content_type)
 
     try:
         kind = random.choice(_PLACE_KINDS[city])
@@ -146,7 +116,7 @@ async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
         if recent_places:
             joined = "\n".join(f"- {p}" for p in recent_places)
             avoid_block = (
-                "\n\nНЕ предлагай эти места (они уже были за последние 28 дней):\n"
+                "\n\nНЕ предлагай эти места (они уже были за последние 90 дней):\n"
                 + joined
             )
 
@@ -200,9 +170,16 @@ async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
             "description": description,
         }
 
-        # Record in history (keyed by date) so it is not repeated for 28 days.
-        history.append({"date": today, **result})
-        _save_history(city, history)
+        # Record in history so it is not repeated for 90 days (and so every
+        # recipient of today's digest gets this same place).
+        await record_shown_item(
+            GLOBAL_USER_ID,
+            content_type,
+            name,
+            title=name,
+            payload=result,
+            shown_date=today,
+        )
 
         logger.info(f"✓ Place of day [{city}]: {name} ({result['area']})")
         return result

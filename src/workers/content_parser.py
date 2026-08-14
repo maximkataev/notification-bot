@@ -9,13 +9,19 @@ import logging
 import httpx
 import asyncio
 import json
+import re
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone
 import feedparser
 import base64
 from src.utils.openai_client import get_client
 from src.utils.doppler import get_secret
-from src.db.database import get_shown_creators, record_shown_content
+from src.db.database import (
+    get_shown_creators,
+    get_shown_keys,
+    record_shown_content,
+    record_shown_item,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +40,85 @@ CONTENT_PROFILES = {
 }
 DEFAULT_CONTENT_INTERESTS = "интересный и полезный для бизнес- и системного аналитика (AI, технологии, наука, бизнес)"
 
-# Anti-repeat memory for the themed podcast: every podcast creator ever shown per user.
-# GPT otherwise keeps picking the single best thematic match (e.g. Arzamas) every day;
-# we permanently exclude already-shown creators from the pool so nothing repeats.
-# Persisted in SQLite (data/tasks.db) so it survives restarts/redeploys.
+# Anti-repeat memory (SQLite, data/tasks.db — survives restarts/redeploys):
+#   - "video_item" / "podcast_item": exact video/episode URLs sent to a user. Nothing
+#     is ever sent twice within the 90-day history window.
+#   - "podcast": podcast creators sent to a user. GPT otherwise keeps picking the
+#     single best thematic match (e.g. Arzamas) every day, so already-shown creators
+#     are dropped from the pool as long as other options remain.
+#   - "album": albums recommended to a user.
+_ITEM_HISTORY_TYPES = {"video": "video_item", "podcast": "podcast_item"}
+
+
+async def _shown_item_urls(user_id: Optional[int]) -> set:
+    """URLs of videos/episodes already sent to this user in the history window."""
+    if not user_id:
+        return set()
+    try:
+        urls: set = set()
+        for content_type in _ITEM_HISTORY_TYPES.values():
+            urls.update(await get_shown_keys(user_id, content_type))
+        return urls
+    except Exception as e:
+        logger.warning(f"Could not load shown content history: {type(e).__name__}: {e}")
+        return set()
+
+
+async def _record_shown_recommendation(user_id: Optional[int], result: Dict[str, Any]) -> None:
+    """Remember a recommended video/episode so it never repeats within the window."""
+    content_type = _ITEM_HISTORY_TYPES.get(result.get("type", ""))
+    url = (result.get("url") or "").strip()
+    if not user_id or not content_type or not url:
+        return
+    try:
+        await record_shown_item(
+            user_id,
+            content_type,
+            url,
+            creator=result.get("creator") or url,
+            title=result.get("title"),
+            url=url,
+        )
+    except Exception as e:
+        logger.warning(f"Could not record shown content: {type(e).__name__}: {e}")
+
+
+# The review is written for content that is ALREADY being sent, so a hedging
+# "this probably isn't for you" line makes no sense in the digest. If the model
+# produces one anyway, drop it and fall back to the item's own description.
+_DISMISSIVE_MARKERS = (
+    "не подойд",
+    "не совсем подойд",
+    "вряд ли подойд",
+    "вряд ли заинтерес",
+    "не очень подходит",
+    "не совсем то",
+    "не соответствует интерес",
+    "не совпадает с интерес",
+    "не по теме",
+    "не релевант",
+    "мало связан",
+    "не самый подходящий",
+    "не идеально подходит",
+    "не лучший выбор",
+    "может не понравиться",
+    "не входит в интерес",
+    "к сожалению",
+    "ничего подходящего",
+)
+
+
+def _sanitize_review(review: str, item: Dict[str, Any]) -> str:
+    """Drop a dismissive review, falling back to the item's real description."""
+    text = (review or "").strip()
+    if text and not any(marker in text.lower() for marker in _DISMISSIVE_MARKERS):
+        return text
+
+    if text:
+        logger.warning(f"Dismissive review discarded: {text[:80]}")
+
+    fallback = (item.get("description") or "").strip()
+    return fallback[:150] if fallback else ""
 
 # Real content sources (channels, playlists, podcasts)
 # YouTube channels with both ID (for fetching) and channel URL (for display)
@@ -1040,6 +1121,11 @@ async def _select_and_describe(
 Контент:
 {json.dumps(content_list, ensure_ascii=False, indent=2)}
 
+Обзор пиши как рекомендацию к выбранному элементу: о чём он и чем интересен.
+ЗАПРЕЩЕНО писать, что контент не подходит, не по теме, не соответствует интересам,
+извиняться или оценивать степень соответствия — выбранное уже отправляется человеку.
+Если идеального совпадения нет, всё равно выбери лучший вариант и опиши его по сути.
+
 Ответь только JSON без markdown:
 {{
   "index": <номер выбранного элемента (1-{len(content_list)})>,
@@ -1064,7 +1150,7 @@ async def _select_and_describe(
                 "title": item.get("title", ""),
                 "creator": item.get("creator", ""),
                 "url": item.get("url", ""),
-                "review": review,
+                "review": _sanitize_review(review, item),
                 "language": item.get("language", "en"),
                 "platform": item.get("platform", ""),
             }
@@ -1120,47 +1206,81 @@ async def _spotify_get_access_token() -> Optional[str]:
         return None
 
 
-async def _spotify_search_album(album: str, artist: str, access_token: str) -> Optional[str]:
-    """Search Spotify for album URL. Returns spotify.com link or None."""
+# GPT sometimes attributes a real album to the wrong artist ("The Wake" is IQ's,
+# not Marillion's). The strict Spotify query then finds nothing, so we ask GPT for
+# a different album instead of dropping the whole section.
+ALBUM_MAX_ATTEMPTS = 3
+
+
+def _norm_music_name(value: str) -> str:
+    """Lowercase alphanumeric form for fuzzy album/artist comparison."""
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+async def _spotify_search(query: str, access_token: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Run one Spotify album search. Returns raw album items ([] on any failure)."""
     try:
-        if not access_token:
-            return None
-
-        search_query = f"album:{album} artist:{artist}"
-
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                search_response = await client.get(
-                    "https://api.spotify.com/v1/search",
-                    headers={"Authorization": f"Bearer {access_token}"},
-                    params={"q": search_query, "type": "album", "limit": 1},
-                )
-                search_response.raise_for_status()
-        except httpx.TimeoutException:
-            logger.warning(f"🎵 Spotify search: timeout for '{album}'")
-            return None
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"🎵 Spotify search: HTTP {e.response.status_code}")
-            return None
-
-        search_data = search_response.json()
-        albums = search_data.get("albums", {}).get("items", [])
-
-        if albums:
-            album_url = albums[0].get("external_urls", {}).get("spotify", "")
-            if album_url:
-                logger.info(f"✓ Found Spotify album: '{album}' by {artist}")
-                return album_url
-            else:
-                logger.debug(f"Album found but no Spotify URL: {album}")
-                return None
-        else:
-            logger.debug(f"⊘ Album not found on Spotify: '{album}' by {artist}")
-            return None
-
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                "https://api.spotify.com/v1/search",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"q": query, "type": "album", "limit": limit},
+            )
+            response.raise_for_status()
+    except httpx.TimeoutException:
+        logger.warning(f"🎵 Spotify search: timeout for {query!r}")
+        return []
+    except httpx.HTTPStatusError as e:
+        logger.warning(f"🎵 Spotify search: HTTP {e.response.status_code} for {query!r}")
+        return []
     except Exception as e:
         logger.error(f"💥 Spotify search error: {type(e).__name__}: {str(e)[:150]}")
+        return []
+
+    return response.json().get("albums", {}).get("items", []) or []
+
+
+async def _spotify_search_album(
+    album: str, artist: str, access_token: str
+) -> Optional[Dict[str, str]]:
+    """Find an album on Spotify. Returns {"url", "album", "artist"} or None.
+
+    Every query keeps the artist, so a hallucinated artist still fails here (the
+    caller then asks GPT for another album). What this does recover is GPT packing
+    "Artist — Album" into the album field, which the strict field query can't match.
+    """
+    if not access_token or not album:
         return None
+
+    bare_album = re.split(r"\s+[—–-]\s+", album)[-1].strip() or album
+
+    queries = [f"album:{album} artist:{artist}"]
+    if _norm_music_name(bare_album) != _norm_music_name(album):
+        queries.append(f"album:{bare_album} artist:{artist}")
+    queries.append(f"{bare_album} {artist}".strip())
+
+    wanted = _norm_music_name(bare_album)
+
+    for query in queries:
+        for item in await _spotify_search(query, access_token):
+            url = item.get("external_urls", {}).get("spotify", "")
+            found_album = item.get("name", "")
+            if not url or not found_album:
+                continue
+
+            # Free-text queries match loosely — keep only same-title albums.
+            found = _norm_music_name(found_album)
+            if wanted and found != wanted and wanted not in found and found not in wanted:
+                continue
+
+            found_artist = ", ".join(
+                a.get("name", "") for a in item.get("artists", []) if a.get("name")
+            ) or artist
+            logger.info(f"✓ Found Spotify album: '{found_album}' by {found_artist}")
+            return {"url": url, "album": found_album, "artist": found_artist}
+
+    logger.debug(f"⊘ Album not found on Spotify: '{album}' by {artist}")
+    return None
 
 
 async def _spotify_validate_credentials() -> bool:
@@ -1178,8 +1298,40 @@ async def _spotify_validate_credentials() -> bool:
         return False
 
 
-async def _recommend_music_album(user_id: int = 71488343, access_token: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Recommend a morning album via GPT with randomized genre + period."""
+async def _recommend_music_album(
+    user_id: int = 71488343, access_token: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """Recommend a morning album via GPT, retrying when Spotify has no match.
+
+    Each attempt rolls a fresh genre/period and tells GPT which picks already
+    failed, so a hallucinated album/artist pair costs one retry instead of the
+    whole section.
+    """
+    if not access_token:
+        access_token = await _spotify_get_access_token()
+    if not access_token:
+        return None
+
+    failed: List[str] = []
+
+    for attempt in range(1, ALBUM_MAX_ATTEMPTS + 1):
+        result = await _recommend_music_album_once(
+            user_id=user_id, access_token=access_token, failed=failed, attempt=attempt
+        )
+        if result:
+            return result
+
+    logger.warning(f"⊘ No album found on Spotify after {ALBUM_MAX_ATTEMPTS} attempts")
+    return None
+
+
+async def _recommend_music_album_once(
+    user_id: int,
+    access_token: str,
+    failed: List[str],
+    attempt: int,
+) -> Optional[Dict[str, Any]]:
+    """One GPT pick + Spotify lookup. Appends a rejected pick to `failed`."""
     import random
 
     try:
@@ -1199,20 +1351,35 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
         random_genre = random.choice(genres)
         random_period = random.choice(periods)
 
-        logger.debug(f"🎲 Random selection: {random_genre} из {random_period}")
+        logger.debug(f"🎲 Random selection (attempt {attempt}): {random_genre} из {random_period}")
 
-        # Exclude albums already shown to this user so nothing repeats.
-        shown_albums = await get_shown_creators(user_id, "album")
+        # Exclude albums sent to this user in the last 90 days so nothing repeats.
+        # A history read failure must not cost us the recommendation (and with
+        # retries it would otherwise burn every attempt on the same error).
+        try:
+            shown_albums = await get_shown_creators(user_id, "album")
+        except Exception as e:
+            logger.warning(f"Could not read album history: {type(e).__name__}: {e}")
+            shown_albums = []
         avoid_block = ""
         if shown_albums:
             joined = "\n".join(f"- {a}" for a in shown_albums)
             avoid_block = (
-                "\n\nНЕ рекомендуй эти альбомы (они уже были) и ничего из этого списка:\n"
-                + joined
+                "\n\nНЕ рекомендуй эти альбомы (они уже были за последние 90 дней) "
+                "и ничего из этого списка:\n" + joined
+            )
+        if failed:
+            joined = "\n".join(f"- {a}" for a in failed)
+            avoid_block += (
+                "\n\nЭтих альбомов нет на Spotify под указанным исполнителем — "
+                "не предлагай их снова и внимательно проверь авторство:\n" + joined
             )
 
         prompt = f"""Посоветуй один реальный и известный музыкальный альбом жанра {random_genre} из {random_period} для утренней концентрации.
-Не генерируй новые альбомы, рекомендуй только существующие произведения.{avoid_block}
+Не генерируй новые альбомы, рекомендуй только существующие произведения.
+Убедись, что альбом действительно выпущен указанным исполнителем и есть на Spotify.{avoid_block}
+
+Описание пиши как рекомендацию: чем альбом хорош. Не пиши, что он не подходит, и не извиняйся.
 
 Ответь только JSON без markdown:
 {{
@@ -1247,27 +1414,27 @@ async def _recommend_music_album(user_id: int = 71488343, access_token: Optional
             logger.warning(f"⚠️  Incomplete album recommendation: album='{album}', artist='{artist}'")
             return None
 
-        logger.info(f"🎶 GPT recommended: '{album}' by {artist}")
+        logger.info(f"🎶 GPT recommended (attempt {attempt}): '{album}' by {artist}")
 
-        # Get Spotify token if not provided
-        if not access_token:
-            access_token = await _spotify_get_access_token()
+        found = await _spotify_search_album(album, artist, access_token)
 
-        # Search on Spotify
-        spotify_url = None
-        if access_token:
-            spotify_url = await _spotify_search_album(album, artist, access_token)
-
-        if not spotify_url:
-            logger.warning(f"⊘ Album not found on Spotify: '{album}' by {artist}")
+        if not found:
+            logger.warning(
+                f"⊘ Album not found on Spotify (attempt {attempt}/{ALBUM_MAX_ATTEMPTS}): "
+                f"'{album}' by {artist}"
+            )
+            failed.append(f"{artist} — {album}")
             return None
+
+        # Prefer Spotify's own spelling — that's what the link actually opens.
+        album, artist = found["album"], found["artist"]
 
         result = {
             "type": "music",
             "title": album,
             "creator": artist,
-            "url": spotify_url,
-            "review": description,
+            "url": found["url"],
+            "review": _sanitize_review(description, {}),
             "language": "ru",
             "platform": "spotify",
         }
@@ -1315,18 +1482,31 @@ async def get_themed_podcast(
             logger.info("No fresh podcasts available for themed selection")
             return None
 
-        # Drop every already-shown podcast so nothing repeats.
-        # Fall back to the full pool if exclusion would leave nothing.
+        # Hard rule: an episode already sent to this user is never sent again
+        # within the history window (90 days).
+        shown_urls = await _shown_item_urls(user_id)
+        if shown_urls:
+            fresh = [it for it in items if (it.get("url") or "") not in shown_urls]
+            if len(fresh) < len(items):
+                logger.info(f"Themed podcast: dropped {len(items) - len(fresh)} already-sent episodes")
+            items = fresh
+        if not items:
+            logger.info("All podcast episodes already sent to this user, skipping")
+            return None
+
+        # Prefer creators the user hasn't heard yet; fall back to the full pool
+        # if that would leave nothing (a new episode of a known podcast is fine).
         shown = await get_shown_creators(user_id, "podcast") if user_id else []
         pool = [it for it in items if it.get("creator") not in shown] or items
         if shown and len(pool) < len(items):
-            logger.info(f"Themed podcast: excluded {len(items) - len(pool)} already-shown ({shown})")
+            logger.info(f"Themed podcast: excluded {len(items) - len(pool)} already-shown creators")
 
         logger.info(f"Themed podcast pool: {len(pool)} episodes; selecting for interests")
         result = await _select_and_describe(pool, interests=interests)
 
-        # Remember what we showed so it's permanently skipped next time.
+        # Remember the episode (90 days) and its creator so nothing repeats.
         if result and user_id:
+            await _record_shown_recommendation(user_id, result)
             creator = result.get("creator", "")
             if creator:
                 await record_shown_content(user_id, creator, "podcast")
@@ -1369,13 +1549,23 @@ async def get_content_recommendation_with_review(user_id: int = 71488343) -> Opt
             logger.info("No themed podcast found, falling back to music album")
             return await _recommend_music_album(user_id=user_id)
 
+        # Everything already sent to this user in the last 90 days is excluded.
+        shown_urls = await _shown_item_urls(user_id)
+
+        def _unseen(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            fresh = [it for it in items if (it.get("url") or "") not in shown_urls]
+            if len(fresh) < len(items):
+                logger.info(f"Dropped {len(items) - len(fresh)} already-sent items")
+            return fresh
+
         # Default: fetch fresh content (last 24 hours)
-        fresh_items = await fetch_fresh_content(hours=24)
+        fresh_items = _unseen(await fetch_fresh_content(hours=24))
 
         if fresh_items:
             logger.info(f"✓ Found {len(fresh_items)} fresh items, selecting best...")
             result = await _select_and_describe(fresh_items)
             if result:
+                await _record_shown_recommendation(user_id, result)
                 return result
             else:
                 logger.debug("No item selected by GPT")
@@ -1384,11 +1574,12 @@ async def get_content_recommendation_with_review(user_id: int = 71488343) -> Opt
         # window to a week and prefer a real podcast/video before dropping to a music
         # album (the themed-podcast path already uses 168h for the same reason).
         logger.info("No content in 24h window, widening to last 7 days for podcasts/videos...")
-        weekly_items = await fetch_fresh_content(hours=168)
+        weekly_items = _unseen(await fetch_fresh_content(hours=168))
         if weekly_items:
             logger.info(f"✓ Found {len(weekly_items)} items in 7-day window, selecting best...")
             result = await _select_and_describe(weekly_items)
             if result:
+                await _record_shown_recommendation(user_id, result)
                 return result
 
         # Fallback: recommend music album

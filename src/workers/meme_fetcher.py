@@ -10,12 +10,23 @@ Fetches content from last 24 hours. Fallback sources used if primary yields insu
 import logging
 import httpx
 import asyncio
+import re
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 import feedparser
+from src.db.database import get_shown_items, record_shown_item
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
+
+# Memes already sent to a recipient are recorded in the shared content history
+# (SQLite) and never sent to that recipient again within the 90-day window.
+_MEME_CONTENT_TYPE = "meme_item"
+
+
+def _meme_fingerprint(title: str) -> str:
+    """Normalized title used to catch the same meme reposted under another URL."""
+    return re.sub(r"[^a-zа-я0-9]+", " ", (title or "").lower()).strip()
 
 # Reddit blocks the default httpx User-Agent with HTTP 429. A browser-like UA fixes
 # it (same trick as src/workers/tbilisi_reddit.py, which fetches Reddit reliably).
@@ -311,23 +322,42 @@ async def get_fresh_memes(max_results: int = 10) -> List[Dict[str, Any]]:
 
 async def get_fresh_memes_for_digest(
     max_results: int = 3,
+    user_id: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
     """
     Fetch fresh memes for digest (no AI, just title + url + source).
+
+    Memes already sent to `user_id` within the history window (90 days) are skipped,
+    and the ones returned here are recorded so they never repeat for that recipient.
 
     Returns:
         [{"title": str, "url": str, "source": str, "language": "ru"|"en"}, ...]
         or None if no memes found
     """
     try:
-        memes = await get_fresh_memes(max_results=max_results * 2)  # Fetch extra, in case of filtering
+        # Fetch extra: filtering drops invalid, spam-like and already-sent memes.
+        memes = await get_fresh_memes(max_results=max(max_results * 5, 10))
 
         if not memes:
             logger.warning("⊘ No fresh memes found after trying all sources")
             return None
 
+        # Load what this recipient has already seen.
+        shown_urls: set = set()
+        shown_titles: set = set()
+        if user_id:
+            try:
+                for entry in await get_shown_items(user_id, _MEME_CONTENT_TYPE):
+                    if entry.get("key"):
+                        shown_urls.add(entry["key"])
+                    if entry.get("title"):
+                        shown_titles.add(_meme_fingerprint(entry["title"]))
+            except Exception as e:
+                logger.warning(f"Could not load meme history: {type(e).__name__}: {e}")
+
         # Validate and format
         result = []
+        skipped_seen = 0
         for meme in memes:
             title = meme.get("title", "").strip()
             url = meme.get("url", "").strip()
@@ -342,6 +372,15 @@ async def get_fresh_memes_for_digest(
                 logger.debug(f"Skipping spam-like meme: {title[:50]}")
                 continue
 
+            # Never repeat a meme already sent to this recipient.
+            fingerprint = _meme_fingerprint(title)
+            if url in shown_urls or (fingerprint and fingerprint in shown_titles):
+                skipped_seen += 1
+                continue
+            shown_urls.add(url)
+            if fingerprint:
+                shown_titles.add(fingerprint)
+
             result.append({
                 "title": title,
                 "url": url,
@@ -351,6 +390,24 @@ async def get_fresh_memes_for_digest(
 
             if len(result) >= max_results:
                 break
+
+        if skipped_seen:
+            logger.info(f"Skipped {skipped_seen} memes already sent to user {user_id}")
+
+        # Remember what we are about to send so it never repeats.
+        if user_id:
+            for meme in result:
+                try:
+                    await record_shown_item(
+                        user_id,
+                        _MEME_CONTENT_TYPE,
+                        meme["url"],
+                        title=meme["title"],
+                        url=meme["url"],
+                        creator=meme.get("source"),
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not record shown meme: {type(e).__name__}: {e}")
 
         if result:
             logger.info(f"✓ Digest memes: {len(result)} items")
