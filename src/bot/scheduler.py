@@ -25,12 +25,17 @@ from src.workers.news_fetcher import (
     get_business_news,
     get_art_news,
     get_fashion_news,
+    get_georgia_news,
+    get_vienna_news,
 )
 from src.ai.news_processor import (
     select_and_summarize_news_with_gpt,
     select_good_news_with_summaries,
     select_themed_news_with_summaries,
     select_crypto_news_with_summaries,
+    select_georgia_news_with_summaries,
+    select_georgia_good_news_with_summaries,
+    select_vienna_good_news_with_summaries,
 )
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
 from src.workers.subscriptions_checker import check_expiring_subscriptions
@@ -74,6 +79,13 @@ SERVER_SUBSCRIPTIONS_USERS = {71488343}
 TBILISI_REDDIT_USERS = {71488343, 184010236}
 # Users who get an extra crypto news item (main user only)
 CRYPTO_NEWS_USERS = {71488343}
+# Users who get extra GENERAL Georgia/Tbilisi news items (Максим)
+GEORGIA_NEWS_USERS = {71488343}
+GEORGIA_NEWS_COUNT = 2
+# Users who get one extra GOOD Georgia/Tbilisi news item (Маша)
+GEORGIA_GOOD_NEWS_USERS = {184010236}
+# Users who get one extra GOOD Vienna news item (Юля)
+VIENNA_GOOD_NEWS_USERS = {498233237}
 # Users who get the English idiom/euphemism of the day (Маша и Максим)
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
 # Users who get the joke of the day (только Юля)
@@ -524,6 +536,26 @@ async def _morning_digest_impl(
             logger.warning(f"Failed to fetch crypto news: {type(e).__name__}: {str(e)[:100]}")
             crypto_news = []
 
+    # Extra local news pools: Georgia (Максим — general, Маша — good news only)
+    # and Vienna (Юля — good news only). One shared Georgia pool for both users.
+    georgia_news = []
+    if user_id in GEORGIA_NEWS_USERS or user_id in GEORGIA_GOOD_NEWS_USERS:
+        try:
+            georgia_news = await get_georgia_news(hours=24)
+            logger.info(f"✓ Georgia news fetched: {len(georgia_news)} items")
+        except Exception as e:
+            logger.warning(f"Failed to fetch Georgia news: {type(e).__name__}: {str(e)[:100]}")
+            georgia_news = []
+
+    vienna_news = []
+    if user_id in VIENNA_GOOD_NEWS_USERS:
+        try:
+            vienna_news = await get_vienna_news(hours=24)
+            logger.info(f"✓ Vienna news fetched: {len(vienna_news)} items")
+        except Exception as e:
+            logger.warning(f"Failed to fetch Vienna news: {type(e).__name__}: {str(e)[:100]}")
+            vienna_news = []
+
     # Users who get ONLY good news (5-6 items), no politics/economics/sports/tech
     use_good_news_only = user_id in GOOD_NEWS_ONLY_USERS
     # User who gets THEMED news only: business / art / fashion / good news (Юля)
@@ -537,6 +569,12 @@ async def _morning_digest_impl(
     # Summaries of the news that made it into the digest — fed to the greeting
     # generator so the intro can riff on today's headlines.
     selected_news_for_intro = []
+
+    # Rendered news lines are collected here first and flushed into the digest
+    # further down, so the extra regional/crypto items still make it in even when
+    # the main ChatGPT selection fails. news_num keeps the numbering continuous.
+    news_lines = []
+    news_num = 0
 
     if total_news > 0 or use_themed_news:
         if use_themed_news:
@@ -608,13 +646,9 @@ async def _morning_digest_impl(
             # Calculate offset for good news indices (only used in good news selection)
             goodness_offset = len(politics_news) + len(sports_news) + len(technology_news) + len(culture_news)
 
-            # Match indices back to original news items and format with URLs
-            message_lines.append("Новости:")
-            message_lines.append("")
-
-            # Running counter so skipped items don't leave gaps, and so the extra
-            # crypto item (if any) continues the same numbering.
-            news_num = 0
+            # Match indices back to original news items and format with URLs.
+            # The running counter means skipped items leave no gaps and the extra
+            # crypto / regional items continue the same numbering.
             for item in selected_with_indices:
                 idx = item["index"]
                 category = item.get("category", "unknown")
@@ -641,8 +675,8 @@ async def _morning_digest_impl(
                         else f"{news_num}. {_esc(source)}: {_esc(description_ru)}"
                     )
 
-                    message_lines.append(news_text)
-                    message_lines.append("")
+                    news_lines.append(news_text)
+                    news_lines.append("")
                     selected_news_for_intro.append(description_ru)
 
                     logger.info(
@@ -650,41 +684,103 @@ async def _morning_digest_impl(
                     )
                 else:
                     logger.warning(f"Invalid index {combined_idx} for news selection, skipping")
-
-            # Extra crypto news item (main user only). Skipped if nothing suitable
-            # or ChatGPT returns ❌.
-            if user_id in CRYPTO_NEWS_USERS and crypto_news:
-                logger.info("Selecting crypto news item via ChatGPT")
-                crypto_selected = await select_crypto_news_with_summaries(crypto_news)
-                if crypto_selected:
-                    citem = crypto_selected[0]
-                    cidx = citem.get("index", -1)
-                    cdesc = citem.get("description_ru", "")
-                    if 0 <= cidx < len(crypto_news):
-                        c_news = crypto_news[cidx]
-                        c_source = c_news.get("source", "Crypto")
-                        c_url = c_news.get("url", "")
-                        news_num += 1
-                        crypto_text = (
-                            f'{news_num}. 🪙 <a href="{_esc_attr(c_url)}">{_esc(c_source)}</a>: {_esc(cdesc)}'
-                            if c_url
-                            else f"{news_num}. 🪙 {_esc(c_source)}: {_esc(cdesc)}"
-                        )
-                        message_lines.append(crypto_text)
-                        message_lines.append("")
-                        selected_news_for_intro.append(cdesc)
-                        logger.info(f"  [{news_num}] crypto: {cdesc[:60]}... | {c_source}")
-                else:
-                    logger.info("No crypto news item to show (skipped)")
-
         else:
-            logger.warning("⚠️  ChatGPT news selection failed, showing placeholder")
-            message_lines.append("Новости:")
-            message_lines.append("(новости недоступны)")
-            message_lines.append("")
+            logger.warning("⚠️  ChatGPT news selection failed")
     else:
         logger.warning("No news items fetched from any pool")
-        message_lines.append("Новости:")
+
+    # Extra crypto news item (main user only). Skipped if nothing suitable
+    # or ChatGPT returns ❌.
+    if user_id in CRYPTO_NEWS_USERS and crypto_news:
+        logger.info("Selecting crypto news item via ChatGPT")
+        crypto_selected = await select_crypto_news_with_summaries(crypto_news)
+        if crypto_selected:
+            citem = crypto_selected[0]
+            cidx = citem.get("index", -1)
+            cdesc = citem.get("description_ru", "")
+            if 0 <= cidx < len(crypto_news):
+                c_news = crypto_news[cidx]
+                c_source = c_news.get("source", "Crypto")
+                c_url = c_news.get("url", "")
+                news_num += 1
+                crypto_text = (
+                    f'{news_num}. 🪙 <a href="{_esc_attr(c_url)}">{_esc(c_source)}</a>: {_esc(cdesc)}'
+                    if c_url
+                    else f"{news_num}. 🪙 {_esc(c_source)}: {_esc(cdesc)}"
+                )
+                news_lines.append(crypto_text)
+                news_lines.append("")
+                selected_news_for_intro.append(cdesc)
+                logger.info(f"  [{news_num}] crypto: {cdesc[:60]}... | {c_source}")
+        else:
+            logger.info("No crypto news item to show (skipped)")
+
+    # Extra LOCAL news items appended to the same numbered list:
+    #   Максим — 2 general Georgia/Tbilisi stories
+    #   Маша   — 1 GOOD Georgia story (Tbilisi preferred), only if one exists
+    #   Юля    — 1 GOOD Vienna story, only if one exists
+    async def _append_local_news(selector, pool, emoji, label):
+        """Run a regional selector over `pool` and append its picks to news_lines."""
+        nonlocal news_num
+
+        if not pool:
+            logger.info(f"Empty {label} pool (section skipped)")
+            return
+
+        logger.info(f"Selecting {label} news via ChatGPT")
+        try:
+            selected = await selector(pool)
+        except Exception as e:
+            logger.warning(f"{label} news selection failed: {type(e).__name__}: {str(e)[:100]}")
+            return
+
+        if not selected:
+            logger.info(f"No {label} news item to show (skipped)")
+            return
+
+        for item in selected:
+            idx = item.get("index", -1)
+            desc = item.get("description_ru", "")
+            if not (0 <= idx < len(pool)):
+                logger.warning(f"Invalid {label} index {idx}, skipping")
+                continue
+
+            src_item = pool[idx]
+            source = src_item.get("source", label)
+            url = src_item.get("url", "")
+            news_num += 1
+            line = (
+                f'{news_num}. {emoji} <a href="{_esc_attr(url)}">{_esc(source)}</a>: {_esc(desc)}'
+                if url
+                else f"{news_num}. {emoji} {_esc(source)}: {_esc(desc)}"
+            )
+            news_lines.append(line)
+            news_lines.append("")
+            selected_news_for_intro.append(desc)
+            logger.info(f"  [{news_num}] {label}: {desc[:60]}... | {source}")
+
+    if user_id in GEORGIA_NEWS_USERS:
+        await _append_local_news(
+            lambda pool: select_georgia_news_with_summaries(pool, count=GEORGIA_NEWS_COUNT),
+            georgia_news,
+            "🇬🇪",
+            "georgia",
+        )
+    if user_id in GEORGIA_GOOD_NEWS_USERS:
+        await _append_local_news(
+            select_georgia_good_news_with_summaries, georgia_news, "🇬🇪", "georgia-good"
+        )
+    if user_id in VIENNA_GOOD_NEWS_USERS:
+        await _append_local_news(
+            select_vienna_good_news_with_summaries, vienna_news, "🇦🇹", "vienna-good"
+        )
+
+    message_lines.append("Новости:")
+    if news_lines:
+        message_lines.append("")
+        message_lines.extend(news_lines)
+    else:
+        logger.warning("⚠️  No news lines rendered, showing placeholder")
         message_lines.append("(новости недоступны)")
         message_lines.append("")
 

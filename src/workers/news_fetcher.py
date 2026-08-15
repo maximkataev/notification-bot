@@ -87,6 +87,37 @@ FASHION_FEEDS = [
     "https://www.businessoffashion.com/arc/outboundfeeds/rss/",  # Business of Fashion
 ]
 
+# POOL 10: Georgia / Tbilisi (local news — general for Максим, good-news filtered
+# for Маша). Civil.ge, OC Media and JAMnews are English; Publika and Netgazeti are
+# Georgian-language and much more Tbilisi-focused (city life, culture, everyday
+# stories), which is what the good-news slot needs. OC Media / JAMnews also cover
+# Armenia, Azerbaijan and the North Caucasus — the selector must keep only
+# Georgia/Tbilisi items.
+# Only real news outlets — no community/lifestyle portals, no classifieds, and no
+# Sputnik-affiliated sites (sputnik-georgia.ru, newsgeorgia.ge): state propaganda
+# has no place in the digest.
+GEORGIA_FEEDS = [
+    "https://civil.ge/feed",  # Civil Georgia (English, independent)
+    "https://oc-media.org/feed/",  # OC Media (English, Caucasus-wide)
+    "https://jam-news.net/feed/",  # JAMnews (English, Caucasus-wide)
+    "https://publika.ge/feed/",  # Publika (Georgian, Tbilisi)
+    "https://netgazeti.ge/feed/",  # Netgazeti (Georgian, Tbilisi)
+    "https://on.ge/rss",  # On.ge (Georgian news portal)
+    "https://batumelebi.netgazeti.ge/feed/",  # Batumelebi (Georgian, Adjara/Batumi)
+]
+
+# POOL 11: Vienna (local news for Юля — good-news slot only).
+# Established news outlets only: the city public broadcaster, the national quality
+# daily (plus its culture desk, which supplies most of the positive Vienna stories)
+# and two general news portals. Community/district portals are excluded.
+VIENNA_FEEDS = [
+    "https://rss.orf.at/wien.xml",  # ORF Wien (German, city public broadcaster)
+    "https://www.derstandard.at/rss",  # Der Standard (German, quality daily)
+    "https://www.derstandard.at/rss/kultur",  # Der Standard Kultur (German)
+    "https://feeds.thelocal.com/rss/at",  # The Local Austria (English)
+    "https://www.vienna.at/rss",  # VIENNA.AT (German, news portal)
+]
+
 # POOL 6: Crypto (BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies)
 CRYPTO_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk
@@ -244,6 +275,16 @@ async def get_good_news(hours: int = 24) -> List[Dict[str, Any]]:
 async def get_crypto_news(hours: int = 24) -> List[Dict[str, Any]]:
     """Fetch cryptocurrency news (BTC, ETH, SOL, SUI, UNI and other major coins)."""
     return await _fetch_from_feeds(CRYPTO_FEEDS, hours, "crypto")
+
+
+async def get_georgia_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch Georgia / Tbilisi local news (Максим: general, Маша: good-news slot)."""
+    return await _fetch_from_feeds(GEORGIA_FEEDS, hours, "georgia", limit_per_feed=20)
+
+
+async def get_vienna_news(hours: int = 24) -> List[Dict[str, Any]]:
+    """Fetch Vienna local news (Юля: good-news slot)."""
+    return await _fetch_from_feeds(VIENNA_FEEDS, hours, "vienna", limit_per_feed=20)
 
 
 async def get_business_news(hours: int = 24) -> List[Dict[str, Any]]:

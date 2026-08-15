@@ -601,6 +601,268 @@ Return ONLY a valid JSON array with a single item."""
         return None
 
 
+async def _select_local_news(
+    news: List[Dict[str, Any]],
+    *,
+    region: str,
+    region_rule: str,
+    count: int,
+    good_only: bool,
+    category: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Select up to `count` local (city/country) news items and summarize in Russian.
+
+    Shared implementation behind the Georgia / Tbilisi / Vienna sections. The pools
+    are regional feeds that also carry neighbouring-country and hard-news items, so
+    ChatGPT does the geographic filtering (`region_rule`) and, when `good_only`,
+    the "is this actually uplifting" filtering too.
+
+    Feeds may be in Georgian or German — summaries are always Russian.
+
+    Returns:
+        [{"index": <position in `news`>, "category": category, "description_ru": "..."}]
+        or None when the call fails or nothing suitable was found (section is then
+        skipped entirely — never padded).
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    if not news:
+        logger.warning(f"No {category} news items to process")
+        return None
+
+    try:
+        # Keep original positions so the scheduler can resolve source/url back.
+        indexed_news = []
+        seen_urls = set()
+
+        for orig_pos, item in enumerate(news):
+            url = item.get("url", "")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+
+            indexed_news.append({
+                "index": orig_pos,
+                "title": item.get("title", ""),
+                "description": _clean_html(item.get("description", ""))[:500],
+                "source": item.get("source", ""),
+            })
+
+            if len(indexed_news) >= 30:
+                break
+
+        if not indexed_news:
+            logger.warning(f"No unique {category} news items after deduplication")
+            return None
+
+        logger.info(f"Processing {len(indexed_news)} unique {category} news items (deduplicated)")
+
+        if good_only:
+            # The bar is "pleasant to read over breakfast", NOT "extraordinary".
+            # An earlier, harsher wording made the model reject entire pools that
+            # clearly held festivals, openings and community stories, so the rule
+            # is now: reject by TOPIC (the ban list), not by how remarkable the
+            # story is. Everyday warm city life is exactly what this slot wants.
+            system_prompt = f"""You are an editor picking pleasant, positive local news about {region}
+for a reader who enjoys warm everyday city stories over morning coffee.
+GOOD (all of this counts, it does NOT have to be extraordinary): culture, exhibitions, festivals,
+concerts, city life, new places and openings, restorations, parks and nature, animals, people helping
+people, volunteering, education and science achievements, touching human-interest stories, traditions,
+anniversaries, urban improvements.
+REJECT ONLY by topic: politics, government, elections, protests, courts, war, crime, police, accidents,
+disasters, economy/markets, scandals, deaths, illness, and sports results.
+If several stories qualify, pick the warmest and most interesting one.
+Return an empty array ONLY if literally every item in the list is on the reject list.
+Write summaries in Russian (40-60 words). Sources may be in Georgian or German — always answer in Russian.
+Return ONLY a valid JSON array."""
+            task_line = (
+                f"ВЫБЕРИ {count} ПРИЯТНУЮ, ДОБРУЮ НОВОСТЬ про {region}.\n\n"
+                "ПОДХОДИТ (не обязана быть выдающейся — обычная тёплая городская новость это ровно то, "
+                "что нужно): культура, выставки, фестивали, концерты, городская жизнь, новые места и "
+                "открытия, реставрации, парки и природа, животные, люди помогают людям, волонтёрство, "
+                "образование и наука, трогательные человеческие истории, традиции, юбилеи, "
+                "благоустройство города.\n"
+                "ОТКЛОНЯЙ ТОЛЬКО ПО ТЕМЕ: политика, власть, выборы, протесты, суды, война, преступления, "
+                "полиция, аварии, катастрофы, экономика/рынки, скандалы, смерти, болезни, спорт.\n"
+                "Если подходящих несколько — выбери самую тёплую и интересную.\n"
+                "⚠️ Пустой массив [] возвращай ТОЛЬКО если ВСЕ новости из списка попадают в запрещённые темы."
+            )
+        else:
+            system_prompt = f"""You are an editor picking the most important and interesting local news about {region}
+for a reader who lives there: politics, economy, city life, infrastructure, society, culture, notable events.
+Skip trivia, gossip, celebrity and pure sports results.
+Write summaries in Russian (40-60 words). Sources may be in Georgian or German — always answer in Russian.
+Return ONLY a valid JSON array."""
+            task_line = (
+                f"ВЫБЕРИ {count} САМЫЕ ВАЖНЫЕ И ИНТЕРЕСНЫЕ НОВОСТИ про {region} "
+                "(политика, экономика, город, инфраструктура, общество, культура, заметные события).\n"
+                "Новости должны быть РАЗНЫЕ по теме — не две про одно и то же событие.\n"
+                "Пропускай сплетни, знаменитостей и чистые спортивные результаты."
+            )
+
+        user_prompt = f"""{task_line}
+
+ГЕОГРАФИЯ — ОБЯЗАТЕЛЬНО: {region_rule}
+
+НОВОСТИ:
+{json.dumps(indexed_news, ensure_ascii=False, indent=2)}
+
+ТРЕБОВАНИЯ:
+- description_ru: ОДНО ПОЛНОЕ описание (40-70 слов НА РУССКОМ, даже если источник на грузинском или немецком)
+  * передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что произошло, почему, что за этим стоит) —
+    текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
+  * включает детали, цифры, факты, причину/фон
+  * заканчивается точкой, грамотный русский
+- ⚠️ Если новость не подходит по географии/теме или ты не можешь составить описание —
+  верни в "description_ru" РОВНО символ ❌ (скрипт уберёт её из дайджеста).
+  НИКОГДА не пиши «я не могу оценить эту новость».
+- Только JSON-массив, без другого текста
+
+ПРИМЕР ВЫВОДА:
+[
+  {{"index": 3, "category": "{category}", "description_ru": "Мэрия начала реставрацию исторических балконов в районе Сололаки: за год приведут в порядок 40 фасадов. Работы финансирует город вместе с частным фондом, жильцам помогают восстановить резные детали по старым чертежам."}}
+]
+"""
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.5,
+                    "max_completion_tokens": 300 + 250 * count,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        try:
+            if "```json" in gpt_response:
+                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in gpt_response:
+                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
+            selected_news = json.loads(gpt_response)
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
+            if not match:
+                logger.error(f"No JSON array in {category} response: {gpt_response[:100]}")
+                return None
+            try:
+                selected_news = json.loads(match.group())
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse {category} JSON: {gpt_response[:100]}")
+                return None
+
+        if not isinstance(selected_news, list):
+            logger.error(f"{category} response is not a list: {gpt_response[:100]}")
+            return None
+
+        # Only indices actually shown to the model are acceptable: the pool is
+        # capped at 30 items, so a larger in-range index would silently resolve to
+        # a story ChatGPT never saw and pair it with the wrong source/url.
+        offered_indices = {entry["index"] for entry in indexed_news}
+
+        valid_news = []
+        seen_indices = set()
+
+        for item in selected_news:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index", -1)
+            if idx not in offered_indices or idx in seen_indices:
+                logger.warning(f"Invalid/duplicate {category} index {idx}, skipping")
+                continue
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped {category} news (reject marker ❌ / refusal): index {idx}")
+                continue
+            seen_indices.add(idx)
+            item["category"] = category
+            valid_news.append(item)
+            if len(valid_news) >= count:
+                break
+
+        if not valid_news:
+            logger.info(f"No suitable {category} news selected (section skipped)")
+            return None
+
+        logger.info(f"✓ ChatGPT selected {len(valid_news)} {category} news items")
+        return valid_news
+
+    except Exception as e:
+        logger.error(f"Failed to process {category} news with ChatGPT: {type(e).__name__}: {e}")
+        return None
+
+
+# Geography rules reused by the regional selectors. The Caucasus feeds (OC Media,
+# JAMnews) mix in Armenia/Azerbaijan/North Caucasus, so this filter carries weight.
+_GEORGIA_RULE = (
+    "новость должна быть ПРО ГРУЗИЮ (Тбилиси, Батуми, грузинская политика, экономика, "
+    "общество, культура). Новости про Армению, Азербайджан, Чечню, Дагестан, Россию и "
+    "другие страны — ОТКЛОНЯЙ, даже если они из того же источника."
+)
+_VIENNA_RULE = (
+    "новость должна быть ПРО ВЕНУ или её районы (можно про Австрию, если событие "
+    "напрямую касается Вены). Международные и общемировые новости — ОТКЛОНЯЙ."
+)
+
+
+async def select_georgia_news_with_summaries(
+    georgia_news: List[Dict[str, Any]],
+    count: int = 2,
+) -> Optional[List[Dict[str, Any]]]:
+    """Select `count` general Georgia/Tbilisi news items (Максим)."""
+    return await _select_local_news(
+        georgia_news,
+        region="Грузию и Тбилиси",
+        region_rule=_GEORGIA_RULE,
+        count=count,
+        good_only=False,
+        category="georgia",
+    )
+
+
+async def select_georgia_good_news_with_summaries(
+    georgia_news: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Select ONE good Georgia news item, Tbilisi preferred (Маша). None if there is none."""
+    return await _select_local_news(
+        georgia_news,
+        region="Грузию, и особенно Тбилиси (новости про Тбилиси имеют приоритет)",
+        region_rule=_GEORGIA_RULE,
+        count=1,
+        good_only=True,
+        category="georgia_good",
+    )
+
+
+async def select_vienna_good_news_with_summaries(
+    vienna_news: List[Dict[str, Any]],
+) -> Optional[List[Dict[str, Any]]]:
+    """Select ONE good Vienna news item (Юля). None if there is none."""
+    return await _select_local_news(
+        vienna_news,
+        region="Вену",
+        region_rule=_VIENNA_RULE,
+        count=1,
+        good_only=True,
+        category="vienna_good",
+    )
+
+
 async def select_and_summarize_news_with_gpt(
     politics_news: List[Dict[str, Any]],
     sports_news: List[Dict[str, Any]],
