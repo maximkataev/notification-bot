@@ -252,6 +252,102 @@ async def _get_rates_from_ecb() -> Optional[Dict[str, float]]:
         return None
 
 
+# S&P 500 quote. TradingView's scanner is primary — it returns level, session change
+# and 1-month performance in one call. Yahoo is the fallback and rate-limits hard
+# (429) when called often, so it is only touched when TradingView fails. Stooq sits
+# behind a JS challenge and cannot be used server-side at all.
+_SP500_TRADINGVIEW_URL = (
+    "https://scanner.tradingview.com/symbol"
+    "?symbol=SP%3ASPX&fields=close,change,Perf.1M"
+)
+_SP500_YAHOO_URL = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?range=2mo&interval=1d"
+)
+_SP500_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    )
+}
+
+
+async def _get_sp500_from_tradingview(
+    client: httpx.AsyncClient,
+) -> Optional[Dict[str, Optional[float]]]:
+    """S&P 500 level + changes from the TradingView scanner. None on failure."""
+    try:
+        response = await client.get(_SP500_TRADINGVIEW_URL, headers=_SP500_HEADERS)
+        response.raise_for_status()
+        data = response.json()
+
+        level = data.get("close")
+        if not level:
+            return None
+        return {
+            "sp500": level,
+            "sp500_change_24h": data.get("change"),
+            "sp500_change_30d": data.get("Perf.1M"),
+        }
+    except Exception as e:
+        logger.debug(f"TradingView S&P 500 failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def _get_sp500_from_yahoo(
+    client: httpx.AsyncClient,
+) -> Optional[Dict[str, Optional[float]]]:
+    """S&P 500 level + changes computed from Yahoo daily closes. None on failure."""
+    try:
+        response = await client.get(_SP500_YAHOO_URL, headers=_SP500_HEADERS)
+        response.raise_for_status()
+        result = response.json()["chart"]["result"][0]
+
+        meta = result.get("meta", {})
+        closes = [c for c in result["indicators"]["quote"][0].get("close") or [] if c]
+
+        level = meta.get("regularMarketPrice") or (closes[-1] if closes else None)
+        if not level:
+            return None
+
+        quote = {"sp500": level, "sp500_change_24h": None, "sp500_change_30d": None}
+
+        # Previous close: the session before the latest one.
+        prev_close = closes[-2] if len(closes) >= 2 else meta.get("chartPreviousClose")
+        if prev_close:
+            quote["sp500_change_24h"] = (level - prev_close) / prev_close * 100
+
+        # ~30 calendar days back = ~21 trading sessions.
+        if len(closes) >= 22:
+            month_ago = closes[-22]
+            quote["sp500_change_30d"] = (level - month_ago) / month_ago * 100
+
+        return quote
+    except Exception as e:
+        logger.debug(f"Yahoo S&P 500 failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def get_sp500_quote(client: httpx.AsyncClient) -> Dict[str, Optional[float]]:
+    """Fetch the S&P 500 level with its last-session and 30-day changes.
+
+    Returns {"sp500": level, "sp500_change_24h": %, "sp500_change_30d": %} — all None
+    if every source failed, in which case the digest simply omits the line. The "24h"
+    change is the move versus the previous close; over a weekend that is Friday's
+    session, which is what an index quote means anyway.
+    """
+    quote = await _get_sp500_from_tradingview(client)
+    if not quote:
+        logger.info("TradingView S&P 500 unavailable, trying Yahoo")
+        quote = await _get_sp500_from_yahoo(client)
+
+    if not quote:
+        logger.warning("⚠️  S&P 500 quote unavailable from all sources")
+        return {"sp500": None, "sp500_change_24h": None, "sp500_change_30d": None}
+
+    logger.info(f"✓ S&P 500: {quote['sp500']:,.2f}")
+    return quote
+
+
 async def get_crypto_and_forex_rates() -> Optional[Dict]:
     """Fetch BTC, ETH, USD/EUR, USD/RUB rates with 24h and 30d changes.
 
@@ -265,6 +361,7 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
         "usd_eur": None, "usd_rub": None,
         "eur_change_24h": None, "eur_change_30d": None,
         "rub_change_24h": None, "rub_change_30d": None,
+        "sp500": None, "sp500_change_24h": None, "sp500_change_30d": None,
     }
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -330,6 +427,9 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
             except Exception as e2:
                 logger.warning(f"⚠️  Forex rates unavailable: {type(e2).__name__}: {e2}")
 
+        # ---- S&P 500 (Yahoo) — isolated, never fatal ----
+        rates.update(await get_sp500_quote(client))
+
         # ---- Historical forex changes (cached, never fatal) ----
         try:
             historical_forex = await get_historical_forex_rates()
@@ -346,7 +446,7 @@ async def get_crypto_and_forex_rates() -> Optional[Dict]:
     logger.info(f"✓ Forex: 1 USD = {eur_log} EUR, {rub_log} RUB")
 
     # Return partial data if anything succeeded; None only if everything failed
-    if any(rates.get(k) for k in ("btc_usd", "eth_usd", "usd_eur", "usd_rub")):
+    if any(rates.get(k) for k in ("btc_usd", "eth_usd", "usd_eur", "usd_rub", "sp500")):
         return rates
 
     logger.warning("⚠️  All rate sources failed (crypto + forex)")

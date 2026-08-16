@@ -1,5 +1,6 @@
 """Process news through ChatGPT: select and summarize WITHOUT hallucination."""
 
+import asyncio
 import logging
 import json
 import re
@@ -101,6 +102,166 @@ def _is_rejected_description(desc: str) -> bool:
     return any(marker in d for marker in _REFUSAL_MARKERS)
 
 
+# Shared retelling rules for every summarizer below.
+# The summary must be a SEMANTIC SQUEEZE of the story itself — what happened, how it
+# works, which numbers were named. When the source text is thin the model drifts into
+# "why this matters for you" commentary ("для разработчиков важно, как именно…"), which
+# reads like filler and carries no information, so it is banned outright. Facts may come
+# ONLY from the supplied title/description: a shorter summary beats an invented one.
+_SUMMARY_RULES = """- description_ru: ОДНО ПОЛНОЕ описание (40-70 слов на русском)
+  * ЭТО СМЫСЛОВАЯ ВЫЖИМКА САМОЙ НОВОСТИ: что произошло, как это устроено и работает,
+    какие названы цифры, имена, детали, причина и последствия — по сути события
+  * ЗАПРЕЩЕНЫ рассуждения о значимости и любая вода: «для разработчиков важно…»,
+    «это влияет на…», «вопрос в том, как…», «предстоит выяснить», «важно понимать»,
+    оценки, прогнозы, риторические вопросы. Вместо такой фразы дай ЕЩЁ ОДИН ФАКТ из новости
+  * Факты бери ТОЛЬКО из title/description. Ничего не додумывай: если деталей мало —
+    напиши короче (25-30 слов), но не добирай объём домыслами и общими словами
+  * Текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
+  * Заканчивается точкой, грамотный русский"""
+
+# Style demo shown alongside _SUMMARY_RULES: the same story told wrong (second sentence
+# is commentary) and right (second sentence is the mechanism).
+_SUMMARY_EXAMPLES = """ЭТАЛОН ПЕРЕСКАЗА:
+- ❌ «Anthropic раскрыла детали новой системы водяных знаков для Claude. Для разработчиков важно, как именно метки будут работать с кодом и можно ли будет их скрыть.» — вторая фраза это рассуждение о важности, а не факт из новости
+- ✅ «Anthropic раскрыла детали системы водяных знаков для Claude: при генерации модель по секретному ключу слегка смещает выбор слов, и детектор компании находит этот статистический след в тексте. По словам Anthropic, метка переживает мелкую правку и пропадает только после глубокого переписывания.» — та же новость, но вместо рассуждений дана суть механизма
+- ✅ «Starbucks Korea закрывает более 2 000 кофеен на один день, чтобы провести для сотрудников обязательный урок по современной истории страны. Решение обойдётся компании примерно в 2,1 млрд вон выручки. Причина — сотрудник сеульской кофейни оскорбил посетителя, сравнив его с северокорейцем.»
+- ❌ «Импорт сои сокращается. Спрос падает из-за свиней. Конкуренция растёт.» — разрывы, набор обрывков"""
+
+
+async def _rewrite_from_article(
+    client: httpx.AsyncClient,
+    api_key: str,
+    *,
+    title: str,
+    source: str,
+    article_text: str,
+) -> Optional[str]:
+    """Re-summarize one story from its full article text. None keeps the old text."""
+    system_prompt = (
+        "Ты редактор новостного дайджеста. По полному тексту статьи пишешь ОДНО описание "
+        "новости на русском — смысловую выжимку сути. Возвращаешь ТОЛЬКО текст описания: "
+        "без JSON, без кавычек, без заголовков и пояснений."
+    )
+    user_prompt = f"""ЗАГОЛОВОК: {title}
+ИСТОЧНИК: {source}
+
+ТЕКСТ СТАТЬИ:
+{article_text}
+
+ЗАДАЧА: напиши описание этой новости для утреннего дайджеста.
+{_SUMMARY_RULES}
+  * ОБЯЗАТЕЛЬНО раскрой СУТЬ: как именно это работает или устроено, что конкретно
+    сделано, ключевые цифры и детали — то, чего НЕТ в заголовке. Читатель не пойдёт
+    по ссылке, описание должно объяснить механизм само по себе
+  * Используй ТОЛЬКО факты из текста статьи выше
+
+{_SUMMARY_EXAMPLES}
+
+Верни только текст описания."""
+
+    try:
+        response = await client.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "gpt-5.4-mini",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.4,
+                "max_completion_tokens": 400,
+            },
+        )
+        if response.status_code != 200:
+            logger.warning(f"Article rewrite API error: {response.status_code}")
+            return None
+
+        text = response.json()["choices"][0]["message"]["content"].strip()
+        text = text.strip('"“”«» \n')
+        # A model that ignored "plain text" may answer with JSON — do not show that.
+        if text.startswith(("{", "[")):
+            return None
+        if _is_rejected_description(text) or len(text) < 80:
+            return None
+        return text
+
+    except Exception as e:
+        logger.warning(f"Article rewrite failed: {type(e).__name__}: {e}")
+        return None
+
+
+async def _enrich_with_article_facts(
+    valid_news: List[Dict[str, Any]],
+    item_by_index: Dict[int, Dict[str, Any]],
+) -> None:
+    """Second pass: rewrite each summary from the FULL article text, in place.
+
+    The first pass only ever sees the RSS lede, so summaries restate the headline and
+    pad with "why this matters" filler. Here the article body is fetched and the story
+    is re-told from it, which is where the actual mechanism and numbers live.
+
+    Best-effort: any story whose page cannot be read (paywall, 403, JS shell) or whose
+    rewrite fails keeps its original description. Never raises.
+    """
+    import os
+    from src.utils.doppler import get_secret
+    from src.workers.article_fetcher import fetch_article_texts
+
+    try:
+        urls = [
+            item_by_index[item["index"]].get("url", "")
+            for item in valid_news
+            if item.get("index") in item_by_index
+        ]
+        texts = await fetch_article_texts(urls)
+        if not texts:
+            return
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            targets = []
+            for item in valid_news:
+                original = item_by_index.get(item.get("index"))
+                if not original:
+                    continue
+                article_text = texts.get(original.get("url", ""))
+                if not article_text:
+                    continue
+                targets.append((item, original, article_text))
+
+            if not targets:
+                return
+
+            rewrites = await asyncio.gather(
+                *(
+                    _rewrite_from_article(
+                        client,
+                        api_key,
+                        title=original.get("title", ""),
+                        source=original.get("source", ""),
+                        article_text=article_text,
+                    )
+                    for _, original, article_text in targets
+                ),
+                return_exceptions=True,
+            )
+
+        deepened = 0
+        for (item, _, _), rewritten in zip(targets, rewrites):
+            if isinstance(rewritten, str) and rewritten:
+                item["description_ru"] = rewritten
+                deepened += 1
+
+        logger.info(
+            f"✓ Deepened {deepened}/{len(valid_news)} summaries from article text"
+        )
+
+    except Exception as e:
+        logger.warning(f"Article enrichment skipped: {type(e).__name__}: {e}")
+
+
 async def select_themed_news_with_summaries(
     business_news: List[Dict[str, Any]],
     art_news: List[Dict[str, Any]],
@@ -134,10 +295,11 @@ async def select_themed_news_with_summaries(
     try:
         # Build a single indexed list with global indices + a category tag.
         indexed_news = []
+        item_by_index = {}  # global index -> original item (for the article pass)
         idx = 0
         for category_name, news_list in pools:
             for item in news_list:
-                description = _clean_html(item.get("description", ""))[:500]
+                description = _clean_html(item.get("description", ""))[:800]
                 indexed_news.append({
                     "index": idx,
                     "title": item.get("title", ""),
@@ -145,6 +307,7 @@ async def select_themed_news_with_summaries(
                     "source": item.get("source", ""),
                     "available_in": category_name,
                 })
+                item_by_index[idx] = item
                 idx += 1
 
         logger.info(f"Themed news pool: {len(indexed_news)} items "
@@ -155,7 +318,7 @@ async def select_themed_news_with_summaries(
 business & economy, art & culture, fashion, and genuinely good/uplifting news.
 You STRICTLY REJECT politics, war, conflict, crime, sports, and technology/gadgets.
 Pick ONLY from the pool indicated by each item's "available_in" tag.
-For each chosen item write a summary in Russian (40-60 words). Return ONLY a valid JSON array."""
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Return ONLY a valid JSON array."""
 
         user_prompt = f"""ВЫБЕРИ ДО 6 НОВОСТЕЙ по темам пользователя: бизнес, искусство, мода, добрые новости.
 
@@ -172,14 +335,12 @@ NEWS:
 
 ТРЕБОВАНИЯ:
 - Выбирай ТОЛЬКО из пула, указанного в "available_in" для нужной темы
-- description_ru: ОДНО ПОЛНОЕ описание (40-70 слов на русском)
-  * передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что, почему, что за этим стоит) —
-    текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
-  * включает детали, факты, причину/фон
-  * заканчивается точкой, грамотный русский
+{_SUMMARY_RULES}
 - ⚠️ Если новость не подходит по теме или ты не можешь составить описание —
   верни в "description_ru" РОВНО символ ❌ (скрипт уберёт её из дайджеста)
 - Только JSON-массив, без другого текста
+
+{_SUMMARY_EXAMPLES}
 
 ПРИМЕР ВЫВОДА:
 [
@@ -250,6 +411,7 @@ NEWS:
             return None
 
         logger.info(f"✓ ChatGPT selected {len(valid_news)} themed news items")
+        await _enrich_with_article_facts(valid_news, item_by_index)
         return valid_news
 
     except Exception as e:
@@ -293,7 +455,7 @@ async def select_good_news_with_summaries(
                 seen_urls.add(url)
 
             description = item.get("description", "")
-            description = _clean_html(description)[:500]
+            description = _clean_html(description)[:800]
 
             indexed_news.append({
                 "index": orig_pos,  # Keep original position in goodness_news
@@ -327,7 +489,7 @@ You STRICTLY REJECT anything about politics, government, elections, economics, f
 markets, oil/energy, business, war, conflict, crime, disasters, diseases, deaths, and ALL
 sports. When in doubt, reject.
 Quality over quantity: pick FEWER items rather than including anything that is not clearly uplifting.
-For each chosen item write a summary in Russian (50-70 words). Return ONLY a valid JSON array."""
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Return ONLY a valid JSON array."""
 
         user_prompt = f"""ВЫБЕРИ ДО 6 ПО-НАСТОЯЩЕМУ ДОБРЫХ, ТЁПЛЫХ И ВДОХНОВЛЯЮЩИХ НОВОСТЕЙ из списка (можно МЕНЬШЕ — лучше 2-3 отличных, чем 6 с натяжкой).
 
@@ -345,15 +507,13 @@ NEWS:
 
 ТРЕБОВАНИЯ:
 - Выбери ДО 6 новостей (можно меньше, если по-настоящему добрых мало)
-- description_ru: ОДНО ПОЛНОЕ описание (50-70 слов на русском)
-  * Передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что произошло, почему, что за этим стоит) —
-    текст должен читаться как ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок или пересказ title
-  * Включает детали, факты, причину/фон
-  * Заканчивается точкой, грамотный русский
+{_SUMMARY_RULES}
 - ⚠️ Если новость НЕ подходит (политика/экономика/спорт/негатив) или ты не можешь составить
   описание — верни в "description_ru" РОВНО символ ❌ (не пиши «я не могу оценить эту новость»).
   Скрипт сам уберёт такие новости из дайджеста.
 - Только JSON-массив, без другого текста
+
+{_SUMMARY_EXAMPLES}
 
 ПРИМЕР ВЫВОДА:
 [
@@ -446,6 +606,8 @@ NEWS:
             desc = item.get("description_ru", "")[:50]
             logger.info(f"  [{item['index']}] {desc}...")
 
+        # Indices are original positions in goodness_news (kept through dedup).
+        await _enrich_with_article_facts(valid_news, dict(enumerate(goodness_news)))
         return valid_news
 
     except Exception as e:
@@ -455,14 +617,17 @@ NEWS:
 
 async def select_crypto_news_with_summaries(
     crypto_news: List[Dict[str, Any]],
+    count: int = 2,
 ) -> Optional[List[Dict[str, Any]]]:
-    """
-    Select ONE most relevant cryptocurrency news item and summarize it in Russian.
+    """Select crypto news for an ACTIVE TRADER of BTC, ETH and SOL.
 
-    Focus: BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies / DeFi / market moves.
+    The bar is tradability, not general interest: price moves with a stated cause,
+    ETF/institutional flows, derivatives positioning, regulation and network events
+    that touch those three coins. Explainers, altcoin hype and anonymous price
+    predictions are rejected outright.
 
     Returns:
-        [{"index": 0, "category": "crypto", "description_ru": "..."}]
+        [{"index": <pos in crypto_news>, "category": "crypto", "description_ru": "..."}]
         or None if ChatGPT call fails, finds nothing suitable, or returns ❌.
     """
     import os
@@ -485,16 +650,21 @@ async def select_crypto_news_with_summaries(
             if url:
                 seen_urls.add(url)
 
-            description = _clean_html(item.get("description", ""))[:500]
-            indexed_news.append({
+            description = _clean_html(item.get("description", ""))[:800]
+            entry = {
                 "index": orig_pos,  # Keep original position in crypto_news
                 "title": item.get("title", ""),
                 "description": description,
                 "source": item.get("source", ""),
                 "url": item.get("url", ""),
-            })
+            }
+            # Coin tags come from TradingView's symbol feeds — a hard signal that the
+            # story is about a position the trader actually holds.
+            if item.get("coins"):
+                entry["coins"] = item["coins"]
+            indexed_news.append(entry)
 
-            if len(indexed_news) >= 15:
+            if len(indexed_news) >= 30:
                 break
 
         if not indexed_news:
@@ -503,31 +673,51 @@ async def select_crypto_news_with_summaries(
 
         logger.info(f"Processing {len(indexed_news)} unique crypto news items (deduplicated)")
 
-        system_prompt = """You are a crypto market editor who selects ONE most important and interesting cryptocurrency news story.
-Priority topics: Bitcoin (BTC), Ethereum (ETH), Solana (SOL), Sui (SUI), Uniswap (UNI) and other major cryptocurrencies, DeFi, ETFs, regulation, significant market moves.
-Write a summary in Russian (40-60 words) that captures the essence.
-Return ONLY a valid JSON array with a single item."""
+        system_prompt = """You are a crypto editor for an ACTIVE TRADER who trades Bitcoin (BTC), Ethereum (ETH) and Solana (SOL).
+You select stories that can move the price of those three coins or that the trader can act on.
+You REJECT explainers and educational columns ("how blockchain works"), altcoin/memecoin/NFT hype,
+airdrops, press releases, exchange promos and anonymous price predictions with no data behind them.
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description.
+Return ONLY a valid JSON array."""
 
-        user_prompt = f"""ВЫБЕРИ РОВНО 1 САМУЮ ВАЖНУЮ И ИНТЕРЕСНУЮ КРИПТО-НОВОСТЬ из списка.
-Приоритет: BTC, ETH, SOL, SUI, UNI и другие крупные криптовалюты, DeFi, ETF, регулирование, крупные движения рынка.
+        user_prompt = f"""ВЫБЕРИ {count} КРИПТО-НОВОСТИ, ПОЛЕЗНЫЕ ДЛЯ АКТИВНОГО ТРЕЙДЕРА BTC, ETH и SOL.
+
+ЧТО ЦЕННО (по убыванию):
+1. Движения цены BTC/ETH/SOL с названной причиной: пробои уровней, ликвидации, объёмы, волатильность
+2. Потоки денег: спотовые ETF (притоки/оттоки), покупки институционалов и компаний-казначейств,
+   активность китов и майнеров, переводы на биржи и с бирж, эмиссия стейблкоинов
+3. Деривативы и позиционирование: фандинг, открытый интерес, экспирации опционов, шорт/лонг-сквизы
+4. Макро с прямым эффектом на риск-активы: ФРС и ставки, инфляция, доллар (DXY), ликвидность
+5. Регулирование и инфраструктура: решения SEC/регуляторов по ETF, листинги, взломы и сбои бирж,
+   апгрейды и сбои сетей Ethereum и Solana, доходность стейкинга
+
+ЧТО ОТКЛОНЯТЬ ВСЕГДА:
+- Обучалки и объяснялки («как работает блокчейн», «почему у блокчейна нет времени», гайды, ликбез)
+- Хайп мелких альткоинов, мемкоины, NFT, GameFi, аирдропы, реклама и пресс-релизы бирж
+- Прогнозы без данных («биткоин до $250 000 к декабрю»), гадания по графикам от анонимов
+- Новости про монеты, которые никак не влияют на BTC, ETH и SOL
+
+ПРИОРИТЕТ: у новостей с полем "coins" (BTC/ETH/SOL) приоритет — они про активы трейдера.
+Новости должны быть РАЗНЫЕ: не две про одно и то же событие.
 
 НОВОСТИ:
 {json.dumps(indexed_news, ensure_ascii=False, indent=2)}
 
 ТРЕБОВАНИЯ:
-- Выбери ТОЛЬКО 1 новость (самую значимую для крипто-рынка)
-- description_ru: ОДНО ПОЛНОЕ описание (40-70 слов на русском)
-  * Передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что произошло, почему, что за этим стоит) —
-    текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
-  * Включает детали, цифры, факты, причину/фон
-  * Заканчивается точкой, грамотный русский
-- ⚠️ Если НИ ОДНА новость не подходит (нет реальной крипто-темы, мусор, не можешь оценить) —
+- Выбери до {count} новостей (лучше 1 отличная, чем 2 с натяжкой)
+{_SUMMARY_RULES}
+  * Обязательно сохрани ТОРГОВУЮ КОНКРЕТИКУ из статьи: уровни цен, объёмы, суммы потоков,
+    проценты, даты и сроки — трейдеру нужны цифры, а не общие слова
+- ⚠️ Если новость не подходит (ликбез, хайп, нет реальной торговой сути, не можешь оценить) —
   верни в "description_ru" РОВНО символ ❌. Скрипт сам уберёт новость из дайджеста.
 - Только JSON-массив, без другого текста
 
+{_SUMMARY_EXAMPLES}
+
 ПРИМЕР ВЫВОДА:
 [
-  {{"index": 0, "category": "crypto", "description_ru": "Bitcoin превысил 100 тысяч долларов на фоне притока институциональных инвестиций в спотовые ETF. Аналитики связывают рост с ожиданием смягчения политики ФРС и снижением предложения после халвинга."}}
+  {{"index": 0, "category": "crypto", "description_ru": "Спотовые биткоин-ETF за неделю потеряли $1,2 млрд — крупнейший отток с марта, основная часть пришлась на FBTC и GBTC. BTC на этом фоне терял 6% и тестировал $92 000, объём ликвидаций длинных позиций за сутки составил $480 млн."}},
+  {{"index": 4, "category": "crypto", "description_ru": "Разработчики Ethereum назначили апгрейд Hegotá на март и включили в него FOCIL. Изменение затрагивает порядок включения транзакций в блок; в тестовой сети запуск запланирован на январь."}}
 ]
 """
 
@@ -544,7 +734,7 @@ Return ONLY a valid JSON array with a single item."""
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.5,
-                    "max_completion_tokens": 400,
+                    "max_completion_tokens": 300 + 250 * count,
                 },
             )
 
@@ -575,29 +765,208 @@ Return ONLY a valid JSON array with a single item."""
                 logger.error(f"No JSON array in crypto response: {gpt_response[:100]}")
                 return None
 
-        # Validate and pick the first valid, non-rejected item
+        # Only indices actually shown to the model are acceptable: the pool is capped,
+        # so a larger in-range index would resolve to a story ChatGPT never saw.
+        offered_indices = {entry["index"] for entry in indexed_news}
+
+        selected = []
+        seen_indices = set()
         for item in selected_news:
             if not isinstance(item, dict):
                 continue
-            # idx is the ORIGINAL position in crypto_news (kept through dedup), so
-            # validate against crypto_news length, not the deduplicated list length.
             idx = item.get("index", -1)
-            if not (0 <= idx < len(crypto_news)):
-                logger.warning(f"Invalid crypto index {idx} (max {len(crypto_news)-1}), skipping")
+            if idx not in offered_indices or idx in seen_indices:
+                logger.warning(f"Invalid/duplicate crypto index {idx}, skipping")
                 continue
             if _is_rejected_description(item.get("description_ru", "")):
                 logger.info(f"  ⛔ Dropped crypto news (GPT reject marker ❌ / refusal): index {idx}")
                 continue
 
+            seen_indices.add(idx)
             item["category"] = "crypto"
-            logger.info(f"✓ ChatGPT selected crypto news: index {idx}")
-            return [item]
+            selected.append(item)
+            if len(selected) >= count:
+                break
+
+        if selected:
+            logger.info(f"✓ ChatGPT selected {len(selected)} crypto news item(s)")
+            await _enrich_with_article_facts(selected, dict(enumerate(crypto_news)))
+            return selected
 
         logger.info("No suitable crypto news selected (skipping section)")
         return None
 
     except Exception as e:
         logger.error(f"Failed to process crypto news with ChatGPT: {type(e).__name__}: {e}")
+        return None
+
+
+async def select_stocks_news_with_summaries(
+    stocks_news: List[Dict[str, Any]],
+    count: int = 1,
+) -> Optional[List[Dict[str, Any]]]:
+    """Select US stock market news for someone who holds S&P 500 / Nasdaq funds.
+
+    Returns:
+        [{"index": <pos in stocks_news>, "category": "stocks", "description_ru": "..."}]
+        or None when nothing suitable was found (the section is then skipped).
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    if not stocks_news:
+        logger.warning("No stocks news items to process")
+        return None
+
+    try:
+        indexed_news = []
+        seen_urls = set()
+
+        for orig_pos, item in enumerate(stocks_news):
+            url = item.get("url", "")
+            if url and url in seen_urls:
+                continue
+            if url:
+                seen_urls.add(url)
+
+            entry = {
+                "index": orig_pos,
+                "title": item.get("title", ""),
+                "description": _clean_html(item.get("description", ""))[:800],
+                "source": item.get("source", ""),
+                "published": item.get("published"),
+            }
+            if item.get("tickers"):
+                entry["tickers"] = item["tickers"]
+            indexed_news.append(entry)
+
+            if len(indexed_news) >= 30:
+                break
+
+        if not indexed_news:
+            logger.warning("No unique stocks news items after deduplication")
+            return None
+
+        logger.info(f"Processing {len(indexed_news)} unique stocks news items (deduplicated)")
+
+        system_prompt = """You are a US equities editor for an investor who follows the S&P 500 and Nasdaq
+and holds index funds (SPY/QQQ-style) alongside large-cap single names.
+You select what moved or will move the US market: index sessions with a stated driver, Fed and macro data,
+earnings from index heavyweights, fund flows, and notable single-stock moves inside the index.
+You REJECT explainers and personal-finance advice ("how to build a portfolio", "the best diet"),
+penny stocks, promotional analyst listicles with no data, crypto (covered elsewhere) and lifestyle stories.
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description.
+Return ONLY a valid JSON array."""
+
+        user_prompt = f"""ВЫБЕРИ {count} НОВОСТЬ ПРО РЫНОК АКЦИЙ США, полезную инвестору в S&P 500 и Nasdaq.
+
+ЧТО ЦЕННО (по убыванию):
+1. Итоги и движение индексов S&P 500, Nasdaq, Dow с названной ПРИЧИНОЙ (данные, ставки, отчёты)
+2. ФРС и макро: ставки, инфляция, безработица, розничные продажи, доходности трежерис, доллар
+3. Отчётности тяжеловесов индекса (Nvidia, Apple, Microsoft, Alphabet, Amazon и т.п.) и их эффект на индекс
+4. Потоки в фонды и ETF, позиционирование крупных игроков, крупные сделки и байбэки
+5. Резкие движения отдельных крупных бумаг из индекса с объяснением причины
+
+ЧТО ОТКЛОНЯТЬ ВСЕГДА:
+- Личные финансы и лайфстайл («как копить», «лучшая диета», ипотека, советы читателям)
+- Подборки «аналитики любят эти 3 дивидендные акции» без данных и без причины
+- Мелкие компании, пенни-стоки, промо и пресс-релизы
+- Крипто (для неё отдельная секция дайджеста)
+
+Свежесть важна: при прочих равных выбирай новость с самой поздней датой в поле "published".
+У новостей с полем "tickers" (SPX/SPY/QQQ) приоритет — они привязаны к индексу напрямую.
+
+НОВОСТИ:
+{json.dumps(indexed_news, ensure_ascii=False, indent=2)}
+
+ТРЕБОВАНИЯ:
+- Выбери до {count} новостей (лучше ни одной, чем неподходящую)
+{_SUMMARY_RULES}
+  * Обязательно сохрани КОНКРЕТИКУ: уровни индексов, проценты, суммы, даты, цифры отчётов
+- ⚠️ Если новость не подходит (лайфстайл, личные финансы, реклама, нет рыночной сути) —
+  верни в "description_ru" РОВНО символ ❌. Скрипт сам уберёт новость из дайджеста.
+- Только JSON-массив, без другого текста
+
+{_SUMMARY_EXAMPLES}
+
+ПРИМЕР ВЫВОДА:
+[
+  {{"index": 2, "category": "stocks", "description_ru": "S&P 500 закрылся на 0,4% выше и обновил максимум после данных по розничным продажам, которые выросли на 0,6% против ожидаемых 0,3%. Nasdaq прибавил 0,8% на фоне роста Nvidia на 3%; доходность десятилетних трежерис снизилась до 4,1%."}}
+]
+"""
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.5,
+                    "max_completion_tokens": 300 + 250 * count,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error: {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        try:
+            if "```json" in gpt_response:
+                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
+            elif "```" in gpt_response:
+                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
+            selected_news = json.loads(gpt_response)
+        except json.JSONDecodeError:
+            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
+            if not match:
+                logger.error(f"No JSON array in stocks response: {gpt_response[:100]}")
+                return None
+            try:
+                selected_news = json.loads(match.group())
+            except json.JSONDecodeError:
+                logger.error(f"Failed to parse stocks JSON: {gpt_response[:100]}")
+                return None
+
+        offered_indices = {entry["index"] for entry in indexed_news}
+
+        selected = []
+        seen_indices = set()
+        for item in selected_news:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index", -1)
+            if idx not in offered_indices or idx in seen_indices:
+                logger.warning(f"Invalid/duplicate stocks index {idx}, skipping")
+                continue
+            if _is_rejected_description(item.get("description_ru", "")):
+                logger.info(f"  ⛔ Dropped stocks news (reject marker ❌ / refusal): index {idx}")
+                continue
+
+            seen_indices.add(idx)
+            item["category"] = "stocks"
+            selected.append(item)
+            if len(selected) >= count:
+                break
+
+        if selected:
+            logger.info(f"✓ ChatGPT selected {len(selected)} stocks news item(s)")
+            await _enrich_with_article_facts(selected, dict(enumerate(stocks_news)))
+            return selected
+
+        logger.info("No suitable stocks news selected (skipping section)")
+        return None
+
+    except Exception as e:
+        logger.error(f"Failed to process stocks news with ChatGPT: {type(e).__name__}: {e}")
         return None
 
 
@@ -646,7 +1015,7 @@ async def _select_local_news(
             indexed_news.append({
                 "index": orig_pos,
                 "title": item.get("title", ""),
-                "description": _clean_html(item.get("description", ""))[:500],
+                "description": _clean_html(item.get("description", ""))[:800],
                 "source": item.get("source", ""),
             })
 
@@ -675,7 +1044,7 @@ REJECT ONLY by topic: politics, government, elections, protests, courts, war, cr
 disasters, economy/markets, scandals, deaths, illness, and sports results.
 If several stories qualify, pick the warmest and most interesting one.
 Return an empty array ONLY if literally every item in the list is on the reject list.
-Write summaries in Russian (40-60 words). Sources may be in Georgian or German — always answer in Russian.
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Sources may be in Georgian or German — always answer in Russian.
 Return ONLY a valid JSON array."""
             task_line = (
                 f"ВЫБЕРИ {count} ПРИЯТНУЮ, ДОБРУЮ НОВОСТЬ про {region}.\n\n"
@@ -693,7 +1062,7 @@ Return ONLY a valid JSON array."""
             system_prompt = f"""You are an editor picking the most important and interesting local news about {region}
 for a reader who lives there: politics, economy, city life, infrastructure, society, culture, notable events.
 Skip trivia, gossip, celebrity and pure sports results.
-Write summaries in Russian (40-60 words). Sources may be in Georgian or German — always answer in Russian.
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Sources may be in Georgian or German — always answer in Russian.
 Return ONLY a valid JSON array."""
             task_line = (
                 f"ВЫБЕРИ {count} САМЫЕ ВАЖНЫЕ И ИНТЕРЕСНЫЕ НОВОСТИ про {region} "
@@ -710,15 +1079,14 @@ Return ONLY a valid JSON array."""
 {json.dumps(indexed_news, ensure_ascii=False, indent=2)}
 
 ТРЕБОВАНИЯ:
-- description_ru: ОДНО ПОЛНОЕ описание (40-70 слов НА РУССКОМ, даже если источник на грузинском или немецком)
-  * передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что произошло, почему, что за этим стоит) —
-    текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
-  * включает детали, цифры, факты, причину/фон
-  * заканчивается точкой, грамотный русский
+{_SUMMARY_RULES}
+  * Пиши НА РУССКОМ, даже если источник на грузинском или немецком
 - ⚠️ Если новость не подходит по географии/теме или ты не можешь составить описание —
   верни в "description_ru" РОВНО символ ❌ (скрипт уберёт её из дайджеста).
   НИКОГДА не пиши «я не могу оценить эту новость».
 - Только JSON-массив, без другого текста
+
+{_SUMMARY_EXAMPLES}
 
 ПРИМЕР ВЫВОДА:
 [
@@ -800,6 +1168,7 @@ Return ONLY a valid JSON array."""
             return None
 
         logger.info(f"✓ ChatGPT selected {len(valid_news)} {category} news items")
+        await _enrich_with_article_facts(valid_news, dict(enumerate(news)))
         return valid_news
 
     except Exception as e:
@@ -913,7 +1282,7 @@ async def select_and_summarize_news_with_gpt(
         ]:
             for item in news_list:
                 description = item.get("description", "")
-                description = _clean_html(description)[:500]
+                description = _clean_html(description)[:800]
 
                 indexed_news.append(
                     {
@@ -973,20 +1342,11 @@ async def select_and_summarize_news_with_gpt(
 - Исключения: читаю "ИСКЛЮЧАЮ:" в профиле и ПОЛНОСТЬЮ их игнорирую
 
 FORMAT - ВАЖНО:
-- description_ru: одно ПОЛНОЕ, грамотное описание (40-70 слов)
-  * Передай ГЛАВНУЮ МЫСЛЬ новости + необходимый КОНТЕКСТ/предысторию: что произошло,
-    почему, что за этим стоит — чтобы текст читался как ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история,
-    а не обрывок вывода или пересказ заголовка.
-  * Добавляй контекст для полного понимания: причину, фон события, последствия
-  * Включает конкретные детали (цифры, факты, имена)
-  * Заканчивается полной точкой
-  * Без разрывов, без объединения фрагментов
-- Текст должен читаться естественно и грамотно
-- ЭТАЛОН ПЕРЕСКАЗА (главная мысль + контекст = цельная история):
-  "Starbucks Korea закрывает более 2 000 кофеен на один день, чтобы провести для
-  сотрудников обязательный урок по современной истории страны. Решение обойдётся
-  компании примерно в 2,1 млрд вон выручки. Причина — сотрудник сеульской кофейни
-  оскорбил посетителя, сравнив его с северокорейцем."
+{_SUMMARY_RULES}
+  * Без разрывов, без объединения фрагментов — текст читается естественно и грамотно
+
+{_SUMMARY_EXAMPLES}
+
 - ⚠️ ЕСЛИ ты НЕ можешь составить нормальное описание новости, или хочешь ОТКЛОНИТЬ новость
   (например, она не подходит по теме, негативная для позиции goodness, или ты не можешь её оценить) —
   верни в поле "description_ru" РОВНО один символ: ❌
@@ -1015,20 +1375,12 @@ FORMAT - ВАЖНО:
 ✅ Точно 6 новостей, ровно 2 политики
 ✅ Спорт: ФУТБОЛ первым, потом хоккей/теннис/другое (проверь title на "football", "футбол", "soccer")
 ✅ Последняя (позиция 6) должна быть 100% позитивная или вообще не включай
-✅ description_ru: ОДНО ПОЛНОЕ ОПИСАНИЕ (40-70 слов), грамотный русский
-   - передай ГЛАВНУЮ МЫСЛЬ + КОНТЕКСТ (что, почему, что за этим стоит)
-   - текст = ЗАКОНЧЕННАЯ ЦЕЛЬНАЯ история, а не обрывок вывода или пересказ title
-   - включает детали, цифры, факты, причину/фон
-   - заканчивается точкой
-   - БЕЗ объединения фрагментов, БЕЗ разрывов
+{_SUMMARY_RULES}
 ✅ Если НЕ можешь описать новость или хочешь её ОТКЛОНИТЬ — поставь в "description_ru" РОВНО: ❌
    (не пиши "я не могу оценить...", только символ ❌ — скрипт удалит новость из дайджеста)
 ✅ Только JSON, без текста
 
-ПРИМЕР ХОРОШЕГО description_ru:
-- ❌ "Импорт сои сокращается. Спрос падает из-за свиней. Конкуренция растет." (разрывы!)
-- ❌ "Компания закрывает кофейни ради урока истории." (нет контекста, обрывок вывода)
-- ✅ "Starbucks Korea закрывает более 2 000 кофеен на один день, чтобы провести для сотрудников обязательный урок по современной истории страны. Решение обойдётся компании примерно в 2,1 млрд вон выручки. Причина — сотрудник сеульской кофейни оскорбил посетителя, сравнив его с северокорейцем." (главная мысль + контекст = цельная история)
+{_SUMMARY_EXAMPLES}
 
 [
   {{"index": 0, "category": "politics", "description_ru": "Администрация США ввела новые санкции на нефтяной сектор, затрагивающие более 10 крупных компаний. Шаг был предпринят в ответ на нарушения международного права и экономического эмбарго."}},
@@ -1153,6 +1505,9 @@ FORMAT - ВАЖНО:
             desc = item.get("description_ru", "")[:50]
             logger.info(f"  [{item.get('index')}] {item.get('category', 'unknown')}: {desc}...")
 
+        await _enrich_with_article_facts(
+            valid_news, {i: original for i, (_, original) in idx_to_original.items()}
+        )
         return valid_news
 
     except json.JSONDecodeError as e:

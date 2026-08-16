@@ -14,7 +14,7 @@ from src.utils.doppler import get_secret
 from src.utils.openai_client import get_client
 from src.db.database import get_user_profile, get_news_prompt
 from src.workers.todoist_client import get_todoist_tasks
-from src.ai.weather_sources import get_aggregated_weather, generate_clothing_recommendation, LOCATIONS
+from src.ai.weather_sources import get_aggregated_weather, LOCATIONS
 from src.workers.news_fetcher import (
     get_politics_economy_news,
     get_sports_news,
@@ -22,6 +22,7 @@ from src.workers.news_fetcher import (
     get_culture_science_news,
     get_good_news,
     get_crypto_news,
+    get_stocks_news,
     get_business_news,
     get_art_news,
     get_fashion_news,
@@ -33,6 +34,7 @@ from src.ai.news_processor import (
     select_good_news_with_summaries,
     select_themed_news_with_summaries,
     select_crypto_news_with_summaries,
+    select_stocks_news_with_summaries,
     select_georgia_news_with_summaries,
     select_georgia_good_news_with_summaries,
     select_vienna_good_news_with_summaries,
@@ -77,8 +79,11 @@ SKIP_WATER_CUTS_USERS = {498233237}
 SERVER_SUBSCRIPTIONS_USERS = {71488343}
 # Users who get the r/tbilisi city highlight section
 TBILISI_REDDIT_USERS = {71488343, 184010236}
-# Users who get an extra crypto news item (main user only)
+# Users who get extra crypto news items (main user only) — active BTC/ETH/SOL trader
 CRYPTO_NEWS_USERS = {71488343}
+CRYPTO_NEWS_COUNT = 2
+# Users who get an extra US stock market news item (S&P 500 / Nasdaq investor)
+STOCKS_NEWS_USERS = {71488343}
 # Users who get extra GENERAL Georgia/Tbilisi news items (Максим)
 GEORGIA_NEWS_USERS = {71488343}
 GEORGIA_NEWS_COUNT = 2
@@ -315,7 +320,7 @@ async def _morning_digest_impl(
     weather_desc = _format_weather(weather, city_prep) if weather else "неизвестная погода"
     logger.info(f"Weather condition: {weather_desc}")
 
-    # Extract weather data for clothing recommendations
+    # Precipitation flag — used by the weather wording below
     weather_details = ""
     is_raining = False  # Default to False if weather unavailable
     if weather and isinstance(weather, dict):
@@ -350,29 +355,6 @@ async def _morning_digest_impl(
     weekday_ru = WEEKDAYS_RU[datetime.now(timezone("Asia/Tbilisi")).weekday()]
     name_part = f", {user_name}" if user_name else ""
 
-    # AI-based clothing recommendation with jacket validation
-    # (Replaces old rule-based logic that didn't account for temperature < 10°C)
-    outfit_advice = await generate_clothing_recommendation(weather, is_raining=is_raining, city=city_prep)
-
-    if not outfit_advice:
-        # Fallback: rule-based with correct jacket threshold (< 10°C OR is_raining)
-        logger.warning("⚠️ AI clothing recommendation failed, using fallback")
-        morning_temp = None
-        day_temp = None
-        if weather and isinstance(weather.get("morning"), dict):
-            morning_temp = weather["morning"].get("temperature")
-        if weather and isinstance(weather.get("day"), dict):
-            day_temp = weather["day"].get("temperature")
-
-        needs_jacket = is_raining or (
-            (morning_temp is not None and morning_temp < 10) or
-            (day_temp is not None and day_temp < 10)
-        )
-        outer_layer = "куртка" if needs_jacket else ("худи" if day_temp is not None and day_temp < 15 else None)
-        outfit_advice = f"Штаны, кофта, {outer_layer}, кроссовки" if outer_layer else "Штаны, кофта, кроссовки"
-
-    logger.info(f"✓ Generated - outfit: {outfit_advice}")
-
     # Build full message: quote + weather advice + weather + news + gwp + task list.
     # The greeting is generated after news selection and inserted at the top.
     if chat_id is None:
@@ -389,10 +371,6 @@ async def _morning_digest_impl(
         message_lines.append("")
     else:
         logger.warning("Quote fetch failed")
-
-    # Add outfit recommendation
-    message_lines.append(f"👕 {outfit_advice}")
-    message_lines.append("")
 
     # Add weather by periods
     logger.info("Formatting weather by periods")
@@ -535,6 +513,17 @@ async def _morning_digest_impl(
         except Exception as e:
             logger.warning(f"Failed to fetch crypto news: {type(e).__name__}: {str(e)[:100]}")
             crypto_news = []
+
+    # Extra US stock market pool — main user only. Wider window than the other pools:
+    # Wall Street is shut at weekends (see get_stocks_news).
+    stocks_news = []
+    if user_id in STOCKS_NEWS_USERS:
+        try:
+            stocks_news = await get_stocks_news()
+            logger.info(f"✓ Stocks news fetched: {len(stocks_news)} items")
+        except Exception as e:
+            logger.warning(f"Failed to fetch stocks news: {type(e).__name__}: {str(e)[:100]}")
+            stocks_news = []
 
     # Extra local news pools: Georgia (Максим — general, Маша — good news only)
     # and Vienna (Юля — good news only). One shared Georgia pool for both users.
@@ -689,38 +678,14 @@ async def _morning_digest_impl(
     else:
         logger.warning("No news items fetched from any pool")
 
-    # Extra crypto news item (main user only). Skipped if nothing suitable
-    # or ChatGPT returns ❌.
-    if user_id in CRYPTO_NEWS_USERS and crypto_news:
-        logger.info("Selecting crypto news item via ChatGPT")
-        crypto_selected = await select_crypto_news_with_summaries(crypto_news)
-        if crypto_selected:
-            citem = crypto_selected[0]
-            cidx = citem.get("index", -1)
-            cdesc = citem.get("description_ru", "")
-            if 0 <= cidx < len(crypto_news):
-                c_news = crypto_news[cidx]
-                c_source = c_news.get("source", "Crypto")
-                c_url = c_news.get("url", "")
-                news_num += 1
-                crypto_text = (
-                    f'{news_num}. 🪙 <a href="{_esc_attr(c_url)}">{_esc(c_source)}</a>: {_esc(cdesc)}'
-                    if c_url
-                    else f"{news_num}. 🪙 {_esc(c_source)}: {_esc(cdesc)}"
-                )
-                news_lines.append(crypto_text)
-                news_lines.append("")
-                selected_news_for_intro.append(cdesc)
-                logger.info(f"  [{news_num}] crypto: {cdesc[:60]}... | {c_source}")
-        else:
-            logger.info("No crypto news item to show (skipped)")
-
-    # Extra LOCAL news items appended to the same numbered list:
+    # Extra MARKET and LOCAL news items appended to the same numbered list. Every one
+    # of them is skipped silently when its pool is empty or ChatGPT returns ❌:
+    #   Максим — up to 2 crypto stories (BTC/ETH/SOL trader) + 1 US stock market story
     #   Максим — 2 general Georgia/Tbilisi stories
     #   Маша   — 1 GOOD Georgia story (Tbilisi preferred), only if one exists
     #   Юля    — 1 GOOD Vienna story, only if one exists
     async def _append_local_news(selector, pool, emoji, label):
-        """Run a regional selector over `pool` and append its picks to news_lines."""
+        """Run a selector over `pool` and append its picks to news_lines."""
         nonlocal news_num
 
         if not pool:
@@ -759,6 +724,17 @@ async def _morning_digest_impl(
             selected_news_for_intro.append(desc)
             logger.info(f"  [{news_num}] {label}: {desc[:60]}... | {source}")
 
+    if user_id in CRYPTO_NEWS_USERS:
+        await _append_local_news(
+            lambda pool: select_crypto_news_with_summaries(pool, count=CRYPTO_NEWS_COUNT),
+            crypto_news,
+            "🪙",
+            "crypto",
+        )
+    if user_id in STOCKS_NEWS_USERS:
+        await _append_local_news(
+            select_stocks_news_with_summaries, stocks_news, "📈", "stocks"
+        )
     if user_id in GEORGIA_NEWS_USERS:
         await _append_local_news(
             lambda pool: select_georgia_news_with_summaries(pool, count=GEORGIA_NEWS_COUNT),
@@ -1017,7 +993,7 @@ async def _morning_digest_impl(
             return f" ({arrow_24h} {abs(change_24h):.1f}% for 24h, {arrow_30d} {abs(change_30d):.1f} % for 30d)"
 
         # Build rate lines into a buffer; only emit the section if something succeeded,
-        # so we never print an empty "Курсы валют:" header.
+        # so we never print an empty header.
         rate_lines = []
 
         # BTC
@@ -1067,8 +1043,16 @@ async def _morning_digest_impl(
             )
             rate_lines.append(f"USD: {rub_str} RUB{change_str}")
 
+        # S&P 500 — index level, "24h" is the move versus the previous close
+        if rates.get("sp500"):
+            sp_str = format_currency(rates["sp500"], decimals=2)
+            change_str = format_change(
+                rates.get("sp500_change_24h"), rates.get("sp500_change_30d")
+            )
+            rate_lines.append(f"S&P 500: {sp_str}{change_str}")
+
         if rate_lines:
-            message_lines.append("Курсы валют:")
+            message_lines.append("Курсы и рынки:")
             message_lines.extend(rate_lines)
             message_lines.append("")
         else:
@@ -1140,58 +1124,10 @@ async def _morning_digest_impl(
             message_lines.append(formatted_matches)
             message_lines.append("")
     elif not skip_sports:
-        # No matches - show sports news from middle of list + Product Hunt
-        logger.info("No football matches found, showing sports news + Product Hunt")
-        logger.debug(f"sports_news type: {type(sports_news)}, len: {len(sports_news) if sports_news else 0}")
-
-        if sports_news and len(sports_news) > 0:
-            # Take news from middle (not first or last) to avoid top/bottom stories
-            mid_idx = len(sports_news) // 2
-            news = sports_news[mid_idx]
-            logger.debug(f"Selected sports news at index {mid_idx}: {news.get('title', '')[:50]}")
-
-            title = news.get("title", "")
-            url = news.get("url", "")
-            source = news.get("source", "")
-            description = news.get("description", "")
-
-            # Rewrite news via GPT
-            rewrite_prompt = f"""Переписать спортивную новость в формате дайджеста (одно предложение, максимум 20 слов). Должна быть информативной и интересной.
-
-Оригинальная новость:
-Заголовок: {title}
-Источник: {source}
-Описание: {description[:300]}
-
-Ответ - только одно переписанное предложение на русском:"""
-
-            logger.info(f"Rewriting sports news: {title[:50]}...")
-            try:
-                response = await get_client().chat.completions.create(
-                    model="gpt-5.4-mini",
-                    max_completion_tokens=50,
-                    messages=[
-                        {"role": "system", "content": "You are a sports news editor in Russian."},
-                        {"role": "user", "content": rewrite_prompt},
-                    ],
-                )
-
-                rewritten = response.choices[0].message.content.strip()
-                logger.info(f"✓ Sports news rewritten: {rewritten[:50]}...")
-            except Exception as e:
-                logger.warning(f"Failed to rewrite sports news: {e}")
-                rewritten = title
-
-            message_lines.append("📰 <b>Спортивные новости:</b>")
-            if url:
-                message_lines.append(f'<a href="{url}">{rewritten}</a>')
-            else:
-                message_lines.append(rewritten)
-            message_lines.append(f"<i>{source}</i>")
-            message_lines.append("")
-            logger.debug("✓ Sports news section added to digest")
-        else:
-            logger.debug("No sports news available for fallback")
+        # No matches — nothing to show here. The old "📰 Спортивные новости" fallback
+        # (a random sports story rewritten by GPT) was removed by request; sports still
+        # reach the digest through the numbered news list.
+        logger.info("No football matches found, sports section skipped")
 
     # Product Hunt — primary user only. Secondary users (skip_tasks=True) don't get
     # this section. Shown regardless of sports for the primary user.

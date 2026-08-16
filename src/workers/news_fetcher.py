@@ -1,5 +1,6 @@
 """Fetch and parse news from RSS feeds - organized by 5 category pools."""
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timedelta
@@ -118,6 +119,51 @@ VIENNA_FEEDS = [
     "https://www.vienna.at/rss",  # VIENNA.AT (German, news portal)
 ]
 
+# TradingView news flow (https://ru.tradingview.com/news-flow/) — Russian-language
+# markets & crypto wire aggregating Reuters, RBC, Oninvest, ForkLog, Cointelegraph and
+# TradingView's own market recaps. There is no RSS: the page is a JS app served by the
+# JSON endpoints below (headlines list + per-story body).
+TRADINGVIEW_HEADLINES_URL = (
+    "https://news-headlines.tradingview.com/v2/headlines?client=web&lang=ru"
+)
+TRADINGVIEW_STORY_URL = "https://news-headlines.tradingview.com/v2/story"
+
+# Providers routed to the crypto pool; everything else goes to politics/economy.
+TRADINGVIEW_CRYPTO_PROVIDERS = {
+    "forklog", "cointelegraph", "rbc_crypto", "bitsmedia", "beincrypto", "coindar",
+}
+
+# Coins actively traded by the user — TradingView is queried per symbol so the crypto
+# pool is dominated by BTC/ETH/SOL stories instead of whatever altcoin is loudest.
+TRADINGVIEW_TRADED_SYMBOLS = {
+    "BTC": "BINANCE:BTCUSDT",
+    "ETH": "BINANCE:ETHUSDT",
+    "SOL": "BINANCE:SOLUSDT",
+}
+
+# US equities & index funds followed by the user (S&P 500, Nasdaq 100).
+TRADINGVIEW_STOCK_SYMBOLS = {
+    "SPX": "SP:SPX",  # S&P 500 index
+    "SPY": "AMEX:SPY",  # S&P 500 ETF
+    "QQQ": "NASDAQ:QQQ",  # Nasdaq 100 ETF
+}
+
+# POOL 12: US stocks & funds. TradingView's symbol feeds carry the Russian-language
+# Reuters/Oninvest wire on Wall Street; these two add English market coverage.
+STOCKS_FEEDS = [
+    # CNBC Investing
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069",
+    "https://feeds.content.dowjones.io/public/rss/mw_marketpulse",  # MarketWatch MarketPulse
+]
+
+_TRADINGVIEW_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+    ),
+    "Accept": "application/json",
+}
+
 # POOL 6: Crypto (BTC, ETH, SOL, SUI, UNI and other major cryptocurrencies)
 CRYPTO_FEEDS = [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk
@@ -198,9 +244,224 @@ async def _fetch_from_feeds(
     return all_items
 
 
+def _flatten_ast(node: Any, out: List[str]) -> None:
+    """Collect the text leaves of a TradingView story AST."""
+    if isinstance(node, str):
+        out.append(node)
+    elif isinstance(node, list):
+        for child in node:
+            _flatten_ast(child, out)
+    elif isinstance(node, dict):
+        for child in node.get("children") or []:
+            _flatten_ast(child, out)
+
+
+async def _fetch_tradingview_story(
+    client: httpx.AsyncClient, story_id: str
+) -> str:
+    """Fetch the body text of one TradingView story. Empty string on any failure."""
+    try:
+        response = await client.get(
+            TRADINGVIEW_STORY_URL, params={"id": story_id, "lang": "ru"}
+        )
+        if response.status_code != 200:
+            return ""
+        data = response.json()
+
+        parts: List[str] = []
+        _flatten_ast(data.get("astDescription"), parts)
+        text = _clean_html(" ".join(parts))
+        if not text:
+            text = _clean_html(data.get("shortDescription", ""))
+        return text[:800]
+    except Exception as e:
+        logger.debug(f"  ✗ TradingView story {story_id}: {type(e).__name__}")
+        return ""
+
+
+def _tradingview_tickers(entry: Dict[str, Any], watchlist: Dict[str, str]) -> List[str]:
+    """Watchlist tickers an entry is tagged with, e.g. ['BTC', 'ETH']."""
+    tickers = " ".join(
+        s.get("symbol", "") for s in (entry.get("relatedSymbols") or [])
+    ).upper()
+    return [name for name in watchlist if name in tickers]
+
+
+def _tradingview_usable(entry: Dict[str, Any], cutoff_ts: float) -> bool:
+    """Common filters: has content, is readable, is fresh."""
+    # "headline" permission = paywalled stub, there is no body to read.
+    if entry.get("permission") == "headline":
+        return False
+    if not entry.get("title") or not entry.get("id"):
+        return False
+    published = entry.get("published")
+    return not (isinstance(published, (int, float)) and published < cutoff_ts)
+
+
+async def _tradingview_build_items(
+    client: httpx.AsyncClient,
+    entries: List[Dict[str, Any]],
+    category: str,
+    watchlist: Dict[str, str] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch bodies for the picked headlines and map them to the news schema."""
+    bodies = await asyncio.gather(
+        *(_fetch_tradingview_story(client, e["id"]) for e in entries),
+        return_exceptions=True,
+    )
+
+    items = []
+    for entry, body in zip(entries, bodies):
+        # Prefer the original publisher's URL so the article pass reads the real
+        # story; TradingView's own page is JS-rendered and yields no text.
+        url = entry.get("link") or (
+            f"https://ru.tradingview.com{entry.get('storyPath', '')}"
+        )
+        if not url.startswith(("http://", "https://")):
+            continue
+
+        published = entry.get("published")
+        items.append({
+            "title": entry.get("title", ""),
+            "description": body if isinstance(body, str) else "",
+            "source": entry.get("source") or entry.get("provider", "TradingView"),
+            "url": url,
+            "published": (
+                datetime.utcfromtimestamp(published).isoformat()
+                if isinstance(published, (int, float))
+                else None
+            ),
+            "category": category,
+            "tickers": _tradingview_tickers(entry, watchlist or {}),
+        })
+    return items
+
+
+async def get_tradingview_news(
+    hours: int = 24, *, crypto: bool, limit: int = 15
+) -> List[Dict[str, Any]]:
+    """Fetch the TradingView news flow (https://ru.tradingview.com/news-flow/).
+
+    Russian-language markets wire. The page itself is a JS app, so the headlines JSON
+    endpoint behind it is used instead; bodies live in a separate story endpoint and
+    are fetched only for the items actually kept.
+
+    Args:
+        crypto: True returns only items from crypto outlets (for the crypto pool),
+            False returns everything else (markets/economy, for the politics pool).
+
+    Returns:
+        Items in the standard news schema. Empty list on any failure — TradingView
+        is an extra source, never a hard dependency.
+    """
+    label = "crypto" if crypto else "markets"
+    cutoff_ts = (datetime.utcnow() - timedelta(hours=hours)).timestamp()
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_TRADINGVIEW_HEADERS) as client:
+            response = await client.get(TRADINGVIEW_HEADLINES_URL)
+            response.raise_for_status()
+            headlines = response.json().get("items", [])
+
+            picked = []
+            for entry in headlines:
+                if not _tradingview_usable(entry, cutoff_ts):
+                    continue
+                if (entry.get("provider") in TRADINGVIEW_CRYPTO_PROVIDERS) != crypto:
+                    continue
+
+                picked.append(entry)
+                if len(picked) >= limit:
+                    break
+
+            if not picked:
+                logger.info(f"✓ TradingView {label}: 0 items")
+                return []
+
+            items = await _tradingview_build_items(
+                client, picked, "crypto" if crypto else "politics"
+            )
+
+        logger.info(f"✓ TradingView {label}: {len(items)} items")
+        return items
+
+    except Exception as e:
+        logger.warning(f"TradingView {label} fetch failed: {type(e).__name__}: {e}")
+        return []
+
+
+async def get_tradingview_symbol_news(
+    watchlist: Dict[str, str],
+    category: str,
+    hours: int = 24,
+    per_symbol: int = 6,
+) -> List[Dict[str, Any]]:
+    """Fetch TradingView news scoped to specific symbols (the user's own positions).
+
+    The general wire is dominated by whatever is loudest that day, so the symbol
+    endpoints are queried directly: every item they return is tagged to that symbol.
+    Items are deduplicated across symbols and carry a `tickers` tag the selectors use
+    to prefer stories about instruments the user actually trades.
+
+    Args:
+        watchlist: {display ticker: TradingView symbol}, e.g. {"BTC": "BINANCE:BTCUSDT"}
+        category: category tag written onto the produced items
+    """
+    label = "/".join(watchlist)
+    cutoff_ts = (datetime.utcnow() - timedelta(hours=hours)).timestamp()
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, headers=_TRADINGVIEW_HEADERS) as client:
+            responses = await asyncio.gather(
+                *(
+                    client.get(TRADINGVIEW_HEADLINES_URL, params={"symbol": symbol})
+                    for symbol in watchlist.values()
+                ),
+                return_exceptions=True,
+            )
+
+            picked = []
+            seen_ids = set()
+            for ticker, response in zip(watchlist, responses):
+                if isinstance(response, Exception) or response.status_code != 200:
+                    logger.debug(f"  ✗ TradingView {ticker} headlines unavailable")
+                    continue
+
+                kept = 0
+                for entry in response.json().get("items", []):
+                    entry_id = entry.get("id")
+                    if not entry_id or entry_id in seen_ids:
+                        continue
+                    if not _tradingview_usable(entry, cutoff_ts):
+                        continue
+
+                    seen_ids.add(entry_id)
+                    picked.append(entry)
+                    kept += 1
+                    if kept >= per_symbol:
+                        break
+
+            if not picked:
+                logger.info(f"✓ TradingView {label}: 0 items")
+                return []
+
+            items = await _tradingview_build_items(client, picked, category, watchlist)
+
+        logger.info(f"✓ TradingView {label}: {len(items)} items")
+        return items
+
+    except Exception as e:
+        logger.warning(f"TradingView {label} fetch failed: {type(e).__name__}: {e}")
+        return []
+
+
 async def get_politics_economy_news(hours: int = 24) -> List[Dict[str, Any]]:
-    """Fetch politics & economics news."""
-    return await _fetch_from_feeds(POLITICS_ECONOMY_FEEDS, hours, "politics")
+    """Fetch politics & economics news (RSS feeds + TradingView markets wire)."""
+    rss, tradingview = await asyncio.gather(
+        _fetch_from_feeds(POLITICS_ECONOMY_FEEDS, hours, "politics"),
+        get_tradingview_news(hours, crypto=False),
+    )
+    return rss + tradingview
 
 
 async def get_sports_news(hours: int = 24) -> List[Dict[str, Any]]:
@@ -272,9 +533,51 @@ async def get_good_news(hours: int = 24) -> List[Dict[str, Any]]:
     return filtered
 
 
+def _dedupe_by_url(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop repeats across merged sources, keeping the first (highest-priority) copy."""
+    merged = []
+    seen_urls = set()
+    for item in items:
+        url = item.get("url", "")
+        if url and url in seen_urls:
+            continue
+        if url:
+            seen_urls.add(url)
+        merged.append(item)
+    return merged
+
+
 async def get_crypto_news(hours: int = 24) -> List[Dict[str, Any]]:
-    """Fetch cryptocurrency news (BTC, ETH, SOL, SUI, UNI and other major coins)."""
-    return await _fetch_from_feeds(CRYPTO_FEEDS, hours, "crypto")
+    """Fetch crypto news for an active BTC/ETH/SOL trader.
+
+    Coin-scoped TradingView items come FIRST: the selector only sees the top of this
+    pool, so the stories tagged to the traded coins must not be crowded out by the
+    general wire.
+    """
+    coins, rss, tradingview = await asyncio.gather(
+        get_tradingview_symbol_news(TRADINGVIEW_TRADED_SYMBOLS, "crypto", hours),
+        _fetch_from_feeds(CRYPTO_FEEDS, hours, "crypto"),
+        get_tradingview_news(hours, crypto=True),
+    )
+    return _dedupe_by_url(coins + rss + tradingview)
+
+
+async def get_stocks_news(hours: int = 72) -> List[Dict[str, Any]]:
+    """Fetch US stock market news (S&P 500, Nasdaq, index funds, big single names).
+
+    Symbol-scoped TradingView items (Russian-language Reuters/Oninvest Wall Street
+    wire) come first for the same reason as in the crypto pool — the selector only
+    sees the top of the list.
+
+    The window defaults to 72h, not 24h: Wall Street is closed at weekends, so a
+    Sunday or Monday digest would otherwise find an empty pool. Feeds are newest-first,
+    so fresh items still lead the list on weekdays.
+    """
+    symbols, rss = await asyncio.gather(
+        get_tradingview_symbol_news(TRADINGVIEW_STOCK_SYMBOLS, "stocks", hours),
+        _fetch_from_feeds(STOCKS_FEEDS, hours, "stocks"),
+    )
+    return _dedupe_by_url(symbols + rss)
 
 
 async def get_georgia_news(hours: int = 24) -> List[Dict[str, Any]]:

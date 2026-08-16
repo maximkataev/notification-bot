@@ -226,7 +226,22 @@ Converts free-text task input into structured JSON with AI reasoning.
 3. Inject user profile (interests + exclusions)
 4. gpt-5.4-mini selects exactly 5 news items across categories
 5. Post-filter: reject any items containing excluded keywords
-6. Return selected news with summaries
+6. **Article pass**: fetch the full page of each selected story
+   (`src/workers/article_fetcher.py`) and re-summarize from the real text
+7. Return selected news with summaries
+
+**Summary style** (shared `_SUMMARY_RULES` / `_SUMMARY_EXAMPLES`, used by all 5 selectors):
+- description_ru is a SEMANTIC SQUEEZE of the story: what happened, how it works,
+  named numbers and details
+- BANNED: "why this matters" commentary ("для разработчиков важно…", "это влияет на…"),
+  forecasts, rhetorical questions — replace each with one more fact
+- Facts ONLY from the supplied text; a 25-word summary beats an invented 70-word one
+
+**Article pass** (`_enrich_with_article_facts`): the RSS lede never contains the mechanism,
+so summaries built from it restate the headline. After selection the article body is
+fetched (BeautifulSoup, `<article>`/`<main>` → `<p>`, ≥400 chars or discarded) and each
+story is re-told from it in parallel. Best-effort: paywalls, 403s and JS-only pages keep
+the first-pass description. Adds ~2-3s to the digest.
 
 **News Categories** (5 total):
 1. **Politics/Economics** (2 stories) — politics, finance, markets, trade
@@ -284,6 +299,36 @@ Aggregates real news from 11 free RSS feeds covering politics, economics, cultur
 
 **Russia & CIS**:
 11. Meduza
+
+**TradingView news flow** (`get_tradingview_news`) — Russian-language markets & crypto wire
+from `https://ru.tradingview.com/news-flow/`. NOT an RSS feed: the page is a JS app, so the
+JSON endpoints behind it are used — `news-headlines.tradingview.com/v2/headlines` for the
+list and `/v2/story` for each body (fetched only for the items kept, in parallel).
+- Items whose `permission == "headline"` are paywalled stubs and are skipped
+- `link` (the original publisher's URL) is preferred over the TradingView story page,
+  which is JS-rendered and unreadable by the article pass
+- Routed by provider: `TRADINGVIEW_CRYPTO_PROVIDERS` (ForkLog, Cointelegraph, РБК Крипто,
+  Bits.media, BeInCrypto, Coindar) → crypto pool; everything else (Reuters, Oninvest, РБК,
+  TradingView recaps) → politics/economy pool
+- `get_tradingview_symbol_news(watchlist, category)` queries the SYMBOL endpoints so a pool
+  is dominated by the instruments the user actually trades. Two watchlists:
+  `TRADINGVIEW_TRADED_SYMBOLS` (BTC/ETH/SOL) and `TRADINGVIEW_STOCK_SYMBOLS` (SPX/SPY/QQQ).
+  Items carry a `tickers` tag the selectors prioritise, and come FIRST in their pool because
+  the selector only sees the first 30 entries
+- Failure is non-fatal: returns `[]` and the RSS pools stand alone
+
+**Pools with their own selectors** (main user only, each skipped when nothing fits):
+| Pool | Fetcher | Selector | Count | Digest marker |
+|------|---------|----------|-------|---------------|
+| Crypto | `get_crypto_news` | `select_crypto_news_with_summaries` | 2 | 🪙 |
+| US stocks | `get_stocks_news` | `select_stocks_news_with_summaries` | 1 | 📈 |
+
+Crypto is selected for an ACTIVE BTC/ETH/SOL TRADER: price moves with a stated cause, ETF and
+institutional flows, derivatives positioning, regulation, network events. Explainers
+("how blockchain works"), altcoin/memecoin/NFT hype and data-free price predictions are rejected.
+US stocks are selected for an S&P 500 / Nasdaq index investor: index sessions with a driver, Fed
+and macro data, heavyweight earnings, fund flows. Personal-finance and lifestyle stories are rejected.
+The stocks pool uses a **72h window** (`get_stocks_news`) because Wall Street is closed at weekends.
 
 **Validation Rules**:
 - Only parse entries with `title`
@@ -433,19 +478,29 @@ async def get_upcoming_holidays(days_ahead=7) → Optional[List[str]]
 
 ### 8. **Exchange Rates** (`src/workers/rates_fetcher.py`)
 
-Cryptocurrency and forex rates with 24h and 30d change tracking.
+Cryptocurrency, forex and index quotes with 24h and 30d change tracking. Rendered in the
+digest under the heading **"Курсы и рынки:"**.
 
 **Rates Tracked**:
 - BTC/USD (Bitcoin) with change %
 - ETH/USD (Ethereum) with change %
 - USD→EUR (Euro) with change %
 - USD→RUB (Russian Ruble) with change %
+- S&P 500 index level with change %
 
 **Data Sources**:
 
 **Crypto** (BTC, ETH):
 - Source: CoinGecko API endpoint `/coins/bitcoin` and `/coins/ethereum`
 - Includes: current price + official `price_change_percentage_24h` and `price_change_percentage_30d`
+
+**S&P 500** (`get_sp500_quote`):
+- Primary: TradingView scanner `scanner.tradingview.com/symbol?symbol=SP:SPX` — returns level,
+  session change and `Perf.1M` in one call, no key
+- Fallback: Yahoo Finance chart API (`^GSPC`), changes computed from daily closes. Yahoo
+  rate-limits hard (429) so it is only touched when TradingView fails
+- Stooq is unusable server-side (JS challenge)
+- The "24h" change is the move versus the previous close — at weekends that is Friday's session
 
 **Forex** (EUR/USD, USD/RUB):
 - Current rates: `exchangerate-api.com` (free, no API key)
