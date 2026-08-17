@@ -8,7 +8,21 @@ from typing import List, Dict, Any, Optional
 from html import unescape
 import httpx
 
+from src.workers.news_dedupe import StoryDeduper
+
 logger = logging.getLogger(__name__)
+
+# Appended to every selector prompt: mechanical dedup catches identical urls and
+# near-identical headlines, but only the model can tell that two differently-worded
+# headlines cover the same event.
+_NO_DUPLICATES_RULE = (
+    "- НИКОГДА не выбирай две новости об ОДНОМ И ТОМ ЖЕ событии, даже если они из разных "
+    "источников и заголовки сформулированы по-разному. Одно событие — максимум одна новость."
+)
+_NO_DUPLICATES_RULE_EN = (
+    "NEVER pick two items about the SAME event, even when they come from different "
+    "sources and the headlines are worded differently. One event — at most one item."
+)
 
 
 def _clean_html(text: str) -> str:
@@ -100,6 +114,101 @@ def _is_rejected_description(desc: str) -> bool:
         return True
     d = desc.strip().lower()
     return any(marker in d for marker in _REFUSAL_MARKERS)
+
+
+def _looks_like_item(value: Any) -> bool:
+    """True if `value` is a selection item rather than a container around one."""
+    return isinstance(value, dict) and ("index" in value or "description_ru" in value)
+
+
+def _coerce_item_list(payload: Any, depth: int = 0) -> Optional[List[Dict[str, Any]]]:
+    """Dig the list of selection items out of whatever container the model returned.
+
+    Returns None when no items can be found. See _parse_selection for the shapes.
+    """
+    if depth > 3:
+        return None
+
+    if isinstance(payload, list):
+        items = [i for i in payload if _looks_like_item(i)]
+        return items or None
+
+    if not isinstance(payload, dict):
+        return None
+
+    if _looks_like_item(payload):
+        return [payload]
+
+    # An object keyed by position ({"1": {...}, "2": {...}}) — values ARE the items.
+    # Dict order follows the JSON document, so the model's ordering is preserved.
+    keyed = [v for v in payload.values() if _looks_like_item(v)]
+    if keyed:
+        return keyed
+
+    # Otherwise the items sit under some wrapper key ({"news": [...]}); recurse.
+    for value in payload.values():
+        found = _coerce_item_list(value, depth + 1)
+        if found:
+            return found
+
+    return None
+
+
+def _parse_selection(gpt_response: str, label: str) -> Optional[List[Dict[str, Any]]]:
+    """Parse a selector's reply into a list of {"index", "category", "description_ru"}.
+
+    Every selector asks for a bare JSON array, but the model regularly returns an
+    object instead and the exact shape varies between identical calls — `{"news": [...]}`
+    one time, `{"1": {...}, "2": {...}}` the next. Those parse fine as JSON, so the old
+    per-selector code fed a *dict* to the validation loop, which iterated its KEYS, saw
+    strings instead of items and dropped the whole selection ("Invalid index unknown").
+    The digest then lost its entire main news block while the small pools happened to
+    still get arrays. So the shape is normalized here rather than trusted.
+
+    Tolerated shapes: bare array, ```-fenced array, an array wrapped under any key,
+    an object keyed by position whose values are the items, and a single item returned
+    unwrapped. `index` given as a numeric string is coerced to int, since callers
+    compare it against int indices.
+    """
+    text = gpt_response.strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+
+    payload: Any = None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        # Fall back to the first [ ... ] block in the raw reply (prose around JSON).
+        match = re.search(r"\[.*\]", text, re.DOTALL)
+        if match:
+            try:
+                payload = json.loads(match.group())
+            except json.JSONDecodeError:
+                payload = None
+        if payload is None:
+            logger.error(f"Failed to parse {label} JSON: {gpt_response[:200]}")
+            return None
+
+    items = _coerce_item_list(payload)
+    if items is None:
+        logger.error(f"No {label} selection array in response: {gpt_response[:200]}")
+        return None
+    if not isinstance(payload, list):
+        logger.info(f"{label}: normalized selection from {type(payload).__name__} wrapper")
+
+    # Callers look the index up among the ones they offered, and the scheduler
+    # range-checks it against the pool — a str/None index would miss the lookup or
+    # raise TypeError. Normalize here: a numeric string becomes int, anything else
+    # becomes -1, which every caller already treats as "invalid, skip this item".
+    for item in items:
+        idx = item.get("index")
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            text_idx = str(idx).strip() if idx is not None else ""
+            item["index"] = int(text_idx) if text_idx.lstrip("-").isdigit() else -1
+
+    return items
 
 
 # Shared retelling rules for every summarizer below.
@@ -297,8 +406,18 @@ async def select_themed_news_with_summaries(
         indexed_news = []
         item_by_index = {}  # global index -> original item (for the article pass)
         idx = 0
+        # The Guardian feeds business, art AND fashion, so the same piece reaches
+        # several pools. Repeats are skipped, but `idx` counts every item — it is the
+        # position in the concatenated pools that the scheduler re-derives.
+        deduper = StoryDeduper()
+        skipped_duplicates = 0
         for category_name, news_list in pools:
             for item in news_list:
+                if not deduper.accept(item):
+                    skipped_duplicates += 1
+                    idx += 1
+                    continue
+
                 description = _clean_html(item.get("description", ""))[:800]
                 indexed_news.append({
                     "index": idx,
@@ -310,15 +429,18 @@ async def select_themed_news_with_summaries(
                 item_by_index[idx] = item
                 idx += 1
 
-        logger.info(f"Themed news pool: {len(indexed_news)} items "
+        logger.info(f"Themed news pool: {len(indexed_news)} unique items of {idx} "
                     f"(business {len(business_news)}, art {len(art_news)}, "
-                    f"fashion {len(fashion_news)}, good {len(good_news)})")
+                    f"fashion {len(fashion_news)}, good {len(good_news)}; "
+                    f"{skipped_duplicates} repeats dropped)")
 
-        system_prompt = """You are an editor of a personal digest for a reader who only wants:
+        system_prompt = f"""You are an editor of a personal digest for a reader who only wants:
 business & economy, art & culture, fashion, and genuinely good/uplifting news.
 You STRICTLY REJECT politics, war, conflict, crime, sports, and technology/gadgets.
 Pick ONLY from the pool indicated by each item's "available_in" tag.
-For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Return ONLY a valid JSON array."""
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description.
+{_NO_DUPLICATES_RULE_EN}
+Return ONLY a valid JSON array."""
 
         user_prompt = f"""ВЫБЕРИ ДО 6 НОВОСТЕЙ по темам пользователя: бизнес, искусство, мода, добрые новости.
 
@@ -375,30 +497,18 @@ NEWS:
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        try:
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if not match:
-                logger.error(f"No JSON array in themed response: {gpt_response[:100]}")
-                return None
-            try:
-                selected_news = json.loads(match.group())
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse themed JSON: {gpt_response[:100]}")
-                return None
+        selected_news = _parse_selection(gpt_response, "themed")
+        if not selected_news:
+            return None
 
         valid_news = []
         seen_indices = set()
         for item in selected_news:
-            if not isinstance(item, dict):
-                continue
             i = item.get("index", -1)
-            if not (0 <= i < len(indexed_news)) or i in seen_indices:
+            # Membership, not a range check: indices span the concatenated pools while
+            # duplicates were skipped, so offered indices exceed len(indexed_news).
+            if i not in item_by_index or i in seen_indices:
+                logger.warning(f"Invalid/duplicate themed index {i}, skipping")
                 continue
             if _is_rejected_description(item.get("description_ru", "")):
                 logger.info(f"  ⛔ Dropped themed news (reject marker ❌): index {i}")
@@ -444,15 +554,12 @@ async def select_good_news_with_summaries(
         # Build indexed news list, removing duplicates by URL
         # Keep original indices so we can match them back in scheduler
         indexed_news = []
-        seen_urls = set()
+        deduper = StoryDeduper()
 
         for orig_pos, item in enumerate(goodness_news):
-            url = item.get("url", "")
-            # Skip if duplicate URL
-            if url and url in seen_urls:
+            # Skips both the same url twice and the same story retold by another outlet
+            if not deduper.accept(item):
                 continue
-            if url:
-                seen_urls.add(url)
 
             description = item.get("description", "")
             description = _clean_html(description)[:800]
@@ -475,13 +582,16 @@ async def select_good_news_with_summaries(
 
         logger.info(f"Processing {len(indexed_news)} unique good news items (deduplicated)")
 
+        # The exact set shown to the model — the only indices a reply may reference.
+        offered_indices = {entry["index"] for entry in indexed_news}
+
         # Build prompt for ChatGPT.
         # This path serves the "good-news-only" user (Маша): NO politics, economics,
         # finance, markets, war or sports — ONLY warm, uplifting, heartwarming stories
         # (animals, zoos, wildlife, rescues, kindness, generosity, human-interest,
         # nature, helpful science). Quality over quantity: returning 2-3 genuinely
         # uplifting items is far better than padding to 6 with hard news.
-        system_prompt = """You are an editor of a "good news only" digest for a kind, animal-loving reader.
+        system_prompt = f"""You are an editor of a "good news only" digest for a kind, animal-loving reader.
 You select ONLY genuinely warm, uplifting, heartwarming stories: animals, zoos, wildlife,
 rescues, acts of kindness and generosity, touching human-interest stories, nature, and
 science/medicine breakthroughs that help people or animals.
@@ -489,7 +599,9 @@ You STRICTLY REJECT anything about politics, government, elections, economics, f
 markets, oil/energy, business, war, conflict, crime, disasters, diseases, deaths, and ALL
 sports. When in doubt, reject.
 Quality over quantity: pick FEWER items rather than including anything that is not clearly uplifting.
-For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description. Return ONLY a valid JSON array."""
+For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description.
+{_NO_DUPLICATES_RULE_EN}
+Return ONLY a valid JSON array."""
 
         user_prompt = f"""ВЫБЕРИ ДО 6 ПО-НАСТОЯЩЕМУ ДОБРЫХ, ТЁПЛЫХ И ВДОХНОВЛЯЮЩИХ НОВОСТЕЙ из списка (можно МЕНЬШЕ — лучше 2-3 отличных, чем 6 с натяжкой).
 
@@ -547,36 +659,15 @@ NEWS:
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        # Parse JSON response
-        try:
-            # Extract JSON if wrapped in markdown
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            # Try extracting first [ ... ] block
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if match:
-                try:
-                    selected_news = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse JSON: {gpt_response[:100]}")
-                    return None
-            else:
-                logger.error(f"No JSON array found in response: {gpt_response[:100]}")
-                return None
+        selected_news = _parse_selection(gpt_response, "good news")
+        if not selected_news:
+            return None
 
         # Validate indices and build result
         valid_news = []
         seen_indices = set()
 
         for item in selected_news:
-            if not isinstance(item, dict):
-                continue
-
             idx = item.get("index", -1)
 
             # Skip duplicates
@@ -584,9 +675,11 @@ NEWS:
                 logger.debug(f"Skipping duplicate index {idx}")
                 continue
 
-            # Validate index
-            if not (0 <= idx < len(indexed_news)):
-                logger.warning(f"Invalid index {idx} (max {len(indexed_news)-1}), skipping")
+            # Only indices actually offered are valid. Not a range check: the index is
+            # the position in the full pool, and repeats were skipped when building the
+            # candidate list, so offered indices run past len(indexed_news).
+            if idx not in offered_indices:
+                logger.warning(f"Index {idx} was never offered to ChatGPT, skipping")
                 continue
 
             # Drop items ChatGPT refused/couldn't summarize (returns ❌ or a refusal phrase)
@@ -641,14 +734,11 @@ async def select_crypto_news_with_summaries(
         # Build indexed news list, removing duplicates by URL.
         # Keep original indices so the scheduler can match them back.
         indexed_news = []
-        seen_urls = set()
+        deduper = StoryDeduper()
 
         for orig_pos, item in enumerate(crypto_news):
-            url = item.get("url", "")
-            if url and url in seen_urls:
+            if not deduper.accept(item):
                 continue
-            if url:
-                seen_urls.add(url)
 
             description = _clean_html(item.get("description", ""))[:800]
             entry = {
@@ -673,11 +763,12 @@ async def select_crypto_news_with_summaries(
 
         logger.info(f"Processing {len(indexed_news)} unique crypto news items (deduplicated)")
 
-        system_prompt = """You are a crypto editor for an ACTIVE TRADER who trades Bitcoin (BTC), Ethereum (ETH) and Solana (SOL).
+        system_prompt = f"""You are a crypto editor for an ACTIVE TRADER who trades Bitcoin (BTC), Ethereum (ETH) and Solana (SOL).
 You select stories that can move the price of those three coins or that the trader can act on.
 You REJECT explainers and educational columns ("how blockchain works"), altcoin/memecoin/NFT hype,
 airdrops, press releases, exchange promos and anonymous price predictions with no data behind them.
 For each chosen item write a Russian summary (40-70 words) that is a factual GIST of the story itself — what happened, how it works, the named numbers and details. Never write why-it-matters commentary, and never invent facts that are not in the supplied title/description.
+{_NO_DUPLICATES_RULE_EN}
 Return ONLY a valid JSON array."""
 
         user_prompt = f"""ВЫБЕРИ {count} КРИПТО-НОВОСТИ, ПОЛЕЗНЫЕ ДЛЯ АКТИВНОГО ТРЕЙДЕРА BTC, ETH и SOL.
@@ -745,25 +836,9 @@ Return ONLY a valid JSON array."""
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        # Parse JSON response
-        try:
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if match:
-                try:
-                    selected_news = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse crypto JSON: {gpt_response[:100]}")
-                    return None
-            else:
-                logger.error(f"No JSON array in crypto response: {gpt_response[:100]}")
-                return None
+        selected_news = _parse_selection(gpt_response, "crypto")
+        if not selected_news:
+            return None
 
         # Only indices actually shown to the model are acceptable: the pool is capped,
         # so a larger in-range index would resolve to a story ChatGPT never saw.
@@ -820,14 +895,11 @@ async def select_stocks_news_with_summaries(
 
     try:
         indexed_news = []
-        seen_urls = set()
+        deduper = StoryDeduper()
 
         for orig_pos, item in enumerate(stocks_news):
-            url = item.get("url", "")
-            if url and url in seen_urls:
+            if not deduper.accept(item):
                 continue
-            if url:
-                seen_urls.add(url)
 
             entry = {
                 "index": orig_pos,
@@ -919,22 +991,9 @@ Return ONLY a valid JSON array."""
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        try:
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if not match:
-                logger.error(f"No JSON array in stocks response: {gpt_response[:100]}")
-                return None
-            try:
-                selected_news = json.loads(match.group())
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse stocks JSON: {gpt_response[:100]}")
-                return None
+        selected_news = _parse_selection(gpt_response, "stocks")
+        if not selected_news:
+            return None
 
         offered_indices = {entry["index"] for entry in indexed_news}
 
@@ -1003,14 +1062,11 @@ async def _select_local_news(
     try:
         # Keep original positions so the scheduler can resolve source/url back.
         indexed_news = []
-        seen_urls = set()
+        deduper = StoryDeduper()
 
         for orig_pos, item in enumerate(news):
-            url = item.get("url", "")
-            if url and url in seen_urls:
+            if not deduper.accept(item):
                 continue
-            if url:
-                seen_urls.add(url)
 
             indexed_news.append({
                 "index": orig_pos,
@@ -1118,25 +1174,8 @@ Return ONLY a valid JSON array."""
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        try:
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if not match:
-                logger.error(f"No JSON array in {category} response: {gpt_response[:100]}")
-                return None
-            try:
-                selected_news = json.loads(match.group())
-            except json.JSONDecodeError:
-                logger.error(f"Failed to parse {category} JSON: {gpt_response[:100]}")
-                return None
-
-        if not isinstance(selected_news, list):
-            logger.error(f"{category} response is not a list: {gpt_response[:100]}")
+        selected_news = _parse_selection(gpt_response, category)
+        if not selected_news:
             return None
 
         # Only indices actually shown to the model are acceptable: the pool is
@@ -1273,6 +1312,14 @@ async def select_and_summarize_news_with_gpt(
         idx_to_original = {}  # Map index -> (pool_name, original_item)
         idx = 0
 
+        # The five pools overlap — BBC News feeds both politics and culture, and the
+        # same event gets retold by every outlet — so the model used to be offered one
+        # story under several indices and pick it twice. Repeats are dropped here, but
+        # `idx` still counts EVERY item: it is the position in the concatenated pools
+        # that the scheduler re-derives to map a selection back to its source and url.
+        deduper = StoryDeduper()
+        skipped_duplicates = 0
+
         for category_name, news_list in [
             ("politics", politics_news),
             ("sports", sports_news),
@@ -1281,6 +1328,11 @@ async def select_and_summarize_news_with_gpt(
             ("goodness", goodness_news),
         ]:
             for item in news_list:
+                if not deduper.accept(item):
+                    skipped_duplicates += 1
+                    idx += 1
+                    continue
+
                 description = item.get("description", "")
                 description = _clean_html(description)[:800]
 
@@ -1298,6 +1350,12 @@ async def select_and_summarize_news_with_gpt(
                     item,
                 )  # Save original for validation
                 idx += 1
+
+        if skipped_duplicates:
+            logger.info(
+                f"Deduplicated main news: {len(indexed_news)} unique of {idx} "
+                f"({skipped_duplicates} repeats dropped)"
+            )
 
         # Fetch user's custom news prompt if it exists
         custom_prompt = await get_news_prompt(user_id)
@@ -1340,6 +1398,7 @@ async def select_and_summarize_news_with_gpt(
 - Спорт (позиция #3): приоритет ФУТБОЛ (любые лиги), затем хоккей/теннис
 - Позиция #6 (goodness): ТОЛЬКО позитив, БАН на болезни/смерти/войны/трагедии
 - Исключения: читаю "ИСКЛЮЧАЮ:" в профиле и ПОЛНОСТЬЮ их игнорирую
+{_NO_DUPLICATES_RULE}
 
 FORMAT - ВАЖНО:
 {_SUMMARY_RULES}
@@ -1417,31 +1476,9 @@ FORMAT - ВАЖНО:
         data = response.json()
         gpt_response = data["choices"][0]["message"]["content"].strip()
 
-        # Parse JSON response with robust extraction
-        import re
-
-        try:
-            # Try extracting JSON if wrapped in markdown
-            if "```json" in gpt_response:
-                gpt_response = gpt_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in gpt_response:
-                gpt_response = gpt_response.split("```")[1].split("```")[0].strip()
-
-            selected_news = json.loads(gpt_response)
-        except json.JSONDecodeError:
-            # Try extracting first [ ... ] block if not valid JSON
-            match = re.search(r"\[.*\]", gpt_response, re.DOTALL)
-            if match:
-                try:
-                    selected_news = json.loads(match.group())
-                except json.JSONDecodeError:
-                    logger.error(
-                        f"Failed to parse JSON even after extraction: {gpt_response[:100]}"
-                    )
-                    return None
-            else:
-                logger.error(f"No JSON array found in response: {gpt_response[:100]}")
-                return None
+        selected_news = _parse_selection(gpt_response, "main news")
+        if not selected_news:
+            return None
 
         # Extract exclusions from user profile
         exclusions = _extract_exclusions(user_profile_section)
@@ -1457,16 +1494,16 @@ FORMAT - ВАЖНО:
         }
 
         for item in selected_news:
-            if not isinstance(item, dict) or not (
-                0 <= item.get("index", -1) < len(indexed_news)
-            ):
-                idx = item.get("index") if isinstance(item, dict) else "unknown"
-                logger.warning(
-                    f"Invalid index {idx} (max {len(indexed_news)-1}), skipping"
-                )
+            idx = item.get("index", -1)
+
+            # Valid indices are exactly the ones offered to the model. A plain range
+            # check would be wrong: indices count every item in the concatenated pools
+            # (so the scheduler can resolve them), while duplicates were skipped, so
+            # the highest offered index is larger than len(indexed_news).
+            if idx not in idx_to_original:
+                logger.warning(f"Index {idx} was never offered to ChatGPT, skipping")
                 continue
 
-            idx = item.get("index")
             category = item.get("category", "unknown")
 
             # Drop items ChatGPT refused/couldn't summarize (returns ❌ or a refusal phrase)
@@ -1474,25 +1511,21 @@ FORMAT - ВАЖНО:
                 logger.info(f"  ⛔ Dropped news (GPT reject marker ❌ / refusal): index {idx}")
                 continue
 
-            # Get original news item from saved mapping
-            if idx in idx_to_original:
-                _, original_news = idx_to_original[idx]
-                title = original_news.get("title", "")
-                description = original_news.get("description", "")
-                combined_text = f"{title} {description}"
+            _, original_news = idx_to_original[idx]
+            title = original_news.get("title", "")
+            description = original_news.get("description", "")
+            combined_text = f"{title} {description}"
 
-                if exclusions and _has_excluded_content(combined_text, exclusions):
-                    logger.warning(f"  ⚠️  Rejected by exclusions: {title[:50]}...")
-                    continue
+            if exclusions and _has_excluded_content(combined_text, exclusions):
+                logger.warning(f"  ⚠️  Rejected by exclusions: {title[:50]}...")
+                continue
 
-                # Normalize category back onto the item so downstream consumers
-                # (this logger + scheduler) can rely on item["category"] existing
-                # even when ChatGPT omits the field for some items.
-                item["category"] = category
-                valid_news.append(item)
-                category_counts[category] = category_counts.get(category, 0) + 1
-            else:
-                logger.warning(f"Index {idx} not found in mapping, skipping")
+            # Normalize category back onto the item so downstream consumers
+            # (this logger + scheduler) can rely on item["category"] existing
+            # even when ChatGPT omits the field for some items.
+            item["category"] = category
+            valid_news.append(item)
+            category_counts[category] = category_counts.get(category, 0) + 1
 
         if not valid_news:
             logger.warning("All news items were invalid or excluded, returning None")

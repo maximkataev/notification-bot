@@ -57,6 +57,7 @@ from src.workers.national_teams import get_national_team_events
 from src.workers.forex_multi_source import get_eur_usd_multi_source
 from src.workers.meme_fetcher import get_fresh_memes_for_digest
 from src.workers.precipitation_checker import get_upcoming_precipitation
+from src.workers.news_dedupe import StoryDeduper
 from src.workers.tbilisi_reddit import get_tbilisi_reddit_highlight
 from src.workers.place_recommender import get_place_of_day
 from src.workers.joke_of_day import get_joke_of_day
@@ -564,6 +565,10 @@ async def _morning_digest_impl(
     # the main ChatGPT selection fails. news_num keeps the numbering continuous.
     news_lines = []
     news_num = 0
+    # Spans every news block in the digest: the main selection and the crypto, stocks
+    # and regional ones are separate ChatGPT calls over overlapping wires, so only a
+    # shared record can stop the same story appearing twice under two numbers.
+    digest_deduper = StoryDeduper()
 
     if total_news > 0 or use_themed_news:
         if use_themed_news:
@@ -655,6 +660,13 @@ async def _morning_digest_impl(
                     source = original_news.get("source", "Unknown")
                     url = original_news.get("url", "")
 
+                    # Guards against a story repeating across the separately-selected
+                    # blocks below (crypto / stocks / regional draw from wires that
+                    # overlap this one), and against ChatGPT picking one story twice.
+                    if not digest_deduper.accept(original_news):
+                        logger.info(f"  ⊘ Duplicate story skipped: {original_news.get('title', '')[:60]}")
+                        continue
+
                     news_num += 1
 
                     # Format: <a href="url">Source</a>: description_ru (full, complete text)
@@ -711,6 +723,10 @@ async def _morning_digest_impl(
                 continue
 
             src_item = pool[idx]
+            if not digest_deduper.accept(src_item):
+                logger.info(f"  ⊘ Duplicate {label} story skipped: {src_item.get('title', '')[:60]}")
+                continue
+
             source = src_item.get("source", label)
             url = src_item.get("url", "")
             news_num += 1
