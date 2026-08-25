@@ -1550,3 +1550,135 @@ FORMAT - ВАЖНО:
         logger.error(f"Failed to process news with ChatGPT: {type(e).__name__}: {e}")
         logger.debug(f"Full error:", exc_info=True)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Final editorial pass (main user only)
+# ---------------------------------------------------------------------------
+
+# Reader profile for the final curation pass. Describes WHO the digest is for so the
+# curator judges "interesting" against a real person, not an abstract reader.
+_CURATION_READER_PROFILE = """ПРОФИЛЬ ЧИТАТЕЛЯ (Максим):
+- Мужчина, живёт в Тбилиси (Грузия)
+- Системный / бизнес-аналитик в IT, глубоко разбирается в технологиях; AI и всё вокруг него — главный профессиональный интерес
+- Пассивный криптотрейдер: торгует BTC, ETH, SOL — новости с реальным влиянием на эти монеты ему важны, но только значительные новости
+- Футбол (европейский, особенно испанский)
+- Любит новости, где есть СОБЫТИЕ и МЕХАНИЗМ: что произошло, как устроено, конкретные цифры, неожиданные повороты, яркие и необычные истории
+
+ЧТО ЕМУ НЕ НУЖНО (безжалостно вычёркивай):
+- Тяжёлая сухая экономика: макросводки, отчёты, торговые балансы, «индекс вырос на 0,1%» — всё, что не влияет напрямую на его активы (BTC/ETH/SOL, S&P 500/Nasdaq) и не содержит яркого события
+- Протокольная политика: встречи, заявления, «стороны обсудили», переговоры без результата
+- Скучные новости: без события, без деталей, без последствий
+- «Новость ради новости»: формально новость есть, а рассказать нечего — ничего не изменилось и не изменится"""
+
+
+async def curate_digest_news(
+    candidates: List[Dict[str, Any]],
+    min_count: int = 6,
+    max_count: int = 8,
+) -> Optional[List[int]]:
+    """Final editorial pass over the ALREADY selected digest news (Максим).
+
+    The per-pool selectors are generous — together they hand the digest ~10 stories.
+    This pass re-reads all of them as one list against the reader profile and keeps
+    only the genuinely interesting min_count..max_count.
+
+    Args:
+        candidates: the prepared stories, each with description_ru/source/category
+                    (and optionally title/emoji) — order is the digest order.
+
+    Returns:
+        Sorted list of indices into `candidates` to KEEP, or None when the pass
+        failed / returned garbage — the caller then keeps all candidates (the
+        curation is a filter, never a reason to lose the news block).
+    """
+    import os
+    from src.utils.doppler import get_secret
+
+    if len(candidates) <= min_count:
+        return None
+
+    try:
+        indexed = [
+            {
+                "index": i,
+                "category": c.get("category", ""),
+                "source": c.get("source", ""),
+                "title": c.get("title", ""),
+                "summary_ru": c.get("description_ru", ""),
+            }
+            for i, c in enumerate(candidates)
+        ]
+
+        system_prompt = """You are the final, ruthless editor of a personal morning digest.
+The stories below were already selected and summarized; your ONLY job is to CUT the list down
+to the ones this specific reader will actually enjoy. You do not rewrite anything.
+Return ONLY a valid JSON array of integers — the indices to KEEP."""
+
+        user_prompt = f"""Вычитай подготовленные новости дайджеста и оставь только САМЫЕ ИНТЕРЕСНЫЕ для читателя.
+
+{_CURATION_READER_PROFILE}
+
+ПРАВИЛА ОТБОРА:
+- Оставь МИНИМУМ {min_count}, МАКСИМУМ {max_count} новостей (целься в {min_count}-{max_count - 1})
+- Ранжируй по интересности ИМЕННО ДЛЯ ЭТОГО читателя, а не по «важности для мира»
+- Сохраняй разнообразие тем: не оставляй список из одной темы, если есть достойные новости из других
+- Категории crypto и stocks — это его ДЕНЬГИ (позиции в BTC/ETH/SOL и индексах США): оставляй их,
+  если там реальное событие с влиянием на цену; режь, если это дежурная сводка без события
+- Если две новости об одном и том же событии — оставь одну, лучшую
+- ЗАПРЕЩЕНО менять порядок, переписывать тексты или добавлять что-то от себя — только индексы
+
+НОВОСТИ:
+{json.dumps(indexed, ensure_ascii=False, indent=2)}
+
+ОТВЕТ: только JSON-массив индексов оставленных новостей, например [0, 2, 3, 5, 6, 8, 9]. Без другого текста."""
+
+        api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": "gpt-5.4-mini",
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_completion_tokens": 500,
+                },
+            )
+
+        if response.status_code != 200:
+            logger.error(f"OpenAI API error (curation): {response.status_code} - {response.text}")
+            return None
+
+        data = response.json()
+        gpt_response = data["choices"][0]["message"]["content"].strip()
+
+        # The answer is a bare array of ints; a regex over the raw reply also survives
+        # ```-fences and stray prose around the JSON.
+        match = re.search(r"\[[-\d,\s]*\]", gpt_response, re.DOTALL)
+        if not match:
+            logger.error(f"No index array in curation response: {gpt_response[:200]}")
+            return None
+
+        raw = json.loads(match.group())
+        kept = sorted({i for i in raw if isinstance(i, int) and 0 <= i < len(candidates)})
+
+        if len(kept) < min(min_count, len(candidates)):
+            logger.warning(
+                f"Curation kept only {len(kept)} of {len(candidates)} items (min {min_count}) — ignoring pass"
+            )
+            return None
+        if len(kept) > max_count:
+            # Trust the model's list but respect the hard cap: keep digest order.
+            kept = kept[:max_count]
+
+        logger.info(f"✓ Curation kept {len(kept)}/{len(candidates)} news items: {kept}")
+        return kept
+
+    except Exception as e:
+        logger.error(f"News curation failed: {type(e).__name__}: {e}")
+        return None

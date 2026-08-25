@@ -38,6 +38,7 @@ from src.ai.news_processor import (
     select_georgia_news_with_summaries,
     select_georgia_good_news_with_summaries,
     select_vienna_good_news_with_summaries,
+    curate_digest_news,
 )
 from src.workers.gwp_checker import check_gwp_works, check_water_cuts
 from src.workers.subscriptions_checker import check_expiring_subscriptions
@@ -92,6 +93,11 @@ GEORGIA_NEWS_COUNT = 2
 GEORGIA_GOOD_NEWS_USERS = {184010236}
 # Users who get one extra GOOD Vienna news item (Юля)
 VIENNA_GOOD_NEWS_USERS = {498233237}
+# Users whose news pass a FINAL curation step: GPT re-reads everything the per-pool
+# selectors picked and keeps only the 6-8 most interesting stories (Максим)
+NEWS_CURATION_USERS = {71488343}
+NEWS_CURATION_MIN = 6
+NEWS_CURATION_MAX = 8
 # Users who get the English idiom/euphemism of the day (Маша и Максим)
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
 # Users who get the joke of the day (только Юля)
@@ -560,11 +566,12 @@ async def _morning_digest_impl(
     # generator so the intro can riff on today's headlines.
     selected_news_for_intro = []
 
-    # Rendered news lines are collected here first and flushed into the digest
-    # further down, so the extra regional/crypto items still make it in even when
-    # the main ChatGPT selection fails. news_num keeps the numbering continuous.
-    news_lines = []
-    news_num = 0
+    # Every story that makes it through selection is collected here as a dict first
+    # (source/url/description_ru/emoji/...) and rendered into numbered lines further
+    # down — so the extra regional/crypto items still make it in even when the main
+    # ChatGPT selection fails, and the final curation pass (Максим) can trim the
+    # combined list before anything is numbered.
+    news_candidates = []
     # Spans every news block in the digest: the main selection and the crypto, stocks
     # and regional ones are separate ChatGPT calls over overlapping wires, so only a
     # shared record can stop the same story appearing twice under two numbers.
@@ -667,22 +674,18 @@ async def _morning_digest_impl(
                         logger.info(f"  ⊘ Duplicate story skipped: {original_news.get('title', '')[:60]}")
                         continue
 
-                    news_num += 1
-
-                    # Format: <a href="url">Source</a>: description_ru (full, complete text)
-                    news_text = (
-                        f'{news_num}. <a href="{_esc_attr(url)}">{_esc(source)}</a>: {_esc(description_ru)}'
-                        if url
-                        else f"{news_num}. {_esc(source)}: {_esc(description_ru)}"
+                    news_candidates.append(
+                        {
+                            "emoji": "",
+                            "source": source,
+                            "url": url,
+                            "title": original_news.get("title", ""),
+                            "category": category,
+                            "description_ru": description_ru,
+                        }
                     )
 
-                    news_lines.append(news_text)
-                    news_lines.append("")
-                    selected_news_for_intro.append(description_ru)
-
-                    logger.info(
-                        f"  [{news_num}] {category}: {description_ru[:60]}... | {source}"
-                    )
+                    logger.info(f"  [+] {category}: {description_ru[:60]}... | {source}")
                 else:
                     logger.warning(f"Invalid index {combined_idx} for news selection, skipping")
         else:
@@ -697,9 +700,7 @@ async def _morning_digest_impl(
     #   Маша   — 1 GOOD Georgia story (Tbilisi preferred), only if one exists
     #   Юля    — 1 GOOD Vienna story, only if one exists
     async def _append_local_news(selector, pool, emoji, label):
-        """Run a selector over `pool` and append its picks to news_lines."""
-        nonlocal news_num
-
+        """Run a selector over `pool` and append its picks to news_candidates."""
         if not pool:
             logger.info(f"Empty {label} pool (section skipped)")
             return
@@ -729,16 +730,17 @@ async def _morning_digest_impl(
 
             source = src_item.get("source", label)
             url = src_item.get("url", "")
-            news_num += 1
-            line = (
-                f'{news_num}. {emoji} <a href="{_esc_attr(url)}">{_esc(source)}</a>: {_esc(desc)}'
-                if url
-                else f"{news_num}. {emoji} {_esc(source)}: {_esc(desc)}"
+            news_candidates.append(
+                {
+                    "emoji": emoji,
+                    "source": source,
+                    "url": url,
+                    "title": src_item.get("title", ""),
+                    "category": label,
+                    "description_ru": desc,
+                }
             )
-            news_lines.append(line)
-            news_lines.append("")
-            selected_news_for_intro.append(desc)
-            logger.info(f"  [{news_num}] {label}: {desc[:60]}... | {source}")
+            logger.info(f"  [+] {label}: {desc[:60]}... | {source}")
 
     if user_id in CRYPTO_NEWS_USERS:
         await _append_local_news(
@@ -766,6 +768,45 @@ async def _morning_digest_impl(
         await _append_local_news(
             select_vienna_good_news_with_summaries, vienna_news, "🇦🇹", "vienna-good"
         )
+
+    # Final editorial pass (Максим): GPT re-reads the combined prepared list against
+    # his reader profile and keeps only the 6-8 genuinely interesting stories — dry
+    # economics, protocol politics and news-for-the-sake-of-news get cut here.
+    # Non-fatal: when the pass fails, ALL candidates stay in the digest.
+    if user_id in NEWS_CURATION_USERS and len(news_candidates) > NEWS_CURATION_MIN:
+        logger.info(f"Running final news curation over {len(news_candidates)} candidates")
+        try:
+            kept_indices = await curate_digest_news(
+                news_candidates,
+                min_count=NEWS_CURATION_MIN,
+                max_count=NEWS_CURATION_MAX,
+            )
+        except Exception as e:
+            logger.warning(f"News curation failed: {type(e).__name__}: {str(e)[:100]}")
+            kept_indices = None
+
+        if kept_indices is not None:
+            kept_set = set(kept_indices)
+            for i, cand in enumerate(news_candidates):
+                if i not in kept_set:
+                    logger.info(f"  ⊘ Curation cut [{cand['category']}]: {cand['description_ru'][:60]}...")
+            news_candidates = [news_candidates[i] for i in kept_indices]
+        else:
+            logger.warning("News curation pass skipped/failed — keeping all candidates")
+
+    # Render the surviving candidates into numbered digest lines
+    news_lines = []
+    for news_num, cand in enumerate(news_candidates, start=1):
+        emoji_part = f"{cand['emoji']} " if cand["emoji"] else ""
+        url = cand["url"]
+        line = (
+            f'{news_num}. {emoji_part}<a href="{_esc_attr(url)}">{_esc(cand["source"])}</a>: {_esc(cand["description_ru"])}'
+            if url
+            else f"{news_num}. {emoji_part}{_esc(cand['source'])}: {_esc(cand['description_ru'])}"
+        )
+        news_lines.append(line)
+        news_lines.append("")
+        selected_news_for_intro.append(cand["description_ru"])
 
     message_lines.append("Новости:")
     if news_lines:
