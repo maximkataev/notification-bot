@@ -17,6 +17,7 @@ Per project rules: NO HARDCODED FALLBACKS — if generation fails, return None a
 the scheduler simply omits the section.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -32,6 +33,8 @@ from src.db.database import (
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
+
+_place_lock = asyncio.Lock()
 
 
 def _content_type(city: str) -> str:
@@ -105,27 +108,28 @@ async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
     today = datetime.now().strftime("%Y-%m-%d")
     content_type = _content_type(city)
 
-    # Same day → return the already-chosen place so every recipient sees the same one.
-    cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
-    if cached:
-        logger.info(f"Place of day [{city}] (cached for {today}): {cached.get('name')}")
-        return cached
+    async with _place_lock:
+        # Same day → return the already-chosen place so every recipient sees the same one.
+        cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
+        if cached:
+            logger.info(f"Place of day [{city}] (cached for {today}): {cached.get('name')}")
+            return cached
 
-    # Everything sent in the last 90 days is off limits.
-    recent_places = await get_shown_keys(GLOBAL_USER_ID, content_type)
+        # Everything sent in the last 90 days is off limits.
+        recent_places = await get_shown_keys(GLOBAL_USER_ID, content_type)
 
-    try:
-        kind = random.choice(_PLACE_KINDS[city])
+        try:
+            kind = random.choice(_PLACE_KINDS[city])
 
-        avoid_block = ""
-        if recent_places:
-            joined = "\n".join(f"- {p}" for p in recent_places)
-            avoid_block = (
-                "\n\nНЕ предлагай эти места (они уже были за последние 90 дней):\n"
-                + joined
-            )
+            avoid_block = ""
+            if recent_places:
+                joined = "\n".join(f"- {p}" for p in recent_places)
+                avoid_block = (
+                    "\n\nНЕ предлагай эти места (они уже были за последние 90 дней):\n"
+                    + joined
+                )
 
-        prompt = f"""Порекомендуй ОДНО место в {meta['city_prep']}, которое стоит посетить {meta['audience']} на сегодня ({today}).
+            prompt = f"""Порекомендуй ОДНО место в {meta['city_prep']}, которое стоит посетить {meta['audience']} на сегодня ({today}).
 Тип на сегодня: {kind}.
 
 Требования:
@@ -142,53 +146,53 @@ async def get_place_of_day(city: str = "tbilisi") -> Optional[Dict[str, Any]]:
   "description": "описание на русском, 1-2 предложения"
 }}"""
 
-        response = await get_client().chat.completions.create(
-            model="gpt-5.4-mini",
-            max_completion_tokens=300,
-            temperature=1.0,
-            messages=[
-                {"role": "system", "content": meta["guide"]},
-                {"role": "user", "content": prompt},
-            ],
-        )
+            response = await get_client().chat.completions.create(
+                model="gpt-5.4-mini",
+                max_completion_tokens=300,
+                temperature=1.0,
+                messages=[
+                    {"role": "system", "content": meta["guide"]},
+                    {"role": "user", "content": prompt},
+                ],
+            )
 
-        raw = response.choices[0].message.content.strip()
+            raw = response.choices[0].message.content.strip()
 
-        # Strip markdown code fences if present
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0].strip()
+            # Strip markdown code fences if present
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0].strip()
 
-        data = json.loads(raw)
+            data = json.loads(raw)
 
-        name = (data.get("name") or "").strip()
-        description = (data.get("description") or "").strip()
-        if not name or not description:
-            logger.warning(f"Place of day [{city}]: missing name or description, skipping")
+            name = (data.get("name") or "").strip()
+            description = (data.get("description") or "").strip()
+            if not name or not description:
+                logger.warning(f"Place of day [{city}]: missing name or description, skipping")
+                return None
+
+            result = {
+                "name": name,
+                "kind": (data.get("kind") or "локация").strip(),
+                "area": (data.get("area") or "").strip(),
+                "description": description,
+            }
+
+            # Record in history so it is not repeated for 90 days (and so every
+            # recipient of today's digest gets this same place).
+            await record_shown_item(
+                GLOBAL_USER_ID,
+                content_type,
+                name,
+                title=name,
+                payload=result,
+                shown_date=today,
+            )
+
+            logger.info(f"✓ Place of day [{city}]: {name} ({result['area']})")
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to get place of day [{city}]: {type(e).__name__}: {e}")
             return None
-
-        result = {
-            "name": name,
-            "kind": (data.get("kind") or "локация").strip(),
-            "area": (data.get("area") or "").strip(),
-            "description": description,
-        }
-
-        # Record in history so it is not repeated for 90 days (and so every
-        # recipient of today's digest gets this same place).
-        await record_shown_item(
-            GLOBAL_USER_ID,
-            content_type,
-            name,
-            title=name,
-            payload=result,
-            shown_date=today,
-        )
-
-        logger.info(f"✓ Place of day [{city}]: {name} ({result['area']})")
-        return result
-
-    except Exception as e:
-        logger.warning(f"Failed to get place of day [{city}]: {type(e).__name__}: {e}")
-        return None

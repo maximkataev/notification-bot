@@ -16,6 +16,7 @@ Per project rules: NO HARDCODED FALLBACKS — if generation fails, return None a
 scheduler simply omits the section.
 """
 
+import asyncio
 import json
 import logging
 import random
@@ -31,6 +32,8 @@ from src.db.database import (
 from src.utils.openai_client import get_client
 
 logger = logging.getLogger(__name__)
+
+_idiom_lock = asyncio.Lock()
 
 
 def _content_type(language: str) -> str:
@@ -101,27 +104,28 @@ async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
     today = datetime.now().strftime("%Y-%m-%d")
     content_type = _content_type(language)
 
-    # Same day → return the already-chosen idiom so every recipient sees the same one.
-    cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
-    if cached:
-        logger.info(f"Idiom of day [{language}] (cached for {today}): {cached.get('phrase')}")
-        return cached
+    async with _idiom_lock:
+        # Same day → return the already-chosen idiom so every recipient sees the same one.
+        cached = await get_item_shown_on(GLOBAL_USER_ID, content_type, today)
+        if cached:
+            logger.info(f"Idiom of day [{language}] (cached for {today}): {cached.get('phrase')}")
+            return cached
 
-    # Everything sent in the last 90 days is off limits.
-    recent_phrases = await get_shown_keys(GLOBAL_USER_ID, content_type)
+        # Everything sent in the last 90 days is off limits.
+        recent_phrases = await get_shown_keys(GLOBAL_USER_ID, content_type)
 
-    try:
-        kind = random.choice(_PHRASE_KINDS[language])
+        try:
+            kind = random.choice(_PHRASE_KINDS[language])
 
-        avoid_block = ""
-        if recent_phrases:
-            joined = "\n".join(f"- {p}" for p in recent_phrases)
-            avoid_block = (
-                "\n\nНЕ используй эти выражения (они уже были за последние 90 дней) "
-                "и ничего синонимичного им:\n" + joined
-            )
+            avoid_block = ""
+            if recent_phrases:
+                joined = "\n".join(f"- {p}" for p in recent_phrases)
+                avoid_block = (
+                    "\n\nНЕ используй эти выражения (они уже были за последние 90 дней) "
+                    "и ничего синонимичного им:\n" + joined
+                )
 
-        prompt = f"""Подбери ОДНУ интересную {meta['name']} идиому или эвфемизм на сегодня ({today}).
+            prompt = f"""Подбери ОДНУ интересную {meta['name']} идиому или эвфемизм на сегодня ({today}).
 Тип на сегодня: {kind}.
 
 Требования:
@@ -139,54 +143,54 @@ async def get_idiom_of_day(language: str = "en") -> Optional[Dict[str, Any]]:
   "example_ru": "перевод примера на русский"
 }}"""
 
-        response = await get_client().chat.completions.create(
-            model="gpt-5.4-mini",
-            max_completion_tokens=300,
-            temperature=1.0,
-            messages=[
-                {"role": "system", "content": meta["teacher"]},
-                {"role": "user", "content": prompt},
-            ],
-        )
+            response = await get_client().chat.completions.create(
+                model="gpt-5.4-mini",
+                max_completion_tokens=300,
+                temperature=1.0,
+                messages=[
+                    {"role": "system", "content": meta["teacher"]},
+                    {"role": "user", "content": prompt},
+                ],
+            )
 
-        raw = response.choices[0].message.content.strip()
+            raw = response.choices[0].message.content.strip()
 
-        # Strip markdown code fences if present
-        if "```json" in raw:
-            raw = raw.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw:
-            raw = raw.split("```")[1].split("```")[0].strip()
+            # Strip markdown code fences if present
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0].strip()
 
-        data = json.loads(raw)
+            data = json.loads(raw)
 
-        phrase = (data.get("phrase") or "").strip()
-        meaning = (data.get("meaning_ru") or "").strip()
-        if not phrase or not meaning:
-            logger.warning(f"Idiom of day [{language}]: missing phrase or meaning, skipping")
+            phrase = (data.get("phrase") or "").strip()
+            meaning = (data.get("meaning_ru") or "").strip()
+            if not phrase or not meaning:
+                logger.warning(f"Idiom of day [{language}]: missing phrase or meaning, skipping")
+                return None
+
+            result = {
+                "phrase": phrase,
+                "kind": (data.get("kind") or "идиома").strip(),
+                "meaning_ru": meaning,
+                "example": (data.get(meta["example_field"]) or "").strip(),
+                "example_ru": (data.get("example_ru") or "").strip(),
+            }
+
+            # Record in history so it is not repeated for 90 days (and so every
+            # recipient of today's digest gets this same phrase).
+            await record_shown_item(
+                GLOBAL_USER_ID,
+                content_type,
+                phrase,
+                title=phrase,
+                payload=result,
+                shown_date=today,
+            )
+
+            logger.info(f"✓ Idiom of day [{language}]: {phrase} — {meaning[:40]}")
+            return result
+
+        except Exception as e:
+            logger.warning(f"Failed to get idiom of day [{language}]: {type(e).__name__}: {e}")
             return None
-
-        result = {
-            "phrase": phrase,
-            "kind": (data.get("kind") or "идиома").strip(),
-            "meaning_ru": meaning,
-            "example": (data.get(meta["example_field"]) or "").strip(),
-            "example_ru": (data.get("example_ru") or "").strip(),
-        }
-
-        # Record in history so it is not repeated for 90 days (and so every
-        # recipient of today's digest gets this same phrase).
-        await record_shown_item(
-            GLOBAL_USER_ID,
-            content_type,
-            phrase,
-            title=phrase,
-            payload=result,
-            shown_date=today,
-        )
-
-        logger.info(f"✓ Idiom of day [{language}]: {phrase} — {meaning[:40]}")
-        return result
-
-    except Exception as e:
-        logger.warning(f"Failed to get idiom of day [{language}]: {type(e).__name__}: {e}")
-        return None

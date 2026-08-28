@@ -326,10 +326,12 @@ async def get_shown_keys(
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
-            SELECT DISTINCT COALESCE(item_key, creator)
+            SELECT COALESCE(item_key, creator)
             FROM shown_content
             WHERE user_id = ? AND content_type = ?
               AND COALESCE(shown_date, date(shown_at), '') >= ?
+            GROUP BY COALESCE(item_key, creator)
+            ORDER BY MAX(id) ASC
             """,
             (user_id, content_type, _history_cutoff(days)),
         )

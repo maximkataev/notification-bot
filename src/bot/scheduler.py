@@ -52,6 +52,10 @@ from src.workers.product_hunt import get_top_product
 from src.workers.content_recommender import get_content_recommendation
 from src.workers.content_parser import get_album_of_day
 from src.workers.quote_of_day import get_quote_of_day
+from src.workers.fact_of_day import get_fact_of_day
+from src.workers.art_of_day import get_art_of_day
+from src.workers.movie_recommender import get_movie_recommendation, is_movie_day
+from src.workers.book_recommender import get_book_of_week, is_book_day
 from src.workers.idiom_of_day import get_idiom_of_day
 from src.workers.football_matches import get_today_matches, get_formatted_matches, get_yesterday_results, get_formatted_results
 from src.workers.national_teams import get_national_team_events
@@ -102,6 +106,8 @@ NEWS_CURATION_MAX = 7
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
 # Users who get the joke of the day (только Юля)
 JOKE_OF_DAY_USERS = {498233237}
+# Users who get the art masterpiece of the day (Юля)
+ART_OF_DAY_USERS = {498233237}
 # Users who get the place-of-the-day recommendation and their city:
 # Маша и Максим — Тбилиси, Юля — Вена
 PLACE_OF_DAY_CITIES = {
@@ -369,15 +375,28 @@ async def _morning_digest_impl(
 
     message_lines = []
 
-    # Add quote of the day
-    logger.info("Fetching quote of the day")
-    quote = await get_quote_of_day()
-    if quote:
-        message_lines.append(f"✨ <i>\"{_esc(quote['text'])}\"</i>")
-        message_lines.append(f"<i>— {_esc(quote['author'])}</i>")
+    # Add fact of the day (fallback to quote of the day if unavailable)
+    logger.info("Fetching fact of the day (fallback: quote)")
+    fact = None
+    try:
+        fact = await get_fact_of_day()
+    except Exception as e:
+        logger.warning(f"Fact of day failed: {type(e).__name__}: {e}")
+
+    if fact:
+        topic_str = f" ({_esc(fact['topic'])})" if fact.get("topic") else ""
+        message_lines.append(f"💡 <b>Факт дня</b>{topic_str}:")
+        message_lines.append(f"<i>{_esc(fact['text'])}</i>")
         message_lines.append("")
     else:
-        logger.warning("Quote fetch failed")
+        logger.info("Fact of day unavailable, falling back to quote of the day")
+        quote = await get_quote_of_day()
+        if quote:
+            message_lines.append(f"✨ <i>\"{_esc(quote['text'])}\"</i>")
+            message_lines.append(f"<i>— {_esc(quote['author'])}</i>")
+            message_lines.append("")
+        else:
+            logger.warning("Quote fetch failed")
 
     # Add weather by periods
     logger.info("Formatting weather by periods")
@@ -970,6 +989,25 @@ async def _morning_digest_impl(
         else:
             logger.info("No joke of day (section skipped)")
 
+    # Art masterpiece of the day with story (Юля)
+    if user_id in ART_OF_DAY_USERS:
+        logger.info("Fetching art masterpiece of the day")
+        try:
+            art = await get_art_of_day()
+        except Exception as e:
+            logger.warning(f"Art of day failed: {type(e).__name__}: {str(e)[:100]}")
+            art = None
+
+        if art:
+            year_str = f" ({_esc(art['year'])})" if art.get("year") else ""
+            loc_str = f", {_esc(art['location'])}" if art.get("location") else ""
+            message_lines.append("🎨 <b>Шедевр дня:</b>")
+            message_lines.append(f'<b>«{_esc(art["title"])}»</b> — {_esc(art["artist"])}{year_str}{loc_str}')
+            message_lines.append(f'<i>{_esc(art["description"])}</i>')
+            message_lines.append("")
+        else:
+            logger.info("No art of day (section skipped)")
+
     # Tasks section (only if include_tasks=True)
     if include_tasks:
         # Tasks are already filtered by database to when_date <= today or NULL
@@ -1272,6 +1310,46 @@ async def _morning_digest_impl(
         if review:
             message_lines.append(f"<i>{review}</i>")
         message_lines.append("")
+
+    # Movie / series recommendation for evening — Tue (1), Fri (4), Sat (5), Sun (6) for everyone
+    current_weekday = datetime.now(timezone("Asia/Tbilisi")).weekday()
+    if is_movie_day(current_weekday):
+        logger.info("Fetching movie recommendation for evening")
+        try:
+            movie = await get_movie_recommendation()
+        except Exception as e:
+            logger.warning(f"Movie recommendation failed: {type(e).__name__}: {str(e)[:100]}")
+            movie = None
+
+        if movie:
+            kind_label = movie.get("kind", "фильм")
+            orig_part = f", {_esc(movie['original_title'])}" if movie.get("original_title") else ""
+            year_part = f" ({_esc(movie['year'])})" if movie.get("year") else ""
+            genre_part = f" • {_esc(movie['genre'])}" if movie.get("genre") else ""
+            message_lines.append(f"🎬 <b>Что посмотреть вечером ({_esc(kind_label)}):</b>")
+            message_lines.append(f"<b>{_esc(movie['title'])}</b>{orig_part}{year_part}{genre_part}")
+            message_lines.append(f"<i>{_esc(movie['description'])}</i>")
+            message_lines.append("")
+        else:
+            logger.info("No movie recommendation (section skipped)")
+
+    # Book of the week — once a week (Wednesday, weekday=2) for everyone
+    if is_book_day(current_weekday):
+        logger.info("Fetching book of the week recommendation")
+        try:
+            book = await get_book_of_week()
+        except Exception as e:
+            logger.warning(f"Book recommendation failed: {type(e).__name__}: {str(e)[:100]}")
+            book = None
+
+        if book:
+            genre_str = f" ({_esc(book['genre'])})" if book.get("genre") else ""
+            message_lines.append("📖 <b>Книга недели:</b>")
+            message_lines.append(f'<b>«{_esc(book["title"])}»</b> — {_esc(book["author"])}{genre_str}')
+            message_lines.append(f'<i>{_esc(book["description"])}</i>')
+            message_lines.append("")
+        else:
+            logger.info("No book recommendation (section skipped)")
 
     # Add fresh memes (1 per day, no AI summaries)
     logger.info("Fetching fresh memes")
