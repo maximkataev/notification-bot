@@ -88,16 +88,16 @@ CRYPTO_NEWS_COUNT = 2
 STOCKS_NEWS_USERS = {71488343}
 # Users who get extra GENERAL Georgia/Tbilisi news items (Максим)
 GEORGIA_NEWS_USERS = {71488343}
-GEORGIA_NEWS_COUNT = 2
+GEORGIA_NEWS_COUNT = 1
 # Users who get one extra GOOD Georgia/Tbilisi news item (Маша)
 GEORGIA_GOOD_NEWS_USERS = {184010236}
 # Users who get one extra GOOD Vienna news item (Юля)
 VIENNA_GOOD_NEWS_USERS = {498233237}
 # Users whose news pass a FINAL curation step: GPT re-reads everything the per-pool
-# selectors picked and keeps only the 6-8 most interesting stories (Максим)
+# selectors picked and keeps only the 6-7 most interesting stories (Максим)
 NEWS_CURATION_USERS = {71488343}
-NEWS_CURATION_MIN = 6
-NEWS_CURATION_MAX = 8
+NEWS_CURATION_MIN = 5
+NEWS_CURATION_MAX = 7
 # Users who get the English idiom/euphemism of the day (Маша и Максим)
 IDIOM_OF_DAY_USERS = {184010236, 71488343}
 # Users who get the joke of the day (только Юля)
@@ -674,9 +674,10 @@ async def _morning_digest_impl(
                         logger.info(f"  ⊘ Duplicate story skipped: {original_news.get('title', '')[:60]}")
                         continue
 
+                    emoji = "✨" if category in ("goodness", "good") else ""
                     news_candidates.append(
                         {
-                            "emoji": "",
+                            "emoji": emoji,
                             "source": source,
                             "url": url,
                             "title": original_news.get("title", ""),

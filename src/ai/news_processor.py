@@ -1387,14 +1387,16 @@ async def select_and_summarize_news_with_gpt(
         system_prompt = f"""Я выбираю ровно 6 новостей из 5 специализированных пулов источников.
 
 РАСПРЕДЕЛЕНИЕ ПО ПОЗИЦИЯМ:
-1️⃣ #1-2: Политика (из пула "politics") — 2 разные новости
-2️⃣ #3: Спорт (из пула "sports") — приоритет ФУТБОЛ, затем хоккей/теннис, или fallback на культуру
+1️⃣ #1-2: Политика (из пула "politics") — 1-2 новости (ОБЯЗАТЕЛЬНО минимум 1)
+2️⃣ #3: Спорт (из пула "sports") — ОБЯЗАТЕЛЬНО минимум 1: приоритет ФУТБОЛ, затем хоккей/теннис
 3️⃣ #4-5: Культура, технологии (по одной из каждого пула)
-4️⃣ #6: ДОБРЫЕ НОВОСТИ (ТОЛЬКО позитив: животные, волонтёрство, достижения, чудеса)
+4️⃣ #6: ДОБРЫЕ / ХОРОШИЕ НОВОСТИ (ОБЯЗАТЕЛЬНО 1 новость из пула "goodness": животные, волонтёрство, достижения, чудеса, позитив)
 
 КРИТИЧЕСКИЕ ПРАВИЛА:
 - Выбираю ТОЛЬКО из указанного пула для каждой позиции ("available_in")
-- ровно 6 новостей, ровно 2 политики, БАН на 3+ политики
+- ОБЯЗАТЕЛЬНО минимум 1 новость про политику ("politics")
+- ОБЯЗАТЕЛЬНО минимум 1 новость про спорт ("sports")
+- ОБЯЗАТЕЛЬНО минимум 1 Добрая/Хорошая новость ("goodness")
 - Спорт (позиция #3): приоритет ФУТБОЛ (любые лиги), затем хоккей/теннис
 - Позиция #6 (goodness): ТОЛЬКО позитив, БАН на болезни/смерти/войны/трагедии
 - Исключения: читаю "ИСКЛЮЧАЮ:" в профиле и ПОЛНОСТЬЮ их игнорирую
@@ -1417,23 +1419,21 @@ FORMAT - ВАЖНО:
 """
 
         # Build user prompt with indexed news
-        user_prompt = f"""ВЫБЕРИ И ОПИШИ РОВНО 6 НОВОСТЕЙ ПО СХЕМЕ:
+        user_prompt = f"""ВЫБЕРИ И ОПИШИ 6 НОВОСТЕЙ ПО СХЕМЕ:
 
-Позиция 1 & 2: "available_in": "politics" (2 разные новости)
-Позиция 3: "available_in": "sports" — ПРИОРИТЕТ ФУТБОЛ (футбол > хоккей > теннис > другое)
-  Если нет футбола — выбери другой спорт. Если спорта совсем нет — fallback на культуру.
+Позиция 1 & 2: "available_in": "politics" (1-2 новости про политику/экономику, минимум одна)
+Позиция 3: "available_in": "sports" — МИНИМУМ 1 НОВОСТЬ ПРО СПОРТ (ПРИОРИТЕТ ФУТБОЛ > хоккей > теннис > другое)
 Позиция 4: "available_in": "culture"
 Позиция 5: "available_in": "technology"
-Позиция 6: "available_in": "goodness" — ТОЛЬКО ПОЗИТИВ! (животные, достижения, спасение, волонтёрство)
-  БАН: болезни, смерти, трагедии, войны — это будут отклонены!
+Позиция 6: "available_in": "goodness" — ОБЯЗАТЕЛЬНО 1 ДОБРАЯ / ХОРОШАЯ НОВОСТЬ (ТОЛЬКО ПОЗИТИВ: животные, спасение, доброта, наука/люди помогают людям)
 
 НОВОСТИ:
 {json.dumps(indexed_news, ensure_ascii=False, indent=2)}
 
 ПРАВИЛА:
-✅ Точно 6 новостей, ровно 2 политики
+✅ Минимум 1 политика, минимум 1 спорт, минимум 1 добрая/хорошая новость (goodness)
 ✅ Спорт: ФУТБОЛ первым, потом хоккей/теннис/другое (проверь title на "football", "футбол", "soccer")
-✅ Последняя (позиция 6) должна быть 100% позитивная или вообще не включай
+✅ Добрая новость (позиция 6) должна быть 100% позитивной
 {_SUMMARY_RULES}
 ✅ Если НЕ можешь описать новость или хочешь её ОТКЛОНИТЬ — поставь в "description_ru" РОВНО: ❌
    (не пиши "я не могу оценить...", только символ ❌ — скрипт удалит новость из дайджеста)
@@ -1574,14 +1574,14 @@ _CURATION_READER_PROFILE = """ПРОФИЛЬ ЧИТАТЕЛЯ (Максим):
 
 async def curate_digest_news(
     candidates: List[Dict[str, Any]],
-    min_count: int = 6,
-    max_count: int = 8,
+    min_count: int = 5,
+    max_count: int = 7,
 ) -> Optional[List[int]]:
     """Final editorial pass over the ALREADY selected digest news (Максим).
 
-    The per-pool selectors are generous — together they hand the digest ~10 stories.
+    The per-pool selectors are generous — together they hand the digest ~9-10 stories.
     This pass re-reads all of them as one list against the reader profile and keeps
-    only the genuinely interesting min_count..max_count.
+    only the genuinely interesting min_count..max_count (strictly <= 7).
 
     Args:
         candidates: the prepared stories, each with description_ru/source/category
@@ -1612,7 +1612,7 @@ async def curate_digest_news(
 
         system_prompt = """You are the final, ruthless editor of a personal morning digest.
 The stories below were already selected and summarized; your ONLY job is to CUT the list down
-to the ones this specific reader will actually enjoy. You do not rewrite anything.
+to the ones this specific reader will actually enjoy (strictly no more than 6-7 items). You do not rewrite anything.
 Return ONLY a valid JSON array of integers — the indices to KEEP."""
 
         user_prompt = f"""Вычитай подготовленные новости дайджеста и оставь только САМЫЕ ИНТЕРЕСНЫЕ для читателя.
@@ -1620,18 +1620,20 @@ Return ONLY a valid JSON array of integers — the indices to KEEP."""
 {_CURATION_READER_PROFILE}
 
 ПРАВИЛА ОТБОРА:
-- Оставь МИНИМУМ {min_count}, МАКСИМУМ {max_count} новостей (целься в {min_count}-{max_count - 1})
-- Ранжируй по интересности ИМЕННО ДЛЯ ЭТОГО читателя, а не по «важности для мира»
-- Сохраняй разнообразие тем: не оставляй список из одной темы, если есть достойные новости из других
-- Категории crypto и stocks — это его ДЕНЬГИ (позиции в BTC/ETH/SOL и индексах США): оставляй их,
-  если там реальное событие с влиянием на цену; режь, если это дежурная сводка без события
-- Если две новости об одном и том же событии — оставь одну, лучшую
+- Оставь от {min_count} до {max_count} новостей (СТРОГО НЕ БОЛЕЕ 6-7 новостей суммарно, максимум {max_count}).
+- ОБЯЗАТЕЛЬНО оставь хотя бы ОДНУ ДОБРУЮ/ХОРОШУЮ новость (категория goodness). Читателю важна добрая новость в утреннем дайджесте!
+- ОБЯЗАТЕЛЬНО оставь МИНИМУМ ОДНУ новость про политику (категория politics).
+- ОБЯЗАТЕЛЬНО оставь МИНИМУМ ОДНУ новость про спорт (категория sports, особенно футбол).
+- Новость про Грузию (категория georgia) может быть МАКСИМУМ ОДНА (не более 1).
+- Категории crypto и stocks — это его ДЕНЬГИ (позиции в BTC/ETH/SOL и индексах США): оставляй их, если там реальное событие с влиянием на цену; режь, если это дежурная сводка без события.
+- Если две новости об одном и том же событии — оставь одну, лучшую.
+- Ранжируй по интересности ИМЕННО ДЛЯ ЭТОГО читателя, сохраняй баланс и разнообразие тем.
 - ЗАПРЕЩЕНО менять порядок, переписывать тексты или добавлять что-то от себя — только индексы
 
 НОВОСТИ:
 {json.dumps(indexed, ensure_ascii=False, indent=2)}
 
-ОТВЕТ: только JSON-массив индексов оставленных новостей, например [0, 2, 3, 5, 6, 8, 9]. Без другого текста."""
+ОТВЕТ: только JSON-массив индексов оставленных новостей, например [0, 2, 3, 5, 6]. Без другого текста."""
 
         api_key = os.getenv("OPENAI_API_KEY") or get_secret("OPENAI_API_KEY")
 
@@ -1672,8 +1674,36 @@ Return ONLY a valid JSON array of integers — the indices to KEEP."""
                 f"Curation kept only {len(kept)} of {len(candidates)} items (min {min_count}) — ignoring pass"
             )
             return None
+
+        # Programmatic safety enforcement:
+        # 1. At most 1 Georgia news item
+        geo_indices = [i for i in kept if candidates[i].get("category") == "georgia"]
+        if len(geo_indices) > 1:
+            for extra_geo in geo_indices[1:]:
+                kept.remove(extra_geo)
+
+        # 2. At least 1 goodness news if available in candidates
+        if not any(candidates[i].get("category") == "goodness" for i in kept):
+            cand_good = [i for i, c in enumerate(candidates) if c.get("category") == "goodness"]
+            if cand_good:
+                kept.append(cand_good[0])
+
+        # 3. At least 1 politics news if available in candidates
+        if not any(candidates[i].get("category") == "politics" for i in kept):
+            cand_pol = [i for i, c in enumerate(candidates) if c.get("category") == "politics"]
+            if cand_pol:
+                kept.append(cand_pol[0])
+
+        # 4. At least 1 sports news if available in candidates
+        if not any(candidates[i].get("category") == "sports" for i in kept):
+            cand_sport = [i for i, c in enumerate(candidates) if c.get("category") == "sports"]
+            if cand_sport:
+                kept.append(cand_sport[0])
+
+        kept = sorted(set(kept))
+
+        # 5. Respect hard cap of max_count (7)
         if len(kept) > max_count:
-            # Trust the model's list but respect the hard cap: keep digest order.
             kept = kept[:max_count]
 
         logger.info(f"✓ Curation kept {len(kept)}/{len(candidates)} news items: {kept}")

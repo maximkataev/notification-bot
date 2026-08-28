@@ -1357,7 +1357,7 @@ async def _recommend_music_album_once(
         # A history read failure must not cost us the recommendation (and with
         # retries it would otherwise burn every attempt on the same error).
         try:
-            shown_albums = await get_shown_creators(user_id, "album")
+            shown_albums = await get_shown_keys(user_id, "album")
         except Exception as e:
             logger.warning(f"Could not read album history: {type(e).__name__}: {e}")
             shown_albums = []
