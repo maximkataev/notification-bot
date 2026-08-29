@@ -83,8 +83,12 @@ THEMED_NEWS_USERS = {498233237}
 SKIP_WATER_CUTS_USERS = {498233237}
 # Users who get the server/VPS-and-domain expiry section (main user only)
 SERVER_SUBSCRIPTIONS_USERS = {71488343}
-# Users who get the r/tbilisi city highlight section
-TBILISI_REDDIT_USERS = {71488343, 184010236}
+# Users who get the r/tbilisi city highlight section (Максим only)
+TBILISI_REDDIT_USERS = {71488343}
+# Users whose digest omits exchange rates, podcasts/content, and the album of the day
+SKIP_RATES_USERS = {184010236}
+SKIP_CONTENT_RECOMMENDATION_USERS = {184010236}
+SKIP_ALBUM_USERS = {184010236}
 # Users who get extra crypto news items (main user only) — active BTC/ETH/SOL trader
 CRYPTO_NEWS_USERS = {71488343}
 CRYPTO_NEWS_COUNT = 2
@@ -1066,9 +1070,13 @@ async def _morning_digest_impl(
     else:
         logger.info("Skipping tasks section (include_tasks=False)")
 
-    # Add exchange rates with % changes
-    logger.info("Fetching exchange rates with changes")
-    rates = await get_crypto_and_forex_rates()
+    # Add exchange rates with % changes (disabled for selected users)
+    if user_id in SKIP_RATES_USERS:
+        logger.info(f"Skipping exchange rates for user {user_id}")
+        rates = None
+    else:
+        logger.info("Fetching exchange rates with changes")
+        rates = await get_crypto_and_forex_rates()
     if rates:
         def format_currency(value: float, decimals: int = 2) -> str:
             """Format number with space as thousands separator."""
@@ -1153,7 +1161,7 @@ async def _morning_digest_impl(
             message_lines.append("")
         else:
             logger.info("Rates dict present but no renderable values — skipping section")
-    else:
+    elif user_id not in SKIP_RATES_USERS:
         logger.info("Failed to fetch rates")
 
     # Check for water cuts on Vazha Ivereli street (suppressed for some users)
@@ -1248,18 +1256,21 @@ async def _morning_digest_impl(
             logger.error(f"Failed to fetch Product Hunt: {e}")
 
     # Add Content recommendation (with timeout to prevent digest delays)
-    logger.info("Fetching content recommendation (max 10s)")
     content = None
-    try:
-        if hasattr(asyncio, "timeout"):  # Python 3.11+
-            async with asyncio.timeout(20):
-                content = await get_content_recommendation(user_id=user_id)
-        else:  # Python 3.10 and earlier
-            content = await asyncio.wait_for(get_content_recommendation(user_id=user_id), timeout=20.0)
-    except asyncio.TimeoutError:
-        logger.warning("Content recommendation timed out (20s), skipping this section")
-    except Exception as e:
-        logger.warning(f"Failed to get content recommendation: {e}")
+    if user_id in SKIP_CONTENT_RECOMMENDATION_USERS:
+        logger.info(f"Skipping content recommendation for user {user_id}")
+    else:
+        logger.info("Fetching content recommendation (max 20s)")
+        try:
+            if hasattr(asyncio, "timeout"):  # Python 3.11+
+                async with asyncio.timeout(20):
+                    content = await get_content_recommendation(user_id=user_id)
+            else:  # Python 3.10 and earlier
+                content = await asyncio.wait_for(get_content_recommendation(user_id=user_id), timeout=20.0)
+        except asyncio.TimeoutError:
+            logger.warning("Content recommendation timed out (20s), skipping this section")
+        except Exception as e:
+            logger.warning(f"Failed to get content recommendation: {e}")
 
     content_type = None
     if not isinstance(content, Exception) and content:
@@ -1281,7 +1292,9 @@ async def _morning_digest_impl(
     # Add Album of the day (Spotify with AI recommendations)
     # Skip if content is already music (avoid duplicate music sections)
     album = None
-    if content_type != "music":
+    if user_id in SKIP_ALBUM_USERS:
+        logger.info(f"Skipping album of the day for user {user_id}")
+    elif content_type != "music":
         logger.info("Fetching album of the day")
         try:
             # Up to ALBUM_MAX_ATTEMPTS GPT+Spotify round trips, ~3s each.
