@@ -977,7 +977,7 @@ async def _morning_digest_impl(
     if user_id in JOKE_OF_DAY_USERS:
         logger.info("Fetching joke of the day")
         try:
-            joke = await get_joke_of_day()
+            joke = await get_joke_of_day(exclude_profanity=True)
         except Exception as e:
             logger.warning(f"Joke of day failed: {type(e).__name__}: {str(e)[:100]}")
             joke = None

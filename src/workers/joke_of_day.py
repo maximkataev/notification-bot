@@ -47,10 +47,30 @@ _ANEKDOT_RU_RSS = "https://www.anekdot.ru/rss/export_j.xml"
 
 _REQUEST_TIMEOUT = 10.0
 
+# Russian profanity roots and common inflected/prefixed forms.  The patterns are
+# deliberately word-boundary-aware so ordinary words such as «тебя» do not match
+# the «еб-» root by accident.
+_PROFANITY_RE = re.compile(
+    r"(?:"
+    r"\b(?:на|по|за|до|вы|про|от|о|а)?ху[йеяиюё]\w*|"
+    r"\b\w*пизд\w*|"
+    r"\b(?:на|по|за|до|вы|про|от|раз|под|у)?[её]б(?:\w+)?\b|"
+    r"\b\w*долбо[её]б\w*|"
+    r"\bбля(?:д|т)?\w*|"
+    r"\b(?:мудак|мудил|гандон|залуп|манда|шлюх|сук[аи])\w*"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _normalize(text: str) -> str:
     """Normalize joke text for dedup comparison (case/whitespace-insensitive)."""
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def contains_profanity(text: str) -> bool:
+    """Return True when text contains Russian obscene vocabulary."""
+    return bool(_PROFANITY_RE.search(text or ""))
 
 
 # rzhunemogu hard-wraps lines at roughly this width; lines at or above it are
@@ -153,7 +173,7 @@ async def _fetch_anekdot_ru() -> List[Dict[str, str]]:
         return []
 
 
-async def get_joke_of_day() -> Optional[Dict[str, Any]]:
+async def get_joke_of_day(*, exclude_profanity: bool = False) -> Optional[Dict[str, Any]]:
     """Fetch the joke of the day from real sources, avoiding repeats within 28 days.
 
     Returns:
@@ -167,11 +187,14 @@ async def get_joke_of_day() -> Optional[Dict[str, Any]]:
     today = datetime.now().strftime("%Y-%m-%d")
     history = _trim_history(_load_history())
 
-    # Same day → return the already-chosen joke so every recipient sees the same one.
+    # Same day → return the already-chosen joke. If clean language is requested,
+    # an older profane cache entry is ignored and replaced below.
     if history and history[-1].get("date") == today:
         cached = {k: v for k, v in history[-1].items() if k != "date"}
-        logger.info(f"Joke of day (cached for {today}): {cached.get('text', '')[:50]}...")
-        return cached
+        if not exclude_profanity or not contains_profanity(cached.get("text", "")):
+            logger.info(f"Joke of day (cached for {today}): {cached.get('text', '')[:50]}...")
+            return cached
+        logger.info("Joke of day: cached joke contains profanity, selecting another")
 
     shown = {_normalize(h.get("text", "")) for h in history if h.get("text")}
 
@@ -185,6 +208,9 @@ async def get_joke_of_day() -> Optional[Dict[str, Any]]:
         if _normalize(text) in shown:
             logger.info(f"rzhunemogu: joke already shown (attempt {attempt + 1}), retrying")
             continue
+        if exclude_profanity and contains_profanity(text):
+            logger.info(f"rzhunemogu: profanity rejected (attempt {attempt + 1}), retrying")
+            continue
         result = {"text": text, "source": "rzhunemogu.ru", "url": ""}
         break
 
@@ -194,6 +220,8 @@ async def get_joke_of_day() -> Optional[Dict[str, Any]]:
         jokes = await _fetch_anekdot_ru()
         random.shuffle(jokes)
         for joke in jokes:
+            if exclude_profanity and contains_profanity(joke["text"]):
+                continue
             if _normalize(joke["text"]) not in shown:
                 result = {"text": joke["text"], "source": "anekdot.ru", "url": joke["url"]}
                 break
