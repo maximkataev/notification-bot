@@ -181,6 +181,24 @@ def _parse_match_date(date_cell: str):
         return None
 
 
+def _time_from_date_cell(date_cell: str) -> Optional[str]:
+    """Extract a kickoff time (HH:MM, Moscow) embedded in the date cell.
+
+    European competition pages (Champions League, UEFA Cup) put date AND time in the
+    first column — "08.09 - 22:00" — and leave the time/result column empty. The
+    domestic league pages keep the time in its own column, so this returns None there.
+    """
+    if not date_cell:
+        return None
+    tm = re.search(r"(?<![\d.])(\d{1,2}):(\d{2})(?!\d)", date_cell)
+    if not tm:
+        return None
+    hour, minute = int(tm.group(1)), int(tm.group(2))
+    if hour > 23 or minute > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _tbilisi_kickoff(match_date, msk_time_str: str):
     """Build the full Tbilisi kickoff datetime from a match date + Moscow time.
 
@@ -584,7 +602,9 @@ def _parse_league_page_for_results(html: str, league_name: str) -> List[Dict[str
                         continue
                     stats["in_window"] += 1
 
-                    kickoff = None
+                    # European cup pages carry the kickoff in the date cell
+                    # ("08.09 - 22:00"); domestic pages have no time on result rows.
+                    kickoff = _tbilisi_kickoff(match_date, _time_from_date_cell(date_cell))
                     # League layout: [Date] [Teams] [Score] [Status]
                     teams_cell = cells[1].get_text().strip()
                     score_or_time = cells[2].get_text().strip() if len(cells) > 2 else ""
@@ -749,6 +769,10 @@ def _parse_league_page(html: str, league_name: str) -> List[Dict[str, Any]]:
                             if tm:
                                 time_str = f"{tm.group(1)}:{tm.group(2)}"
                                 break
+                        # European cups (Champions League etc.) put the time in the
+                        # date column ("08.09 - 22:00") and leave the time column empty.
+                        if time_str == "TBD":
+                            time_str = _time_from_date_cell(date_cell) or "TBD"
 
                     # Skip garbage team names
                     if not home or not away or len(home) < 3 or len(away) < 3:
